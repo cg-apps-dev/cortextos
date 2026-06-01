@@ -1,6 +1,7 @@
 import { execSync, execFileSync } from 'child_process';
-import { existsSync, readFileSync, statSync, appendFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, statSync, appendFileSync, writeFileSync, rmSync } from 'fs';
 import { join, extname } from 'path';
+import { tmpdir } from 'os';
 import { readdirSync } from 'fs';
 import { ensureDir } from '../utils/atomic.js';
 import { TelegramAPI } from '../telegram/api.js';
@@ -9,10 +10,27 @@ import type { BusPaths } from '../types/index.js';
 // --- Types ---
 
 export interface AutoCommitReport {
-  status: 'staged' | 'clean' | 'nothing_to_stage' | 'dry_run';
+  status: 'staged' | 'committed' | 'clean' | 'nothing_to_stage' | 'dry_run';
   staged: string[];
   blocked: string[];
   diff_stat?: string;
+  /** Set when committed to an isolated ref (--branch mode). */
+  committed_sha?: string;
+  committed_branch?: string;
+}
+
+/** Options for autoCommit. */
+export interface AutoCommitOptions {
+  /**
+   * When set, commit the staged snapshot to this isolated branch ref
+   * (e.g. "analyst-snapshots/2026-06-01") instead of staging into the shared
+   * index. Uses a temporary git index so the shared index, HEAD, working tree,
+   * and mainline are left completely untouched — a non-git-owner agent can
+   * snapshot its work without clobbering anyone.
+   */
+  commitBranch?: string;
+  /** Commit message for --branch mode (defaults to a generic snapshot label). */
+  message?: string;
 }
 
 export interface AgentGoalStatus {
@@ -97,7 +115,11 @@ export function hardRestart(paths: BusPaths, agentName: string, reason?: string)
  * Filters out dangerous files (credentials, env, large, binary).
  * Never pushes. Mirrors bash bus/auto-commit.sh.
  */
-export function autoCommit(projectDir: string, dryRun: boolean = false): AutoCommitReport {
+export function autoCommit(
+  projectDir: string,
+  dryRun: boolean = false,
+  options: AutoCommitOptions = {},
+): AutoCommitReport {
   // Check if git repo
   try {
     execSync('git rev-parse --is-inside-work-tree', { cwd: projectDir, stdio: 'pipe' });
@@ -195,7 +217,21 @@ export function autoCommit(projectDir: string, dryRun: boolean = false): AutoCom
     return { status: 'dry_run', staged, blocked };
   }
 
-  // Stage safe files
+  // Isolated-commit mode: commit the snapshot to an isolated ref WITHOUT
+  // touching the shared index, HEAD, working tree, or mainline.
+  if (options.commitBranch) {
+    const message = options.message || `daily snapshot (${options.commitBranch})`;
+    const sha = commitToIsolatedRef(projectDir, staged, options.commitBranch, message);
+    return {
+      status: 'committed',
+      staged,
+      blocked,
+      committed_sha: sha,
+      committed_branch: options.commitBranch,
+    };
+  }
+
+  // Default: stage safe files into the shared index (caller commits separately).
   for (const file of staged) {
     try {
       execFileSync('git', ['add', file], { cwd: projectDir, stdio: 'pipe' });
@@ -215,6 +251,64 @@ export function autoCommit(projectDir: string, dryRun: boolean = false): AutoCom
   }
 
   return { status: 'staged', staged, blocked, diff_stat: diffStat };
+}
+
+/**
+ * Commit a set of working-tree files to an isolated branch ref using a
+ * temporary git index, leaving the shared index, HEAD, working tree, and
+ * mainline untouched.
+ *
+ * Plumbing: a throwaway GIT_INDEX_FILE is seeded from HEAD, the safe files are
+ * staged into it, then write-tree → commit-tree (parented on the isolated ref
+ * tip if it exists, else HEAD) → update-ref advances only the isolated branch.
+ * Nothing about the live checkout changes — the snapshot is durable on its own
+ * branch and the agent's workspace is exactly as it was.
+ */
+function commitToIsolatedRef(
+  projectDir: string,
+  files: string[],
+  branch: string,
+  message: string,
+): string {
+  const tmpIndex = join(tmpdir(), `cortextos-snap-index-${process.pid}-${Date.now()}`);
+  const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
+  try {
+    // Seed the temp index with HEAD's tree, then stage the safe files into it.
+    execFileSync('git', ['read-tree', 'HEAD'], { cwd: projectDir, env, stdio: 'pipe' });
+    for (const file of files) {
+      try {
+        execFileSync('git', ['add', '--', file], { cwd: projectDir, env, stdio: 'pipe' });
+      } catch {
+        // Skip files that can't be staged (e.g. vanished mid-run).
+      }
+    }
+
+    const tree = execFileSync('git', ['write-tree'], { cwd: projectDir, env, encoding: 'utf-8' }).trim();
+
+    // Parent = isolated ref tip if it exists, else HEAD (first snapshot).
+    let parent: string | null = null;
+    try {
+      parent = execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], {
+        cwd: projectDir, encoding: 'utf-8',
+      }).trim();
+    } catch {
+      try {
+        parent = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: projectDir, encoding: 'utf-8' }).trim();
+      } catch {
+        parent = null; // empty repo (no HEAD yet)
+      }
+    }
+
+    const commitArgs = parent
+      ? ['commit-tree', tree, '-p', parent, '-m', message]
+      : ['commit-tree', tree, '-m', message];
+    const commit = execFileSync('git', commitArgs, { cwd: projectDir, env, encoding: 'utf-8' }).trim();
+
+    execFileSync('git', ['update-ref', `refs/heads/${branch}`, commit], { cwd: projectDir, env, stdio: 'pipe' });
+    return commit;
+  } finally {
+    try { if (existsSync(tmpIndex)) rmSync(tmpIndex); } catch { /* ignore */ }
+  }
 }
 
 /**

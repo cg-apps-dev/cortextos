@@ -25,6 +25,7 @@ import { setupCommand } from './setup.js';
 import { spawnWorkerCommand, terminateWorkerCommand, listWorkersCommand, injectWorkerCommand } from './workers.js';
 import { importAgentCommand } from './import-agent.js';
 import { updateCommand } from './update.js';
+import { devWorktreeCommand, worktreeGuardCommand } from './dev-worktree.js';
 
 const program = new Command();
 
@@ -60,6 +61,8 @@ program.addCommand(listWorkersCommand);
 program.addCommand(injectWorkerCommand);
 program.addCommand(importAgentCommand);
 program.addCommand(updateCommand);
+program.addCommand(devWorktreeCommand);
+program.addCommand(worktreeGuardCommand);
 
 // crash-alert: SessionEnd hook — cross-platform replacement for crash-alert.sh
 const crashAlertCommand = new Command('crash-alert')
