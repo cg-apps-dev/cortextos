@@ -7,6 +7,7 @@ import {
   IconLayoutDashboard,
   IconRobot,
   IconListCheck,
+  IconChecklist,
   IconShieldCheck,
   IconActivity,
   IconChartDots3,
@@ -37,6 +38,7 @@ const navItems: NavItem[] = [
   { label: 'Overview', href: '/', icon: IconLayoutDashboard, section: 'core' },
   { label: 'Agents', href: '/agents', icon: IconRobot, section: 'core' },
   { label: 'Tasks', href: '/tasks', icon: IconListCheck, section: 'core' },
+  { label: 'My Action Items', href: '/my-tasks', icon: IconChecklist, section: 'core' },
   { label: 'Activity', href: '/activity', icon: IconActivity, section: 'core' },
 
   // Operations
