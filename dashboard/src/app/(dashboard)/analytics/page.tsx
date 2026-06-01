@@ -5,6 +5,7 @@ import {
   getDailyCosts,
   getDailyCostByModel,
   getCurrentMonthCost,
+  getCostByAgent,
 } from '@/lib/cost-parser';
 import { syncCostsLazy } from '@/lib/sync';
 
@@ -29,13 +30,14 @@ export default async function AnalyticsPage({
   syncCostsLazy();
 
   // Fetch all data in parallel
-  const [taskData, agentStats, dailyCosts, dailyCostByModel, monthCost, goalsData, fleetHealth, planUsage, usageHistory] =
+  const [taskData, agentStats, dailyCosts, dailyCostByModel, monthCost, costByAgent, goalsData, fleetHealth, planUsage, usageHistory] =
     await Promise.all([
       Promise.resolve(getTaskThroughput(30, org || undefined)),
       Promise.resolve(getAgentEffectiveness(org || undefined)),
       Promise.resolve(getDailyCosts(30)),
       Promise.resolve(getDailyCostByModel(30)),
       Promise.resolve(getCurrentMonthCost()),
+      Promise.resolve(getCostByAgent(30)),
       Promise.resolve(org ? getGoals(org) : { bottleneck: '', goals: [] }),
       Promise.resolve(getFleetHealth(org || 'default')),
       Promise.resolve(getPlanUsage()),
@@ -77,6 +79,7 @@ export default async function AnalyticsPage({
         projectedMonthly={projectedMonthly}
         planUsage={planUsage}
         usageHistory={usageHistory}
+        costByAgent={costByAgent}
       />
 
       {/* Goal Progress - only show when specific org selected */}

@@ -344,11 +344,12 @@ export function syncCostsLazy(): void {
       const { syncCosts } = require('./cost-parser');
       const costResult = syncCosts();
       (globalThis as unknown as Record<string, number>).__lastCostSync = now;
-      if (costResult.inserted > 0) {
-        console.log(`[sync] Cost sync: ${costResult.scanned} scanned, ${costResult.inserted} inserted`);
-      }
-    } catch {
-      // Cost sync is best-effort
+      // Always log the outcome (incl. 0 inserted) so an empty cost_entries is
+      // diagnosable instead of looking like "no usage" (silent-failure class).
+      console.log(`[sync] Cost sync: ${costResult.scanned} scanned, ${costResult.inserted} inserted`);
+    } catch (err) {
+      // Best-effort, but observable — never swallow the reason.
+      console.warn(`[sync] Cost sync failed: ${(err as Error).message}`);
     }
   }
 }

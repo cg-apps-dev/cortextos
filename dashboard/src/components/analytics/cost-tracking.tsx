@@ -31,6 +31,14 @@ interface UsageHistoryPoint {
   seven_day_pct: number;
 }
 
+interface AgentUsage {
+  agent: string;
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+}
+
 interface CostTrackingProps {
   dailyCosts: Array<{ date: string; cost: number }>;
   dailyCostByModel: Array<Record<string, unknown>>;
@@ -38,6 +46,13 @@ interface CostTrackingProps {
   projectedMonthly: number;
   planUsage?: PlanUsageData | null;
   usageHistory?: UsageHistoryPoint[];
+  costByAgent?: AgentUsage[];
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
 }
 
 function UsageBar({ pct, label, sublabel }: { pct: number; label: string; sublabel?: string }) {
@@ -63,11 +78,14 @@ export function CostTracking({
   projectedMonthly,
   planUsage,
   usageHistory,
+  costByAgent,
 }: CostTrackingProps) {
   const modelKeys = Object.keys(MODEL_COLORS); // opus, sonnet, haiku
   const modelColorValues = modelKeys.map((k) => MODEL_COLORS[k]);
 
   const hasPlanData = !!planUsage || (usageHistory && usageHistory.length > 0);
+  const agentRows = (costByAgent ?? []).filter(a => a.tokens > 0);
+  const maxAgentTokens = agentRows.reduce((m, a) => Math.max(m, a.tokens), 0);
 
   return (
     <div className="space-y-6">
@@ -134,6 +152,46 @@ export function CostTracking({
           )}
         </CardContent>
       </Card>
+
+      {/* Per-Agent Token Usage (last 30 days) */}
+      {agentRows.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+              Per-Agent Token Usage
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-xs text-muted-foreground mb-3">
+              Tokens consumed per agent over the last 30 days (from Claude Code session logs).
+            </p>
+            <div className="space-y-3">
+              {agentRows.map((a) => (
+                <div key={a.agent} className="space-y-1">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-medium">{a.agent}</span>
+                    <span className="tabular-nums text-muted-foreground">
+                      {formatTokens(a.tokens)} tok{a.cost > 0 ? ` · $${a.cost.toFixed(2)}` : ''}
+                    </span>
+                  </div>
+                  <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all"
+                      style={{
+                        width: `${maxAgentTokens > 0 ? Math.round((a.tokens / maxAgentTokens) * 100) : 0}%`,
+                        backgroundColor: CHART_GOLD,
+                      }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground tabular-nums">
+                    {formatTokens(a.inputTokens)} in · {formatTokens(a.outputTokens)} out
+                  </p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Usage History Chart */}
       {usageHistory && usageHistory.length >= 2 ? (

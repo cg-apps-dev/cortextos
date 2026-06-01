@@ -135,54 +135,98 @@ function parseJsonlFile(filePath: string, agent: string, org: string): CostEntry
 // ---------------------------------------------------------------------------
 
 /**
+ * Decode an encoded ~/.claude/projects dir name into {org, agent}.
+ *
+ * Format: a filesystem path with slashes replaced by dashes, e.g.
+ *   -Users-…-cortextos-orgs-<org>-agents-<agent>
+ * Both <org> and <agent> can themselves contain dashes (e.g.
+ * "clean-green-marketing", "cortextos-dev-agent"), so the org is EVERYTHING
+ * between the "orgs" and "agents" markers and the agent is everything after
+ * the last "agents". (The previous code took a single segment — parts[orgsIdx+1]
+ * — which yielded "clean" for "clean-green-marketing", failing the org allow-list
+ * and silently dropping every agent's transcripts.)
+ *
+ * Returns a skip reason for dirs that are not agent project dirs (e.g. the
+ * primary repo checkout, which has no -orgs-/-agents- markers).
+ */
+export function parseAgentProjectDir(
+  dirName: string,
+): { org: string; agent: string } | { skipReason: string } {
+  const parts = dirName.split('-');
+  const orgsIdx = parts.indexOf('orgs');
+  const agentsIdx = parts.lastIndexOf('agents');
+  if (orgsIdx < 0 || agentsIdx < 0) return { skipReason: 'missing orgs/agents markers' };
+  if (orgsIdx >= agentsIdx) return { skipReason: 'orgs marker not before agents marker' };
+  const org = parts.slice(orgsIdx + 1, agentsIdx).join('-');
+  const agent = parts.slice(agentsIdx + 1).join('-');
+  if (!org) return { skipReason: 'empty org segment' };
+  if (!agent) return { skipReason: 'empty agent segment' };
+  return { org, agent };
+}
+
+/**
  * Scan ~/.claude/projects/ for JSONL files and parse them.
  * Scoped to the current instance's orgs to prevent cross-instance data bleed.
+ *
+ * Observability (silent-failure class, cf. #459): directory-read and per-file
+ * parse errors are logged, not swallowed, and a skip summary is logged so an
+ * empty result can never silently masquerade as "no usage".
  */
 export function scanClaudeProjectsCosts(): CostEntry[] {
   const claudeDir = path.join(os.homedir(), '.claude', 'projects');
   if (!fs.existsSync(claudeDir)) return [];
 
   const allowedOrgs = new Set(getOrgs());
-
   // Also allow the instance ID itself as a fallback org label
   const instanceId = process.env.CTX_INSTANCE_ID ?? 'default';
   allowedOrgs.add(instanceId);
 
   const allEntries: CostEntry[] = [];
+  // Track WHY agent-looking dirs were skipped, so empty results are diagnosable.
+  const skips: Record<string, number> = {};
+  const note = (reason: string) => { skips[reason] = (skips[reason] ?? 0) + 1; };
 
+  let projectDirs: fs.Dirent[];
   try {
-    const projectDirs = fs.readdirSync(claudeDir, { withFileTypes: true });
+    projectDirs = fs.readdirSync(claudeDir, { withFileTypes: true });
+  } catch (err) {
+    console.warn(`[cost-parser] cannot read ${claudeDir}: ${(err as Error).message}`);
+    return [];
+  }
 
-    for (const dir of projectDirs) {
-      if (!dir.isDirectory()) continue;
-      // Only scan directories that contain 'agents' in the path (skip unrelated projects)
-      if (!dir.name.includes('agents')) continue;
+  for (const dir of projectDirs) {
+    if (!dir.isDirectory()) continue;
+    // Unrelated projects (no 'agents' marker) are silently out of scope.
+    if (!dir.name.includes('agents')) continue;
 
-      const parts = dir.name.split('-');
-      const orgsIdx = parts.indexOf('orgs');
-      const orgName = orgsIdx >= 0 && orgsIdx < parts.length - 1
-        ? parts[orgsIdx + 1]
-        : 'default';
+    const parsed = parseAgentProjectDir(dir.name);
+    if ('skipReason' in parsed) { note(parsed.skipReason); continue; }
+    const { org: orgName, agent: agentName } = parsed;
 
-      // Scope to current instance's orgs — prevent cross-instance bleed
-      if (!allowedOrgs.has(orgName)) continue;
+    // Scope to current instance's orgs — prevent cross-instance bleed
+    if (!allowedOrgs.has(orgName)) { note(`org not allowed: ${orgName}`); continue; }
 
-      const projectPath = path.join(claudeDir, dir.name);
-      const files = fs.readdirSync(projectPath).filter((f) => f.endsWith('.jsonl'));
+    const projectPath = path.join(claudeDir, dir.name);
+    let files: string[];
+    try {
+      files = fs.readdirSync(projectPath).filter((f) => f.endsWith('.jsonl'));
+    } catch (err) {
+      console.warn(`[cost-parser] cannot read ${projectPath}: ${(err as Error).message}`);
+      continue;
+    }
 
-      for (const file of files) {
-        const filePath = path.join(projectPath, file);
-        // Extract agent name from encoded dir path (e.g. "-Users-...-agents-devbot" -> "devbot")
-        const agentsIdx = parts.lastIndexOf('agents');
-        const agentName = agentsIdx >= 0 && agentsIdx < parts.length - 1
-          ? parts.slice(agentsIdx + 1).join('-')
-          : dir.name;
-        const entries = parseJsonlFile(filePath, agentName, orgName);
-        allEntries.push(...entries);
+    for (const file of files) {
+      try {
+        allEntries.push(...parseJsonlFile(path.join(projectPath, file), agentName, orgName));
+      } catch (err) {
+        console.warn(`[cost-parser] failed parsing ${path.join(projectPath, file)}: ${(err as Error).message}`);
       }
     }
-  } catch {
-    // Directory scan failed
+  }
+
+  const skipSummary = Object.entries(skips).map(([r, n]) => `${r} ×${n}`).join('; ');
+  if (skipSummary) {
+    console.log(`[cost-parser] claude projects: ${allEntries.length} entries; skipped agent dirs — ${skipSummary}`);
   }
 
   return allEntries;
@@ -409,6 +453,35 @@ export function getCostByModel(): Array<{ model: string; cost: number; tokens: n
          ORDER BY cost DESC`,
       )
       .all() as Array<{ model: string; cost: number; tokens: number }>;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Per-agent token + cost breakdown, highest token use first.
+ * Optionally scoped to the last `days` (default: all-time).
+ */
+export function getCostByAgent(
+  days?: number,
+): Array<{ agent: string; tokens: number; inputTokens: number; outputTokens: number; cost: number }> {
+  try {
+    const where = days ? `WHERE timestamp >= DATE('now', ?)` : '';
+    const stmt = db.prepare(
+      `SELECT agent,
+              SUM(total_tokens)  as tokens,
+              SUM(input_tokens)  as inputTokens,
+              SUM(output_tokens) as outputTokens,
+              SUM(cost_usd)      as cost
+       FROM cost_entries
+       ${where}
+       GROUP BY agent
+       ORDER BY tokens DESC`,
+    );
+    const rows = (days ? stmt.all(`-${days} days`) : stmt.all()) as Array<{
+      agent: string; tokens: number; inputTokens: number; outputTokens: number; cost: number;
+    }>;
+    return rows;
   } catch {
     return [];
   }

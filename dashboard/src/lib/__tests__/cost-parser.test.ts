@@ -9,11 +9,13 @@ process.env.CTX_FRAMEWORK_ROOT = tmpDir;
 
 let calculateCost: typeof import('../cost-parser')['calculateCost'];
 let scanCodexLogsCosts: typeof import('../cost-parser')['scanCodexLogsCosts'];
+let parseAgentProjectDir: typeof import('../cost-parser')['parseAgentProjectDir'];
 
 beforeAll(async () => {
   const mod = await import('../cost-parser');
   calculateCost = mod.calculateCost;
   scanCodexLogsCosts = mod.scanCodexLogsCosts;
+  parseAgentProjectDir = mod.parseAgentProjectDir;
 
   // Set up enabled-agents.json so getAllAgents() returns a known fixture
   const cfgDir = path.join(tmpDir, 'config');
@@ -211,5 +213,37 @@ describe('scanCodexLogsCosts', () => {
         '\n',
     );
     expect(scanCodexLogsCosts()).toHaveLength(1);
+  });
+});
+
+describe('parseAgentProjectDir (encoded ~/.claude/projects dir → org+agent)', () => {
+  it('parses multi-word (dashed) org AND agent names correctly', () => {
+    // The regression: org "clean-green-marketing" must not collapse to "clean".
+    const r = parseAgentProjectDir('-Users-adamfolker-cortextos-orgs-clean-green-marketing-agents-cortextos-dev-agent');
+    expect(r).toEqual({ org: 'clean-green-marketing', agent: 'cortextos-dev-agent' });
+  });
+
+  it('parses a single-word org and agent', () => {
+    expect(parseAgentProjectDir('-x-orgs-acme-agents-bot')).toEqual({ org: 'acme', agent: 'bot' });
+  });
+
+  it('skips dirs with no orgs/agents markers (e.g. the primary repo checkout)', () => {
+    const r = parseAgentProjectDir('-Users-adamfolker-cortextos');
+    expect('skipReason' in r).toBe(true);
+  });
+
+  it('skips a dir that has agents but no orgs marker', () => {
+    const r = parseAgentProjectDir('-Users-foo-agents-bar');
+    expect('skipReason' in r).toBe(true);
+  });
+
+  it('skips when orgs appears after agents (malformed order)', () => {
+    const r = parseAgentProjectDir('-x-agents-bot-orgs-acme');
+    expect('skipReason' in r).toBe(true);
+  });
+
+  it('skips an empty agent segment', () => {
+    const r = parseAgentProjectDir('-x-orgs-acme-agents');
+    expect('skipReason' in r).toBe(true);
   });
 });
