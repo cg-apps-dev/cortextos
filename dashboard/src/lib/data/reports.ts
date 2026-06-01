@@ -258,15 +258,33 @@ function getFleetHealthFromHeartbeats(org: string): FleetHealth | null {
   };
 }
 
-// Plan Usage (scraped from /usage via scrape-usage.sh)
+// Plan Usage
 // ---------------------------------------------------------------------------
+// Two possible sources both write state/usage/latest.json:
+//   - Live Claude Max plan limits from the Anthropic OAuth usage API
+//     (five_hour / seven_day utilization) — automatable, the primary source.
+//   - Legacy Claude Code /usage text parsed via `scrape-usage`
+//     (session / week_all_models / week_sonnet) — manual.
+// All metric blocks are optional; the dashboard renders whichever are present.
+
+export interface UsageMetric {
+  used_pct: number;
+  resets?: string;
+}
 
 export interface PlanUsage {
-  agent: string;
+  /** Plan-level account label (live usage API). */
+  account?: string;
+  /** Legacy: agent that ran scrape-usage. */
+  agent?: string;
   timestamp: string;
-  session: { used_pct: number; resets: string };
-  week_all_models: { used_pct: number; resets: string };
-  week_sonnet: { used_pct: number };
+  // Live Anthropic OAuth usage API (Claude Max plan limits) — primary.
+  five_hour?: UsageMetric;
+  seven_day?: UsageMetric;
+  // Legacy Claude Code /usage (scrape-usage) — optional.
+  session?: UsageMetric;
+  week_all_models?: UsageMetric;
+  week_sonnet?: { used_pct: number };
 }
 
 export function getPlanUsage(): PlanUsage | null {
@@ -288,6 +306,8 @@ export interface UsageDataPoint {
   session_pct: number;
   week_pct: number;
   sonnet_pct: number;
+  five_hour_pct: number;
+  seven_day_pct: number;
 }
 
 export function getUsageHistory(days: number = 7): UsageDataPoint[] {
@@ -316,6 +336,8 @@ export function getUsageHistory(days: number = 7): UsageDataPoint[] {
             session_pct: entry.session?.used_pct ?? 0,
             week_pct: entry.week_all_models?.used_pct ?? 0,
             sonnet_pct: entry.week_sonnet?.used_pct ?? 0,
+            five_hour_pct: entry.five_hour?.used_pct ?? 0,
+            seven_day_pct: entry.seven_day?.used_pct ?? 0,
           });
         } catch { /* skip bad lines */ }
       }

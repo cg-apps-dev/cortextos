@@ -12,7 +12,8 @@
  * - Usage cache TTL = 3 minutes (API rate limit ~5 req/token)
  */
 
-import { existsSync, readFileSync, chmodSync } from 'fs';
+import { existsSync, readFileSync, chmodSync, appendFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
 import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
@@ -69,6 +70,23 @@ export interface RotateResult {
   reason: string;
   from?: string;
   to?: string;
+}
+
+/** Raw shape of the Anthropic OAuth usage API response (nested). */
+export interface UsageApiResponse {
+  five_hour?: { utilization?: number; resets_at?: string };
+  seven_day?: { utilization?: number; resets_at?: string };
+}
+
+/**
+ * Dashboard-facing plan-usage snapshot written to state/usage/latest.json.
+ * Contains ONLY usage numbers + reset times — never a token or credential.
+ */
+export interface PlanUsageSnapshot {
+  account: string;
+  timestamp: string;
+  five_hour?: { used_pct: number; resets?: string };
+  seven_day?: { used_pct: number; resets?: string };
 }
 
 const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
@@ -135,6 +153,64 @@ export function getActiveAccount(ctxRoot: string): { name: string; account: OAut
   return { name: store.active, account };
 }
 
+/**
+ * Read the Claude Code OAuth access token from the macOS login Keychain.
+ *
+ * Mirrors bus/check-usage-api.sh exactly: the "Claude Code-credentials"
+ * generic-password item holds a JSON blob; the access token is at
+ * `claudeAiOauth.accessToken`. This is the same item + scope the shell already
+ * uses — no new or broader credential surface.
+ *
+ * SECURITY: the token is returned in-memory for immediate use only. It is
+ * NEVER logged, echoed, cached, or written to disk. Read-only Keychain query
+ * (find-generic-password) — no writes, no new entries. Non-macOS → null.
+ */
+function getKeychainToken(): string | null {
+  if (process.platform !== 'darwin') return null;
+  try {
+    const raw = execFileSync(
+      'security',
+      ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 },
+    ).trim();
+    if (!raw) return null;
+    const creds = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string } };
+    const token = creds?.claudeAiOauth?.accessToken;
+    return typeof token === 'string' && token.length > 0 ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve an OAuth access token for the usage API.
+ * Precedence: explicit account → active accounts.json account →
+ * CLAUDE_CODE_OAUTH_TOKEN env → macOS Keychain. Single source of truth so the
+ * usage API path and any future caller resolve credentials identically.
+ *
+ * SECURITY: returns the token in-memory only; callers must never log/persist it.
+ */
+export function resolveOAuthAccessToken(
+  ctxRoot: string,
+  account?: string,
+): { accessToken: string; accountName: string } {
+  if (account) {
+    const store = loadAccounts(ctxRoot);
+    const acct = store?.accounts[account];
+    if (!acct) throw new Error(`Account "${account}" not found in accounts.json`);
+    return { accessToken: acct.access_token, accountName: account };
+  }
+  const active = getActiveAccount(ctxRoot);
+  if (active) return { accessToken: active.account.access_token, accountName: active.name };
+  const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (envToken) return { accessToken: envToken, accountName: 'env' };
+  const keychain = getKeychainToken();
+  if (keychain) return { accessToken: keychain, accountName: 'keychain' };
+  throw new Error(
+    'No OAuth token available (no active accounts.json account, CLAUDE_CODE_OAUTH_TOKEN not set, and no Claude Code Keychain credential)',
+  );
+}
+
 // --- Usage cache helpers ---
 
 function loadCache(ctxRoot: string): UsageCache | null {
@@ -182,28 +258,8 @@ export async function checkUsageApi(
     }
   }
 
-  // Determine which account to check
-  let accessToken: string | undefined;
-  let accountName: string;
-
-  if (opts.account) {
-    const store = loadAccounts(ctxRoot);
-    const acct = store?.accounts[opts.account];
-    if (!acct) throw new Error(`Account "${opts.account}" not found in accounts.json`);
-    accessToken = acct.access_token;
-    accountName = opts.account;
-  } else {
-    // Fall back to env / Keychain
-    const active = getActiveAccount(ctxRoot);
-    if (active) {
-      accessToken = active.account.access_token;
-      accountName = active.name;
-    } else {
-      accessToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-      accountName = 'env';
-      if (!accessToken) throw new Error('No OAuth token available (no accounts.json and CLAUDE_CODE_OAUTH_TOKEN not set)');
-    }
-  }
+  // Determine which token to use (accounts.json → env → Keychain).
+  const { accessToken, accountName } = resolveOAuthAccessToken(ctxRoot, opts.account);
 
   const response = await fetch('https://api.anthropic.com/api/oauth/usage', {
     headers: {
@@ -264,6 +320,67 @@ export async function checkUsageApi(
   }
 
   return { ...snapshot, cached: false };
+}
+
+// --- refresh-usage (dashboard plan-usage) ---
+
+/**
+ * Transform a raw usage API response into the dashboard-facing snapshot.
+ * The API reports utilization as a 0–100 percentage (the shell thresholds
+ * compare it directly against 80/90); we round and carry the reset times.
+ * Pure — no I/O, no credentials — so it is unit-testable in isolation.
+ */
+export function toPlanUsageSnapshot(
+  data: UsageApiResponse,
+  account: string,
+  now: string,
+): PlanUsageSnapshot {
+  const pct = (v: number | undefined): number | undefined =>
+    v === undefined ? undefined : Math.round(v);
+  const snap: PlanUsageSnapshot = { account, timestamp: now };
+  if (data.five_hour) {
+    snap.five_hour = { used_pct: pct(data.five_hour.utilization) ?? 0, resets: data.five_hour.resets_at };
+  }
+  if (data.seven_day) {
+    snap.seven_day = { used_pct: pct(data.seven_day.utilization) ?? 0, resets: data.seven_day.resets_at };
+  }
+  return snap;
+}
+
+/** Write the dashboard plan-usage snapshot (latest.json + daily JSONL). */
+function writePlanUsage(ctxRoot: string, snapshot: PlanUsageSnapshot): void {
+  ensureDir(usageDir(ctxRoot));
+  // SECURITY: snapshot holds only usage numbers + reset times — never a token.
+  atomicWriteSync(usageLatestPath(ctxRoot), JSON.stringify(snapshot, null, 2));
+  appendFileSync(usageDailyPath(ctxRoot), JSON.stringify(snapshot) + '\n');
+}
+
+/**
+ * Fetch live Claude Max plan usage (5h/7d) from the Anthropic OAuth usage API
+ * and write it for the dashboard (state/usage/latest.json + daily JSONL).
+ *
+ * SECURITY: the OAuth token is resolved + used in-memory only for the API
+ * call; it is never logged, returned, or written. Only usage numbers + reset
+ * times are persisted.
+ */
+export async function refreshUsage(ctxRoot: string): Promise<PlanUsageSnapshot> {
+  const { accessToken, accountName } = resolveOAuthAccessToken(ctxRoot);
+
+  const response = await fetch('https://api.anthropic.com/api/oauth/usage', {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'anthropic-beta': 'oauth-2025-04-20',
+    },
+  });
+  if (!response.ok) {
+    // Note: never include the token in errors; status only.
+    throw new Error(`Usage API returned ${response.status}`);
+  }
+
+  const data = await response.json() as UsageApiResponse;
+  const snapshot = toPlanUsageSnapshot(data, accountName, new Date().toISOString());
+  writePlanUsage(ctxRoot, snapshot);
+  return snapshot;
 }
 
 // --- refresh-oauth-token ---
