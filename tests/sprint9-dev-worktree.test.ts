@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { createServer, type Server } from 'net';
@@ -15,6 +15,7 @@ import {
 } from '../src/utils/git.js';
 import { isPortFree, findFreePort } from '../src/utils/ports.js';
 import { slugify } from '../src/cli/dev-worktree.js';
+import { autoCommit } from '../src/bus/system.js';
 
 describe('Sprint 9: dev-worktree isolation tooling', () => {
   // -------------------------------------------------------------------------
@@ -127,6 +128,84 @@ describe('Sprint 9: dev-worktree isolation tooling', () => {
       const wtPath = `${repo}-wt`;
       addWorktree(wtPath, 'feat/existing', 'main', repo);
       expect(currentBranch(wtPath)).toBe('feat/existing');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // auto-commit --branch (snapshot isolation)
+  //
+  // The invariant that matters: committing a snapshot to an isolated branch
+  // must NOT touch the working tree, HEAD, the shared index, or mainline.
+  // -------------------------------------------------------------------------
+  describe('autoCommit --branch (snapshot isolation)', () => {
+    const repo = join(tmpdir(), `cortextos-sprint9-snap-${Date.now()}`);
+    const git = (args: string[]) =>
+      execFileSync('git', args, { cwd: repo, encoding: 'utf-8' }).trim();
+
+    beforeEach(() => {
+      mkdirSync(repo, { recursive: true });
+      execFileSync('git', ['init', '-b', 'main'], { cwd: repo });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+      writeFileSync(join(repo, 'tracked.md'), 'v1\n');
+      execFileSync('git', ['add', '.'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: repo });
+      // Now make uncommitted working-tree changes: modify tracked + add new file.
+      writeFileSync(join(repo, 'tracked.md'), 'v1\nv2-uncommitted\n');
+      writeFileSync(join(repo, 'new.md'), 'brand new\n');
+    });
+
+    afterEach(() => {
+      try { rmSync(repo, { recursive: true, force: true }); } catch { /* ignore */ }
+    });
+
+    it('commits the snapshot to the isolated ref and leaves the live checkout byte-identical', () => {
+      const branch = 'analyst-snapshots/2026-06-01';
+
+      // BEFORE state
+      const headBefore = git(['rev-parse', 'HEAD']);
+      const statusBefore = git(['status', '--porcelain']);
+      const indexBefore = git(['diff', '--cached', '--name-only']); // staged = nothing
+      const trackedBefore = readFileSync(join(repo, 'tracked.md'), 'utf-8');
+
+      const report = autoCommit(repo, false, { commitBranch: branch, message: 'daily: snap' });
+
+      // The snapshot landed on the isolated ref…
+      expect(report.status).toBe('committed');
+      expect(report.committed_branch).toBe(branch);
+      expect(report.committed_sha).toMatch(/^[0-9a-f]{40}$/);
+      expect(branchExists(branch, repo)).toBe(true);
+      expect(git(['rev-parse', `refs/heads/${branch}`])).toBe(report.committed_sha);
+
+      // …and it actually captured the working-tree changes (snapshot tree
+      // content). The git() helper trims, so compare against trimmed content.
+      expect(git(['show', `${report.committed_sha}:tracked.md`])).toBe('v1\nv2-uncommitted');
+      expect(git(['show', `${report.committed_sha}:new.md`])).toBe('brand new');
+
+      // INVARIANT: nothing about the live checkout changed.
+      expect(git(['rev-parse', 'HEAD'])).toBe(headBefore);            // HEAD unmoved
+      expect(currentBranch(repo)).toBe('main');                       // still on main
+      expect(git(['status', '--porcelain'])).toBe(statusBefore);      // working tree identical
+      expect(git(['diff', '--cached', '--name-only'])).toBe(indexBefore); // shared index untouched
+      expect(readFileSync(join(repo, 'tracked.md'), 'utf-8')).toBe(trackedBefore); // file on disk unchanged
+      // main never received a commit
+      expect(git(['rev-list', '--count', 'main'])).toBe('1');
+    });
+
+    it('chains the second snapshot onto the first (parent = previous snapshot)', () => {
+      const branch = 'analyst-snapshots/2026-06-01';
+      const first = autoCommit(repo, false, { commitBranch: branch, message: 'daily: snap 1' });
+
+      // Another change, second snapshot.
+      writeFileSync(join(repo, 'new.md'), 'changed again\n');
+      const second = autoCommit(repo, false, { commitBranch: branch, message: 'daily: snap 2' });
+
+      expect(second.status).toBe('committed');
+      expect(git(['rev-parse', `${second.committed_sha}^`])).toBe(first.committed_sha);
+      // Branch history = init commit + 2 snapshots (each snapshot parents the prior).
+      expect(git(['rev-list', '--count', `refs/heads/${branch}`])).toBe('3');
+      // main still has exactly its one original commit
+      expect(git(['rev-list', '--count', 'main'])).toBe('1');
     });
   });
 });

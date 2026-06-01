@@ -31,7 +31,7 @@
       "name": "auto-commit",
       "type": "recurring",
       "interval": "24h",
-      "prompt": "Read .claude/skills/local-version-control/SKILL.md and execute the daily version control workflow. Stage, review, and commit changes."
+      "prompt": "Read .claude/skills/local-version-control/SKILL.md and execute the daily version control workflow: preview with `cortextos bus auto-commit --dry-run`, review the files for PII/secrets, then commit the snapshot to the ISOLATED branch via `cortextos bus auto-commit --branch \"analyst-snapshots/$(date -u +%F)\" -m \"daily: <summary>\"`. This commits to an isolated ref without touching main/HEAD/working tree. Never commit to mainline; never push."
     },
     {
       "name": "check-upstream",

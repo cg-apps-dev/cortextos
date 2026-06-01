@@ -659,12 +659,24 @@ busCommand
 
 busCommand
   .command('auto-commit')
-  .description('Stage safe files for commit (never pushes)')
+  .description('Stage safe files for commit, or commit a snapshot to an isolated branch (never pushes)')
   .option('--dry-run', 'Show what would be staged without modifying git')
-  .action((opts: { dryRun?: boolean }) => {
+  .option('--branch <ref>', 'Commit the snapshot to this isolated branch ref (e.g. analyst-snapshots/2026-06-01) instead of staging into the shared index — leaves working tree, HEAD, and main untouched')
+  .option('-m, --message <msg>', 'Commit message for --branch mode')
+  .action((opts: { dryRun?: boolean; branch?: string; message?: string }) => {
     const env = resolveEnv();
     const projectDir = env.projectRoot || env.frameworkRoot || process.cwd();
-    const report = autoCommit(projectDir, opts.dryRun ?? false);
+    if (opts.branch !== undefined) {
+      // Reject anything that isn't a safe ref name (no shell/ref injection).
+      if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(opts.branch) || opts.branch.includes('..')) {
+        console.error(`Invalid --branch ref: ${opts.branch}`);
+        process.exit(1);
+      }
+    }
+    const report = autoCommit(projectDir, opts.dryRun ?? false, {
+      commitBranch: opts.branch,
+      message: opts.message,
+    });
     console.log(JSON.stringify(report));
   });
 
