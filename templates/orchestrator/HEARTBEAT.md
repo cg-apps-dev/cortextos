@@ -48,8 +48,8 @@ cortextos bus read-all-heartbeats
 # Check all pending approvals
 cortextos bus list-approvals --format json 2>/dev/null
 
-# Check stale human tasks
-cortextos bus list-tasks --project human-tasks --status pending 2>/dev/null
+# Check pending human tasks (list-tasks has no --project flag; filter the JSON instead)
+cortextos bus list-tasks --status pending --format json 2>/dev/null | jq 'map(select(.project=="human-tasks"))'
 ```
 
 For each agent: if heartbeat is older than 5 hours, send an alert to that agent and flag in memory.
