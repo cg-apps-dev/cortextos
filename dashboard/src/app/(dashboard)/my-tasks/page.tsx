@@ -55,6 +55,21 @@ function relativeAge(iso?: string): string {
   return `${days}d ago`;
 }
 
+// "how long has it been open" without the trailing "ago"
+function openFor(iso?: string): string {
+  const a = relativeAge(iso);
+  return a === 'just now' ? 'under a minute' : a.replace(' ago', '');
+}
+
+function formatAssigned(iso?: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+}
+
 export default function MyTasksPage() {
   const { currentOrg } = useOrg();
 
@@ -63,6 +78,16 @@ export default function MyTasksPage() {
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState<Set<string>>(new Set());
   const [showDone, setShowDone] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  function toggleExpand(id: string) {
+    setExpanded((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
 
   const fetchItems = useCallback(async () => {
     const base = new URLSearchParams();
@@ -161,35 +186,61 @@ export default function MyTasksPage() {
           {pending.map((task) => {
             const cat = categoryOf(task);
             const busy = checking.has(task.id);
+            const isOpen = expanded.has(task.id);
             return (
               <li
                 key={task.id}
-                className="group flex items-start gap-3 rounded-lg border border-border bg-card p-3 transition-colors hover:border-violet-500/40"
+                className="rounded-lg border border-border bg-card transition-colors hover:border-violet-500/40"
               >
-                <Checkbox
-                  className="mt-0.5"
-                  checked={busy}
-                  disabled={busy}
-                  onCheckedChange={() => complete(task)}
-                  aria-label={`Mark "${cleanTitle(task.title)}" done`}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium leading-snug">{cleanTitle(task.title)}</span>
-                    <Badge variant="outline" className={cat.cls}>{cat.label}</Badge>
-                    {task.priority && task.priority !== 'normal' && (
-                      <Badge variant="outline" className={PRIORITY_STYLES[task.priority] ?? ''}>
-                        {task.priority}
-                      </Badge>
+                <div className="flex items-start gap-3 p-3">
+                  <Checkbox
+                    className="mt-0.5"
+                    checked={busy}
+                    disabled={busy}
+                    onCheckedChange={() => complete(task)}
+                    aria-label={`Mark "${cleanTitle(task.title)}" done`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleExpand(task.id)}
+                    aria-expanded={isOpen}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium leading-snug">{cleanTitle(task.title)}</span>
+                      <Badge variant="outline" className={cat.cls}>{cat.label}</Badge>
+                      {task.priority && task.priority !== 'normal' && (
+                        <Badge variant="outline" className={PRIORITY_STYLES[task.priority] ?? ''}>
+                          {task.priority}
+                        </Badge>
+                      )}
+                      <span className="ml-auto shrink-0 text-muted-foreground">
+                        {isOpen ? <IconChevronDown size={16} /> : <IconChevronRight size={16} />}
+                      </span>
+                    </div>
+                    {!isOpen && (
+                      <p className="mt-1 text-xs text-muted-foreground">Open {relativeAge(task.created_at)}</p>
                     )}
-                  </div>
-                  {task.description && (
-                    <p className="mt-1 line-clamp-3 text-sm text-muted-foreground">{task.description}</p>
-                  )}
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {relativeAge(task.created_at)}
-                  </p>
+                  </button>
                 </div>
+                {isOpen && (
+                  <div className="space-y-3 border-t border-border px-3 pb-3 pt-3 pl-11 text-sm">
+                    <div>
+                      <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        Instructions
+                      </p>
+                      <p className="whitespace-pre-wrap text-foreground">
+                        {task.description || 'No additional details provided.'}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
+                      <span><span className="text-foreground/70">Assigned:</span> {formatAssigned(task.created_at)}</span>
+                      <span><span className="text-foreground/70">Open for:</span> {openFor(task.created_at)}</span>
+                      {task.project && <span><span className="text-foreground/70">Project:</span> {task.project}</span>}
+                      <span><span className="text-foreground/70">Priority:</span> {task.priority}</span>
+                    </div>
+                  </div>
+                )}
               </li>
             );
           })}
