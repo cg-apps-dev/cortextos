@@ -162,17 +162,20 @@ export function CostTracking({
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-xs text-muted-foreground mb-3">
+            <p className="text-xs text-muted-foreground mb-1">
               Tokens consumed per agent over the last 30 days (from Claude Code session logs).
+            </p>
+            <p className="text-[10px] text-muted-foreground mb-3">
+              Max plan is a flat subscription governed by the 5h/7d rate limits above — the $ figures
+              are API-equivalent token-cost estimates (what these tokens would cost at pay-per-token
+              API list rates), <span className="font-medium">not Max plan charges</span>.
             </p>
             <div className="space-y-3">
               {agentRows.map((a) => (
                 <div key={a.agent} className="space-y-1">
                   <div className="flex items-center justify-between text-sm">
                     <span className="font-medium">{a.agent}</span>
-                    <span className="tabular-nums text-muted-foreground">
-                      {formatTokens(a.tokens)} tok{a.cost > 0 ? ` · $${a.cost.toFixed(2)}` : ''}
-                    </span>
+                    <span className="tabular-nums font-medium">{formatTokens(a.tokens)} tokens</span>
                   </div>
                   <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
                     <div
@@ -185,6 +188,7 @@ export function CostTracking({
                   </div>
                   <p className="text-[10px] text-muted-foreground tabular-nums">
                     {formatTokens(a.inputTokens)} in · {formatTokens(a.outputTokens)} out
+                    {a.cost > 0 ? ` · ~$${a.cost.toFixed(2)} est. API rate` : ''}
                   </p>
                 </div>
               ))}
