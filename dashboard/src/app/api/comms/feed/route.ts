@@ -3,24 +3,16 @@ import fs from 'fs';
 import path from 'path';
 import { getCTXRoot } from '@/lib/config';
 import { resolveIdentity } from '@/lib/comms-identity';
+import { loadBusMessages } from '@/lib/comms-source';
 
 export const dynamic = 'force-dynamic';
-
-interface BusMessage {
-  id: string;
-  from: string;
-  to: string;
-  priority: string;
-  timestamp: string;
-  text: string;
-  reply_to: string | null;
-}
 
 /**
  * GET /api/comms/feed — Org-wide chronological feed of bus messages.
  *
- * Scans all agents' inbox directories (processed, inflight, pending)
- * for JSON message files. Returns newest first.
+ * Message sourcing (history log + inbox/processed scan + Telegram logs) is
+ * centralized in loadBusMessages(); this route only filters and sorts.
+ * Returns newest first.
  *
  * Query params:
  *   org    — filter by org (required for agent discovery)
@@ -68,118 +60,15 @@ export async function GET(request: NextRequest) {
     return Response.json([]);
   }
 
-  const messages: BusMessage[] = [];
-
-  // Primary source: persistent message history log (JSONL)
-  const historyLog = path.join(ctxRoot, 'logs', 'message-history.jsonl');
-  if (fs.existsSync(historyLog)) {
-    try {
-      const lines = fs.readFileSync(historyLog, 'utf-8').trim().split('\n');
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const msg: BusMessage = JSON.parse(line);
-          if (!msg.id || !msg.from || !msg.to || !msg.timestamp) continue;
-          if (agentFilter && msg.from !== agentFilter && msg.to !== agentFilter) continue;
-          if (!matchesSearch(msg.text)) continue;
-          if (before && msg.timestamp >= before) continue;
-          messages.push(msg);
-        } catch { /* skip corrupt lines */ }
-      }
-    } catch { /* fall through to inbox scan */ }
-  }
-
-  // Fallback: scan inbox + processed directories for messages not in the history log.
-  // Processed messages (ACK'd via check-inbox) are moved to ctxRoot/processed/{agent}/
-  // and are invisible without this scan when the history log is empty or absent.
-  const seen = new Set<string>(messages.map(m => m.id));
-  const processedBase = path.join(ctxRoot, 'processed');
-
-  for (const [base, subs] of [[inboxBase, ['inflight', '']], [processedBase, ['']]] as const) {
-    if (!fs.existsSync(base)) continue;
-    let agentDirs: string[];
-    try {
-      agentDirs = fs.readdirSync(base, { withFileTypes: true })
-        .filter(d => d.isDirectory())
-        .map(d => d.name);
-    } catch {
-      agentDirs = [];
-    }
-
-    for (const agent of agentDirs) {
-      for (const sub of subs) {
-        const dir = sub ? path.join(base, agent, sub) : path.join(base, agent);
-        if (!fs.existsSync(dir)) continue;
-        let files: string[];
-        try {
-          files = fs.readdirSync(dir).filter(f => f.endsWith('.json') && !f.startsWith('.'));
-        } catch { continue; }
-
-        for (const file of files) {
-          try {
-            const raw = fs.readFileSync(path.join(dir, file), 'utf-8');
-            const msg: BusMessage = JSON.parse(raw);
-            if (!msg.id || !msg.from || !msg.to || !msg.timestamp) continue;
-            if (seen.has(msg.id)) continue;
-            if (agentFilter && msg.from !== agentFilter && msg.to !== agentFilter) continue;
-            if (!matchesSearch(msg.text)) continue;
-            if (before && msg.timestamp >= before) continue;
-            seen.add(msg.id);
-            messages.push(msg);
-          } catch { /* skip */ }
-        }
-      }
-    }
-  }
-
-  // Include Telegram messages (inbound from user + outbound from agents)
-  const logsBase = path.join(ctxRoot, 'logs');
-  if (fs.existsSync(logsBase)) {
-    let agentLogDirs: string[];
-    try {
-      agentLogDirs = fs.readdirSync(logsBase, { withFileTypes: true })
-        .filter(d => d.isDirectory())
-        .map(d => d.name);
-    } catch { agentLogDirs = []; }
-
-    for (const agent of agentLogDirs) {
-      for (const logFile of ['inbound-messages.jsonl', 'outbound-messages.jsonl']) {
-        const filePath = path.join(logsBase, agent, logFile);
-        if (!fs.existsSync(filePath)) continue;
-        try {
-          const lines = fs.readFileSync(filePath, 'utf-8').trim().split('\n');
-          const isInbound = logFile.startsWith('inbound');
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const raw = JSON.parse(line);
-              const msgId = `tg-${isInbound ? 'in' : 'out'}-${agent}-${raw.message_id || raw.timestamp}`;
-              if (seen.has(msgId)) continue;
-              if (!raw.text || !raw.timestamp) continue;
-
-              const fromName = isInbound ? identity.canonicalUser : agent;
-              const toName = isInbound ? agent : identity.canonicalUser;
-
-              if (agentFilter && fromName !== agentFilter && toName !== agentFilter) continue;
-              if (!matchesSearch(raw.text)) continue;
-              if (before && raw.timestamp >= before) continue;
-
-              seen.add(msgId);
-              messages.push({
-                id: msgId,
-                from: fromName,
-                to: toName,
-                priority: 'normal',
-                timestamp: raw.timestamp,
-                text: raw.text,
-                reply_to: null,
-              });
-            } catch { /* skip */ }
-          }
-        } catch { /* skip */ }
-      }
-    }
-  }
+  // Single source of truth for message loading (history log + inbox/processed
+  // scan + Telegram logs, deduplicated). This route applies the feed's own
+  // filters and newest-first ordering.
+  const messages = loadBusMessages(ctxRoot, identity).filter(msg => {
+    if (agentFilter && msg.from !== agentFilter && msg.to !== agentFilter) return false;
+    if (!matchesSearch(msg.text)) return false;
+    if (before && msg.timestamp >= before) return false;
+    return true;
+  });
 
   // Sort by timestamp descending (newest first)
   messages.sort((a, b) => b.timestamp.localeCompare(a.timestamp));

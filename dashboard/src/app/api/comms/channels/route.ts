@@ -3,18 +3,9 @@ import fs from 'fs';
 import path from 'path';
 import { getCTXRoot } from '@/lib/config';
 import { resolveIdentity, buildPairKey } from '@/lib/comms-identity';
+import { loadBusMessages, type BusMessage } from '@/lib/comms-source';
 
 export const dynamic = 'force-dynamic';
-
-interface BusMessage {
-  id: string;
-  from: string;
-  to: string;
-  priority: string;
-  timestamp: string;
-  text: string;
-  reply_to: string | null;
-}
 
 interface Channel {
   pair: string; // "agent1--agent2" (alphabetically sorted)
@@ -30,7 +21,10 @@ const ARCHIVE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 /**
  * GET /api/comms/channels — List active agent-pair channels.
  *
- * Groups bus messages by sender-recipient pair.
+ * Groups bus messages by sender-recipient pair. Message sourcing (history
+ * log + inbox/processed scan + Telegram logs, deduplicated) is centralized in
+ * loadBusMessages() so this list stays in sync with the feed and per-channel
+ * views — including agent-to-agent traffic that lives only in processed/.
  *
  * Query params:
  *   include_archived — show archived channels (default false)
@@ -47,86 +41,7 @@ export async function GET(request: NextRequest) {
     return Response.json([]);
   }
 
-  // Primary source: persistent message history log (JSONL)
-  const allMessages: BusMessage[] = [];
-  const historyLog = path.join(ctxRoot, 'logs', 'message-history.jsonl');
-  if (fs.existsSync(historyLog)) {
-    try {
-      const lines = fs.readFileSync(historyLog, 'utf-8').trim().split('\n');
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const msg: BusMessage = JSON.parse(line);
-          if (msg.id && msg.from && msg.to && msg.timestamp) {
-            allMessages.push(msg);
-          }
-        } catch { /* skip */ }
-      }
-    } catch { /* empty */ }
-  }
-
-  // Include Telegram messages
-  const logsBase = path.join(ctxRoot, 'logs');
-  if (fs.existsSync(logsBase)) {
-    let agentLogDirs: string[];
-    try {
-      agentLogDirs = fs.readdirSync(logsBase, { withFileTypes: true })
-        .filter(d => d.isDirectory())
-        .map(d => d.name);
-    } catch { agentLogDirs = []; }
-
-    // Voice transcript dedup — two-pass bestByMsgId map so transcript
-    // entries beat empty stubs with the same Telegram message_id.
-    // See channel/[pair]/route.ts for the full explanation.
-    for (const agent of agentLogDirs) {
-      for (const logFile of ['inbound-messages.jsonl', 'outbound-messages.jsonl']) {
-        const filePath = path.join(logsBase, agent, logFile);
-        if (!fs.existsSync(filePath)) continue;
-        const bestByMsgId = new Map<string, BusMessage>();
-        try {
-          const lines = fs.readFileSync(filePath, 'utf-8').trim().split('\n');
-          const isInbound = logFile.startsWith('inbound');
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const raw = JSON.parse(line);
-              if (!raw.timestamp) continue;
-              const msgId = `tg-${isInbound ? 'in' : 'out'}-${agent}-${raw.message_id || raw.timestamp}`;
-              const fromName = isInbound ? identity.canonicalUser : agent;
-              const toName = isInbound ? agent : identity.canonicalUser;
-              const candidate: BusMessage = {
-                id: msgId,
-                from: fromName,
-                to: toName,
-                priority: 'normal',
-                timestamp: raw.timestamp,
-                text: raw.text || raw.transcript || '',
-                reply_to: null,
-              };
-              const existing = bestByMsgId.get(msgId);
-              if (!existing) {
-                bestByMsgId.set(msgId, candidate);
-              } else if (!existing.text && candidate.text) {
-                bestByMsgId.set(msgId, candidate);
-              }
-            } catch { /* skip malformed line */ }
-          }
-        } catch { /* skip unreadable file */ }
-        for (const msg of bestByMsgId.values()) {
-          if (!msg.text) continue;
-          allMessages.push(msg);
-        }
-      }
-    }
-  }
-
-  // Deduplicate
-  const seen = new Set<string>();
-  const unique = allMessages.filter(m => {
-    if (seen.has(m.id)) return false;
-    seen.add(m.id);
-    return true;
-  });
+  const unique = loadBusMessages(ctxRoot, identity);
 
   // Group by agent pair
   const channelMap = new Map<string, BusMessage[]>();

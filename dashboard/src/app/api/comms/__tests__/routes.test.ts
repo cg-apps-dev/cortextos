@@ -71,6 +71,19 @@ function writeHistory(messages: Array<Record<string, unknown>>) {
   fs.writeFileSync(path.join(logDir, 'message-history.jsonl'), lines);
 }
 
+/**
+ * Seed an agent-to-agent bus message into processed/{recipient}/, the
+ * canonical resting place for ACK'd messages — exactly where a real
+ * `send-message` → `check-inbox` → `ack` flow leaves it, and the location the
+ * comms feed/channels/channel routes must read. (message-history.jsonl is
+ * never written by the bus, so these files are the only record on disk.)
+ */
+function writeProcessedMessage(recipient: string, msg: Record<string, unknown>) {
+  const dir = path.join(rootTmp, 'processed', recipient);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${msg.id}.json`), JSON.stringify(msg));
+}
+
 function makeRequest(url: string): NextRequest {
   return new NextRequest(new URL(url, 'http://localhost'));
 }
@@ -266,5 +279,92 @@ describe('POST /api/comms/upload', () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(String(data.error).toLowerCase()).toContain('too large');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: agent-to-agent messages on disk (processed/{agent}/)
+//
+// These messages are written by the bus to inbox/{to}/ and moved to
+// processed/{to}/ on ACK. They are NEVER written to message-history.jsonl.
+// Before the shared loadBusMessages() reader, `channels` did not scan disk at
+// all (so agent-to-agent channels never appeared) and `channel/[pair]` scanned
+// a non-existent inbox/{agent}/processed path (so it returned "No messages").
+// All three routes must now surface them from the canonical processed/ dir.
+// ---------------------------------------------------------------------------
+describe('agent-to-agent messages from processed/ (regression)', () => {
+  const now = Date.now();
+  const tEarly = new Date(now - 2 * 60 * 60 * 1000).toISOString();
+  const tLate = new Date(now - 1 * 60 * 60 * 1000).toISOString();
+
+  // Seed a real two-message agent-to-agent exchange (boris ↔ nick), as it
+  // exists on disk after ACK — no history log involved.
+  function seedAgentExchange() {
+    writeProcessedMessage('nick', {
+      id: 'a2a-1', from: 'boris', to: 'nick', priority: 'normal',
+      timestamp: tEarly, text: 'agent ping', reply_to: null,
+    });
+    writeProcessedMessage('boris', {
+      id: 'a2a-2', from: 'nick', to: 'boris', priority: 'high',
+      timestamp: tLate, text: 'agent pong', reply_to: 'a2a-1',
+    });
+  }
+
+  it('channels lists the agent-to-agent pair even without a history log', async () => {
+    seedAgentExchange();
+
+    const res = await channels.GET(makeRequest('/api/comms/channels'));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const pairs = data.map((c: { pair: string }) => c.pair);
+    expect(pairs).toContain('boris--nick');
+    const ch = data.find((c: { pair: string }) => c.pair === 'boris--nick');
+    expect(ch.message_count).toBe(2);
+    expect(ch.last_message.from).toBe('nick'); // newest
+  });
+
+  it('channel/[pair] returns the agent-to-agent messages, oldest-first', async () => {
+    seedAgentExchange();
+
+    const res = await channel.GET(
+      makeRequest('/api/comms/channel/boris--nick'),
+      { params: Promise.resolve({ pair: 'boris--nick' }) },
+    );
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toHaveLength(2);
+    expect(data[0].id).toBe('a2a-1'); // oldest first
+    expect(data[1].id).toBe('a2a-2');
+    expect(data[1].reply_to).toBe('a2a-1');
+  });
+
+  it('feed includes the agent-to-agent messages (no regression on the working path)', async () => {
+    seedAgentExchange();
+
+    const res = await feed.GET(makeRequest('/api/comms/feed'));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const ids = data.map((m: { id: string }) => m.id);
+    expect(ids).toContain('a2a-1');
+    expect(ids).toContain('a2a-2');
+    expect(data[0].id).toBe('a2a-2'); // newest first
+  });
+
+  it('deduplicates a message present in both the history log and processed/', async () => {
+    // Same id in both sources — must appear once (history wins, no double count).
+    writeHistory([
+      { id: 'dup-1', from: 'boris', to: 'nick', priority: 'normal', timestamp: tEarly, text: 'once', reply_to: null },
+    ]);
+    writeProcessedMessage('nick', {
+      id: 'dup-1', from: 'boris', to: 'nick', priority: 'normal', timestamp: tEarly, text: 'once', reply_to: null,
+    });
+
+    const res = await channel.GET(
+      makeRequest('/api/comms/channel/boris--nick'),
+      { params: Promise.resolve({ pair: 'boris--nick' }) },
+    );
+    const data = await res.json();
+    expect(data).toHaveLength(1);
+    expect(data[0].id).toBe('dup-1');
   });
 });
