@@ -128,6 +128,17 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 | `cortextos inject-worker <name> "<text>"` | Inject text into running worker (nudge) |
 | `cortextos terminate-worker <name>` | Stop a worker session |
 
+### Dev Worktree Isolation (multi-agent dashboard/framework work)
+The dev server (`:3000`) renders the working tree, so multiple agents sharing one
+checkout clobber each other's live view on every branch switch. The rule: the served
+tree stays on `main` (never branch-switched); all feature work happens in a per-agent
+git worktree. Full design: `docs/architecture/dev-worktree-isolation.md`.
+| Command | What it does |
+|---|---|
+| `cortextos dev-worktree <ticket>` | Create an isolated worktree + free preview port for a ticket (branch off `main`, dir under `<repo>-worktrees/<agent>/`) |
+| `cortextos dev-worktree <ticket> --base <b> --prefix fix --port 3005` | Same, with explicit base branch / branch prefix / pinned preview port |
+| `cortextos worktree-guard` | Warn (non-zero exit) if the served `:3000` tree has drifted off `main` — wire into a heartbeat or git hook |
+
 ### Community Ecosystem
 | Command | What it does |
 |---|---|
