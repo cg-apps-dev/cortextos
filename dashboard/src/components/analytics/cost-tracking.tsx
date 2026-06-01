@@ -5,10 +5,20 @@ import { AreaChart } from '@/components/charts/area-chart';
 import { BarChart } from '@/components/charts/bar-chart';
 import { CHART_GOLD, MODEL_COLORS } from '@/components/charts/chart-theme';
 
+interface UsageMetric {
+  used_pct: number;
+  resets?: string;
+}
+
 interface PlanUsageData {
-  session: { used_pct: number; resets: string };
-  week_all_models: { used_pct: number; resets: string };
-  week_sonnet: { used_pct: number };
+  account?: string;
+  // Live Claude Max plan limits (OAuth usage API) — primary.
+  five_hour?: UsageMetric;
+  seven_day?: UsageMetric;
+  // Legacy Claude Code /usage (scrape-usage) — optional.
+  session?: UsageMetric;
+  week_all_models?: UsageMetric;
+  week_sonnet?: { used_pct: number };
   timestamp: string;
 }
 
@@ -17,6 +27,8 @@ interface UsageHistoryPoint {
   session_pct: number;
   week_pct: number;
   sonnet_pct: number;
+  five_hour_pct: number;
+  seven_day_pct: number;
 }
 
 interface CostTrackingProps {
@@ -69,32 +81,54 @@ export function CostTracking({
         <CardContent>
           {planUsage ? (
             <div className="space-y-4">
-              <UsageBar
-                pct={planUsage.week_all_models.used_pct}
-                label="Weekly (All Models)"
-                sublabel={planUsage.week_all_models.resets ? `Resets ${planUsage.week_all_models.resets}` : undefined}
-              />
-              <UsageBar
-                pct={planUsage.session.used_pct}
-                label="Current Session"
-                sublabel={planUsage.session.resets ? `Resets ${planUsage.session.resets}` : undefined}
-              />
-              <UsageBar
-                pct={planUsage.week_sonnet.used_pct}
-                label="Weekly (Sonnet Only)"
-              />
+              {/* Live Claude Max plan limits (OAuth usage API) — primary */}
+              {planUsage.five_hour && (
+                <UsageBar
+                  pct={planUsage.five_hour.used_pct}
+                  label="5-Hour Window"
+                  sublabel={planUsage.five_hour.resets ? `Resets ${planUsage.five_hour.resets}` : undefined}
+                />
+              )}
+              {planUsage.seven_day && (
+                <UsageBar
+                  pct={planUsage.seven_day.used_pct}
+                  label="7-Day Window"
+                  sublabel={planUsage.seven_day.resets ? `Resets ${planUsage.seven_day.resets}` : undefined}
+                />
+              )}
+              {/* Legacy Claude Code /usage (scrape-usage) — shown if present */}
+              {planUsage.week_all_models && (
+                <UsageBar
+                  pct={planUsage.week_all_models.used_pct}
+                  label="Weekly (All Models)"
+                  sublabel={planUsage.week_all_models.resets ? `Resets ${planUsage.week_all_models.resets}` : undefined}
+                />
+              )}
+              {planUsage.session && (
+                <UsageBar
+                  pct={planUsage.session.used_pct}
+                  label="Current Session"
+                  sublabel={planUsage.session.resets ? `Resets ${planUsage.session.resets}` : undefined}
+                />
+              )}
+              {planUsage.week_sonnet && (
+                <UsageBar
+                  pct={planUsage.week_sonnet.used_pct}
+                  label="Weekly (Sonnet Only)"
+                />
+              )}
               <p className="text-[10px] text-muted-foreground">
-                Last updated: {new Date(planUsage.timestamp).toLocaleString()}
+                {planUsage.account ? `${planUsage.account} · ` : ''}Last updated: {new Date(planUsage.timestamp).toLocaleString()}
               </p>
             </div>
           ) : (
             <div className="py-6 text-center space-y-2">
               <p className="text-sm font-medium">Plan usage tracking not configured</p>
               <p className="text-xs text-muted-foreground">
-                Run the usage scraper to see your Claude Max plan usage here.
+                Live Claude Max plan usage (5-hour &amp; 7-day) appears here once the usage refresh runs.
               </p>
               <code className="text-xs bg-muted px-2 py-1 rounded block w-fit mx-auto mt-2">
-                cortextos bus scrape-usage
+                cortextos bus refresh-usage
               </code>
             </div>
           )}

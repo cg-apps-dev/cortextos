@@ -18,7 +18,7 @@ import { updateCronFire, parseDurationMs, readCronState } from '../bus/cron-stat
 import { addCron, removeCron, readCrons, updateCron as updateCronDef, getCronByName, getExecutionLog } from '../bus/crons.js';
 import { nextFireFromCron } from '../daemon/cron-scheduler.js';
 import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/knowledge-base.js';
-import { checkUsageApi, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D } from '../bus/oauth.js';
+import { checkUsageApi, refreshUsage, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D } from '../bus/oauth.js';
 import { resolvePaths } from '../utils/paths.js';
 import { resolveEnv } from '../utils/env.js';
 import { IPCClient } from '../daemon/ipc-server.js';
@@ -2480,6 +2480,28 @@ busCommand
       }
     } catch (err) {
       console.error(`Error: ${err}`);
+      process.exit(1);
+    }
+  });
+
+busCommand
+  .command('refresh-usage')
+  .description('Fetch live Claude Max plan usage (5h/7d) from the OAuth usage API and write it for the dashboard')
+  .option('--json', 'Output the snapshot as JSON')
+  .action(async (opts: { json?: boolean }) => {
+    const env = resolveEnv();
+    try {
+      const snap = await refreshUsage(env.ctxRoot);
+      if (opts.json) {
+        console.log(JSON.stringify(snap));
+      } else {
+        const fh = snap.five_hour ? `${snap.five_hour.used_pct}%` : '-';
+        const sd = snap.seven_day ? `${snap.seven_day.used_pct}%` : '-';
+        console.log(`Plan usage refreshed (account: ${snap.account}) — 5h: ${fh}, 7d: ${sd}`);
+      }
+    } catch (err) {
+      // Never surface the token; message only.
+      console.error(`refresh-usage failed: ${(err as Error).message}`);
       process.exit(1);
     }
   });
