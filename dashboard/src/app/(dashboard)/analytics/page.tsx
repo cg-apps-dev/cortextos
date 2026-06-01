@@ -37,7 +37,7 @@ export default async function AnalyticsPage({
       Promise.resolve(getDailyCosts(30)),
       Promise.resolve(getDailyCostByModel(30)),
       Promise.resolve(getCurrentMonthCost()),
-      Promise.resolve(getCostByAgent(30)),
+      Promise.resolve(getCostByAgent(7)),
       Promise.resolve(org ? getGoals(org) : { bottleneck: '', goals: [] }),
       Promise.resolve(getFleetHealth(org || 'default')),
       Promise.resolve(getPlanUsage()),

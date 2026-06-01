@@ -85,7 +85,10 @@ export function CostTracking({
 
   const hasPlanData = !!planUsage || (usageHistory && usageHistory.length > 0);
   const agentRows = (costByAgent ?? []).filter(a => a.tokens > 0);
-  const maxAgentTokens = agentRows.reduce((m, a) => Math.max(m, a.tokens), 0);
+  // Share-of-fleet: bars are a proportion of total agent token use (sum ~100%),
+  // not scaled-to-the-biggest-agent (which made the top agent always look full).
+  const fleetTokens = agentRows.reduce((s, a) => s + a.tokens, 0);
+  const fleetApiCost = agentRows.reduce((s, a) => s + a.cost, 0);
 
   return (
     <div className="space-y-6">
@@ -153,46 +156,51 @@ export function CostTracking({
         </CardContent>
       </Card>
 
-      {/* Per-Agent Token Usage (last 30 days) */}
+      {/* Per-Agent Token Usage (last 7 days — matches the Max 7-day limit window) */}
       {agentRows.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
-              Per-Agent Token Usage
+              Per-Agent Token Usage (Last 7 Days)
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-xs text-muted-foreground mb-1">
-              Tokens consumed per agent over the last 30 days (from Claude Code session logs).
-            </p>
-            <p className="text-[10px] text-muted-foreground mb-3">
-              Max plan is a flat subscription governed by the 5h/7d rate limits above — the $ figures
-              are API-equivalent token-cost estimates (what these tokens would cost at pay-per-token
-              API list rates), <span className="font-medium">not Max plan charges</span>.
+            <p className="text-xs text-muted-foreground mb-3">
+              Your Max plan is a flat subscription governed by the account-wide 5h/7d rate limits above —
+              all agents share that budget. This shows <span className="font-medium">who is consuming it</span>
+              {' '}(share of total agent tokens over the last 7 days).
             </p>
             <div className="space-y-3">
-              {agentRows.map((a) => (
-                <div key={a.agent} className="space-y-1">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="font-medium">{a.agent}</span>
-                    <span className="tabular-nums font-medium">{formatTokens(a.tokens)} tokens</span>
+              {agentRows.map((a) => {
+                const share = fleetTokens > 0 ? Math.round((a.tokens / fleetTokens) * 100) : 0;
+                return (
+                  <div key={a.agent} className="space-y-1">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="font-medium">{a.agent}</span>
+                      <span className="tabular-nums">
+                        <span className="font-medium">{share}%</span>
+                        <span className="text-muted-foreground"> · {formatTokens(a.tokens)} tokens</span>
+                      </span>
+                    </div>
+                    <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{ width: `${share}%`, backgroundColor: CHART_GOLD }}
+                      />
+                    </div>
+                    <p className="text-[10px] text-muted-foreground tabular-nums">
+                      {formatTokens(a.inputTokens)} in · {formatTokens(a.outputTokens)} out
+                    </p>
                   </div>
-                  <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
-                    <div
-                      className="h-full rounded-full transition-all"
-                      style={{
-                        width: `${maxAgentTokens > 0 ? Math.round((a.tokens / maxAgentTokens) * 100) : 0}%`,
-                        backgroundColor: CHART_GOLD,
-                      }}
-                    />
-                  </div>
-                  <p className="text-[10px] text-muted-foreground tabular-nums">
-                    {formatTokens(a.inputTokens)} in · {formatTokens(a.outputTokens)} out
-                    {a.cost > 0 ? ` · ~$${a.cost.toFixed(2)} est. API rate` : ''}
-                  </p>
-                </div>
-              ))}
+                );
+              })}
             </div>
+            {fleetApiCost > 0 && (
+              <p className="text-[10px] text-muted-foreground mt-4 border-t pt-3">
+                These tokens would cost ≈<span className="font-medium tabular-nums">${fleetApiCost.toFixed(2)}</span>
+                {' '}at pay-per-token API list rates over the last 7 days — covered by your Max subscription, not billed.
+              </p>
+            )}
           </CardContent>
         </Card>
       )}
