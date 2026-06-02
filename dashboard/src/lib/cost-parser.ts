@@ -488,6 +488,61 @@ export function getCostByAgent(
 }
 
 /**
+ * Map a model name to its provider: "codex" (OpenAI gpt-5-codex) vs "claude"
+ * (everything else — opus/sonnet/haiku). Mirrors resolvePricingKey's codex test.
+ */
+export function modelProvider(model: string): 'codex' | 'claude' {
+  const lower = (model || '').toLowerCase();
+  return lower.includes('codex') || lower.includes('gpt-5') ? 'codex' : 'claude';
+}
+
+export interface ProviderUsage { tokens: number; cost: number }
+export interface AgentModelUsage { agent: string; claude: ProviderUsage; codex: ProviderUsage }
+export interface ModelUsageBreakdown {
+  byAgent: AgentModelUsage[];
+  fleet: { claude: ProviderUsage; codex: ProviderUsage };
+}
+
+/**
+ * Claude-vs-Codex usage split, per agent and fleet-wide (tokens + cost),
+ * derived from cost_entries.model. Optionally scoped to the last `days`.
+ */
+export function getModelUsageByAgent(days?: number): ModelUsageBreakdown {
+  const empty: ModelUsageBreakdown = { byAgent: [], fleet: { claude: { tokens: 0, cost: 0 }, codex: { tokens: 0, cost: 0 } } };
+  try {
+    const where = days ? `WHERE timestamp >= DATE('now', ?)` : '';
+    const stmt = db.prepare(
+      `SELECT agent, model, SUM(total_tokens) as tokens, SUM(cost_usd) as cost
+       FROM cost_entries
+       ${where}
+       GROUP BY agent, model`,
+    );
+    const rows = (days ? stmt.all(`-${days} days`) : stmt.all()) as Array<{
+      agent: string; model: string; tokens: number; cost: number;
+    }>;
+
+    const byAgentMap = new Map<string, AgentModelUsage>();
+    const fleet = { claude: { tokens: 0, cost: 0 }, codex: { tokens: 0, cost: 0 } };
+    for (const r of rows) {
+      const provider = modelProvider(r.model);
+      if (!byAgentMap.has(r.agent)) {
+        byAgentMap.set(r.agent, { agent: r.agent, claude: { tokens: 0, cost: 0 }, codex: { tokens: 0, cost: 0 } });
+      }
+      const a = byAgentMap.get(r.agent)!;
+      a[provider].tokens += r.tokens || 0;
+      a[provider].cost += r.cost || 0;
+      fleet[provider].tokens += r.tokens || 0;
+      fleet[provider].cost += r.cost || 0;
+    }
+    const byAgent = Array.from(byAgentMap.values())
+      .sort((x, y) => (y.claude.tokens + y.codex.tokens) - (x.claude.tokens + x.codex.tokens));
+    return { byAgent, fleet };
+  } catch {
+    return empty;
+  }
+}
+
+/**
  * Get daily cost breakdown by model for stacked bar chart.
  */
 export function getDailyCostByModel(

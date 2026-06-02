@@ -10,12 +10,14 @@ process.env.CTX_FRAMEWORK_ROOT = tmpDir;
 let calculateCost: typeof import('../cost-parser')['calculateCost'];
 let scanCodexLogsCosts: typeof import('../cost-parser')['scanCodexLogsCosts'];
 let parseAgentProjectDir: typeof import('../cost-parser')['parseAgentProjectDir'];
+let modelProvider: typeof import('../cost-parser')['modelProvider'];
 
 beforeAll(async () => {
   const mod = await import('../cost-parser');
   calculateCost = mod.calculateCost;
   scanCodexLogsCosts = mod.scanCodexLogsCosts;
   parseAgentProjectDir = mod.parseAgentProjectDir;
+  modelProvider = mod.modelProvider;
 
   // Set up enabled-agents.json so getAllAgents() returns a known fixture
   const cfgDir = path.join(tmpDir, 'config');
@@ -245,5 +247,22 @@ describe('parseAgentProjectDir (encoded ~/.claude/projects dir → org+agent)', 
   it('skips an empty agent segment', () => {
     const r = parseAgentProjectDir('-x-orgs-acme-agents');
     expect('skipReason' in r).toBe(true);
+  });
+});
+
+describe('modelProvider (Claude vs Codex classification)', () => {
+  it('classifies Codex models', () => {
+    expect(modelProvider('gpt-5-codex')).toBe('codex');
+    expect(modelProvider('gpt-5-codex-preview')).toBe('codex');
+    expect(modelProvider('gpt-5')).toBe('codex');
+  });
+  it('classifies Claude models', () => {
+    expect(modelProvider('claude-3-opus-20240229')).toBe('claude');
+    expect(modelProvider('claude-sonnet-4-6')).toBe('claude');
+    expect(modelProvider('claude-3-5-haiku')).toBe('claude');
+  });
+  it('defaults unknown/empty to claude', () => {
+    expect(modelProvider('')).toBe('claude');
+    expect(modelProvider('something-else')).toBe('claude');
   });
 });

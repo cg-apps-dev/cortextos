@@ -6,12 +6,14 @@ import {
   getDailyCostByModel,
   getCurrentMonthCost,
   getCostByAgent,
+  getModelUsageByAgent,
 } from '@/lib/cost-parser';
 import { syncCostsLazy } from '@/lib/sync';
 
 import { TaskThroughput } from '@/components/analytics/task-throughput';
 import { AgentEffectiveness } from '@/components/analytics/agent-effectiveness';
 import { CostTracking } from '@/components/analytics/cost-tracking';
+import { ModelComparison } from '@/components/analytics/model-comparison';
 import { GoalProgress } from '@/components/analytics/goal-progress';
 import { FleetHealth } from '@/components/analytics/fleet-health';
 import { getFleetHealth, getLatestSnapshot, getPlanUsage, getUsageHistory } from '@/lib/data/reports';
@@ -30,7 +32,7 @@ export default async function AnalyticsPage({
   syncCostsLazy();
 
   // Fetch all data in parallel
-  const [taskData, agentStats, dailyCosts, dailyCostByModel, monthCost, costByAgent, goalsData, fleetHealth, planUsage, usageHistory] =
+  const [taskData, agentStats, dailyCosts, dailyCostByModel, monthCost, costByAgent, modelUsage, goalsData, fleetHealth, planUsage, usageHistory] =
     await Promise.all([
       Promise.resolve(getTaskThroughput(30, org || undefined)),
       Promise.resolve(getAgentEffectiveness(org || undefined)),
@@ -38,6 +40,7 @@ export default async function AnalyticsPage({
       Promise.resolve(getDailyCostByModel(30)),
       Promise.resolve(getCurrentMonthCost()),
       Promise.resolve(getCostByAgent(7)),
+      Promise.resolve(getModelUsageByAgent(7)),
       Promise.resolve(org ? getGoals(org) : { bottleneck: '', goals: [] }),
       Promise.resolve(getFleetHealth(org || 'default')),
       Promise.resolve(getPlanUsage()),
@@ -81,6 +84,9 @@ export default async function AnalyticsPage({
         usageHistory={usageHistory}
         costByAgent={costByAgent}
       />
+
+      {/* Claude vs Codex usage comparison */}
+      <ModelComparison data={modelUsage} />
 
       {/* Goal Progress - only show when specific org selected */}
       {org && <GoalProgress goals={goalsData.goals} />}
