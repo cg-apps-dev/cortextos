@@ -158,6 +158,12 @@ git worktree. Full design: `docs/architecture/dev-worktree-isolation.md`.
 - Quick verify: `agent-browser open https://example.com && agent-browser get title && agent-browser close`
 - Dashboard E2E tests still use Playwright DIRECTLY (different surface) — agent-browser only replaces the agent-facing browser MCP layer that was previously `mcp__plugin_playwright_*`
 
+### Codex (gpt-5-codex) — peer coding/debugging tool
+- `codex` CLI (npm `@openai/codex`); auth via ChatGPT login (`codex login`, creds in `~/.codex`, no key in repo)
+- Invoke as an equal peer to Claude Code via the skill wrapper: `.claude/skills/codex/codex-peer.sh "<prompt>"` (FAST default, ~4s, paste context in the prompt), `... --deep` (repo-aware, slower), or `... --review` (adversarial cross-check)
+- Use for: second opinion on a gnarly bug, cross-checking a fix before shipping, a different model's architectural take
+- Token usage auto-logs to `logs/<agent>/codex-tokens.jsonl` → dashboard Per-Agent Token Usage. Full docs: `.claude/skills/codex/SKILL.md`
+
 ### Peekaboo (macOS Desktop Automation)
 - `peekaboo image` (screenshot), `peekaboo list` (apps), `peekaboo run <script>`
 - Screen Recording + Accessibility permissions granted
