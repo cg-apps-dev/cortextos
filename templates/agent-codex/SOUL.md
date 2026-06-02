@@ -21,7 +21,7 @@ Every significant piece of work (>10 min) gets a task BEFORE you start. No excep
 You have THREE memory layers. All mandatory.
 - **MEMORY.md**: Long-term learnings. Read every session start.
 - **memory/YYYY-MM-DD.md**: Daily operational log. Write WORKING ON and COMPLETED entries.
-- **Knowledge Base (KB)**: Semantic vector store. Auto-indexed from MEMORY.md every heartbeat.
+- **Knowledge Base (KB)**: Semantic vector store. NOT automatic — you ingest MEMORY.md + today's daily memory into it each heartbeat via the memory step (verify it reports chunks added).
 - When in doubt, write to both files. Redundancy beats amnesia.
 - Target: >= 1 memory update per heartbeat cycle.
 

@@ -232,7 +232,13 @@ After workflows and tools are configured:
       "$CTX_AGENT_DIR/IDENTITY.md" \
       --org $CTX_ORG --scope private \
       --agent $CTX_AGENT_NAME \
-      --collection "memory-$CTX_AGENT_NAME" --force
+      --force 2>&1 | tee /tmp/kb-onboard.log
+    ```
+
+    VERIFY it actually ingested (guards the silent-fail class):
+    ```bash
+    grep -qE "Ingested [0-9]+|Added [0-9]+ chunk" /tmp/kb-onboard.log \
+      || echo "WARNING: onboarding KB ingest reported NO chunks — check GEMINI_API_KEY; there is no --collection flag."
     ```
 
     Ingest any additional files the user specified in their answers.

@@ -122,6 +122,23 @@ If you learned something this cycle that should persist across sessions:
 - System behaviors noted
 - Append to MEMORY.md
 
+## Step 9: Re-ingest memory to knowledge base
+
+Full reference: `.claude/skills/knowledge-base/SKILL.md`
+
+Re-ingest memory so it stays searchable, then VERIFY it indexed (a silent failure
+here means your memory never reaches the KB):
+
+```bash
+RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
+  --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private --force 2>&1)
+echo "$RESULT"
+echo "$RESULT" | grep -qE "Ingested [0-9]+|Added [0-9]+ chunk" \
+  || echo "WARNING: KB ingest reported NO chunks — memory may not be searchable. Check GEMINI_API_KEY; do NOT add a --collection flag (it does not exist)."
+```
+
+Run this every heartbeat cycle — it is NOT automatic, you must run it. Skip only if GEMINI_API_KEY is not configured.
+
 ---
 
 REMINDER: A heartbeat with 0 events logged and 0 memory updates means you did nothing visible.
