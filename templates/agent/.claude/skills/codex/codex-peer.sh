@@ -39,7 +39,8 @@ CODEX_DEEP_TIMEOUT="${CODEX_DEEP_TIMEOUT:-240}"
 EVENTS="$(mktemp -t codex-events.XXXXXX)"
 LAST="$(mktemp -t codex-last.XXXXXX)"
 FAST_CWD=""
-cleanup() { rm -f "$EVENTS" "$LAST"; [[ -n "$FAST_CWD" ]] && rm -rf "$FAST_CWD"; }
+TO_FLAG=""   # watchdog timeout-marker temp (set in run_with_timeout); trapped as a backstop
+cleanup() { rm -f "$EVENTS" "$LAST" ${TO_FLAG:+"$TO_FLAG"}; [[ -n "$FAST_CWD" ]] && rm -rf "$FAST_CWD"; }
 trap cleanup EXIT
 
 # Run a command with a hard timeout. macOS ships no `timeout`/`gtimeout`, so this
@@ -49,7 +50,8 @@ trap cleanup EXIT
 # caller (so the usual `> "$EVENTS"` redirect on the call still works).
 run_with_timeout() {
   local secs="$1"; shift
-  local flag; flag="$(mktemp -t codex-timeout.XXXXXX)"
+  TO_FLAG="$(mktemp -t codex-timeout.XXXXXX)"   # trapped in cleanup() as a backstop
+  local flag="$TO_FLAG"
   "$@" &
   local cmd_pid=$!
   (
@@ -67,7 +69,7 @@ run_with_timeout() {
   kill "$watch_pid" 2>/dev/null || true
   wait "$watch_pid" 2>/dev/null || true
   [[ -s "$flag" ]] && rc=124
-  rm -f "$flag"
+  rm -f "$flag"; TO_FLAG=""
   return "$rc"
 }
 
