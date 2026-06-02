@@ -66,8 +66,13 @@ MEMORY
 ## Step 6: Re-index memory to KB
 
 ```bash
-cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
-  --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private --collection memory-$CTX_AGENT_NAME --force
+# Re-ingest memory, then VERIFY it actually indexed. A silent failure here
+# (e.g. a bad flag, or no GEMINI_API_KEY) means your memory never reaches the KB.
+RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
+  --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private --force 2>&1)
+echo "$RESULT"
+echo "$RESULT" | grep -qE "Ingested [0-9]+|Added [0-9]+ chunk" \
+  || echo "WARNING: KB ingest reported NO chunks — memory may not be searchable. Check GEMINI_API_KEY; do NOT add a --collection flag (it does not exist)."
 ```
 
 ## Step 7: Check GOALS.md
