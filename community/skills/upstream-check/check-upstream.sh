@@ -87,7 +87,7 @@ git rev-list --reverse "main..$UREF" | while read -r sha; do
   echo "COMMIT|$short|$flag|$subj|$ov"
   echo "$flag" >> "$TALLY"
 done
-echo "OVERLAP_COMMITS=$(grep -c 'MINE-VS-THEIRS' "$TALLY" 2>/dev/null || echo 0)"
-echo "AREA_COMMITS=$(grep -c 'AREA-OVERLAP' "$TALLY" 2>/dev/null || echo 0)"
-echo "SAFE_COMMITS=$(grep -c 'safe-pull' "$TALLY" 2>/dev/null || echo 0)"
+echo "OVERLAP_COMMITS=$(grep -c 'MINE-VS-THEIRS' "$TALLY" 2>/dev/null || true)"
+echo "AREA_COMMITS=$(grep -c 'AREA-OVERLAP' "$TALLY" 2>/dev/null || true)"
+echo "SAFE_COMMITS=$(grep -c 'safe-pull' "$TALLY" 2>/dev/null || true)"
 rm -f "$TALLY"

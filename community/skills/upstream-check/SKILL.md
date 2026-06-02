@@ -52,8 +52,13 @@ It also emits totals: `OVERLAP_COMMITS`, `AREA_COMMITS`, `SAFE_COMMITS`.
 
 ## The notify summary (what the agent sends the orchestrator)
 
-When `>0`, send a concise summary:
-1. **Headline:** `N new upstream commits — X mine-vs-theirs, Y area-overlap, Z safe-pull.`
+When `>0`, send a concise summary. **Lead with a TRIAGE signal** so Adam knows at
+a glance whether he must engage — keep the daily ping low-friction:
+1. **Headline (triage-first):**
+   - If any mine-vs-theirs/area-overlap → frame as a **decision**:
+     `N new upstream commits: X need your decision (mine-vs-theirs), Y to review (area), Z safe to pull (FYI).`
+   - If ALL safe-pull → frame as **FYI**, not a decision:
+     `N new upstream commits — all clean (no overlap with our customizations). Want me to have the dev pull them?`
 2. **One line per commit:** sha · subject · flag (· overlapping paths for the flagged ones).
 3. **Per parallel-feature SPECIFICS** (the core value — be concrete, not generic):
    for each overlap, say **what each side actually implements** so Adam can choose
