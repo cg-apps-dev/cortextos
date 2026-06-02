@@ -68,6 +68,12 @@ If a call returns no answer, auth is the first thing to check.
   lets Codex scan the repo, which on the full cortextOS tree can take a minute+ —
   so reach for `--deep` only when the prompt genuinely needs the codebase;
   otherwise paste the relevant snippet and stay fast.
+- **Fail-fast timeout:** codex occasionally stalls (network/auth). The wrapper has
+  a hard watchdog — fast/`--review` are killed after **90s**, `--deep` after
+  **240s** — so a stall can never hang you (or a background slot). On a timeout it
+  prints a clear message and exits; just retry. Override with `CODEX_TIMEOUT` /
+  `CODEX_DEEP_TIMEOUT` (seconds) if a call legitimately needs longer. Any token
+  usage produced before a kill is still logged.
 - Read-only by design: for safety, Codex never writes files here — it advises,
   I implement (and own) the change in my normal Claude flow.
 - Keep prompts self-contained (paste the relevant code/error); Codex starts
