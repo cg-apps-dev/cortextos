@@ -29,40 +29,92 @@ REPO="${CTX_FRAMEWORK_ROOT:-$(pwd)}"
 CTX_ROOT="${CTX_ROOT:?CTX_ROOT not set}"
 AGENT="${CTX_AGENT_NAME:?CTX_AGENT_NAME not set}"
 
+# Hard fail-fast timeout (seconds). codex occasionally stalls (network/auth/login)
+# and would otherwise hang the caller — and a stalled background call holds a slot
+# indefinitely. Override with CODEX_TIMEOUT=<secs>; --deep gets a longer ceiling
+# (CODEX_DEEP_TIMEOUT) since repo scans legitimately take longer.
+CODEX_TIMEOUT="${CODEX_TIMEOUT:-90}"
+CODEX_DEEP_TIMEOUT="${CODEX_DEEP_TIMEOUT:-240}"
+
 EVENTS="$(mktemp -t codex-events.XXXXXX)"
 LAST="$(mktemp -t codex-last.XXXXXX)"
 FAST_CWD=""
-cleanup() { rm -f "$EVENTS" "$LAST"; [[ -n "$FAST_CWD" ]] && rm -rf "$FAST_CWD"; }
+TO_FLAG=""   # watchdog timeout-marker temp (set in run_with_timeout); trapped as a backstop
+cleanup() { rm -f "$EVENTS" "$LAST" ${TO_FLAG:+"$TO_FLAG"}; [[ -n "$FAST_CWD" ]] && rm -rf "$FAST_CWD"; }
 trap cleanup EXIT
+
+# Run a command with a hard timeout. macOS ships no `timeout`/`gtimeout`, so this
+# is a bash-native watchdog: run the command in the background and, if it overruns,
+# kill it (TERM, then KILL after a 2s grace). Returns 124 on timeout, else the
+# command's own exit code. The command's stdout/stderr are inherited from the
+# caller (so the usual `> "$EVENTS"` redirect on the call still works).
+run_with_timeout() {
+  local secs="$1"; shift
+  TO_FLAG="$(mktemp -t codex-timeout.XXXXXX)"   # trapped in cleanup() as a backstop
+  local flag="$TO_FLAG"
+  "$@" &
+  local cmd_pid=$!
+  (
+    sleep "$secs"
+    if kill -0 "$cmd_pid" 2>/dev/null; then
+      printf timed_out > "$flag"
+      kill -TERM "$cmd_pid" 2>/dev/null
+      sleep 2
+      kill -KILL "$cmd_pid" 2>/dev/null
+    fi
+  ) &
+  local watch_pid=$!
+  local rc=0
+  wait "$cmd_pid" 2>/dev/null || rc=$?
+  kill "$watch_pid" 2>/dev/null || true
+  wait "$watch_pid" 2>/dev/null || true
+  [[ -s "$flag" ]] && rc=124
+  rm -f "$flag"; TO_FLAG=""
+  return "$rc"
+}
 
 # --json emits JSONL events (incl. token usage); --output-last-message captures
 # the final answer cleanly. Read-only sandbox = advisory, never writes files.
+# Build the argv + per-mode timeout, then run under the watchdog so a stall can't
+# hang the caller.
 case "$MODE" in
   --deep)
-    # Repo-aware: let Codex read the codebase (slower).
-    codex exec --json --skip-git-repo-check -s read-only -C "$REPO" \
-      --output-last-message "$LAST" "$PROMPT" > "$EVENTS" 2>/dev/null || true
+    # Repo-aware: let Codex read the codebase (slower → longer ceiling).
+    TIMEOUT_SECS="$CODEX_DEEP_TIMEOUT"
+    CODEX_ARGV=(exec --json --skip-git-repo-check -s read-only -C "$REPO" \
+      --output-last-message "$LAST" "$PROMPT")
     ;;
   --review)
     # Review MY working changes (staged/unstaged/untracked) with custom instructions.
-    codex exec review --uncommitted --json --skip-git-repo-check -C "$REPO" \
-      --output-last-message "$LAST" "$PROMPT" > "$EVENTS" 2>/dev/null || true
+    TIMEOUT_SECS="$CODEX_TIMEOUT"
+    CODEX_ARGV=(exec review --uncommitted --json --skip-git-repo-check -C "$REPO" \
+      --output-last-message "$LAST" "$PROMPT")
     ;;
   *)
     # FAST default: empty scratch cwd so there is no repo to scan. The prompt
     # carries the context (paste code/errors). Seconds, not minutes.
+    TIMEOUT_SECS="$CODEX_TIMEOUT"
     FAST_CWD="$(mktemp -d -t codex-cwd.XXXXXX)"
-    codex exec --json --skip-git-repo-check -s read-only -C "$FAST_CWD" \
-      --output-last-message "$LAST" "$PROMPT" > "$EVENTS" 2>/dev/null || true
+    CODEX_ARGV=(exec --json --skip-git-repo-check -s read-only -C "$FAST_CWD" \
+      --output-last-message "$LAST" "$PROMPT")
     ;;
 esac
 
+CODEX_RC=0
+run_with_timeout "$TIMEOUT_SECS" codex "${CODEX_ARGV[@]}" > "$EVENTS" 2>/dev/null || CODEX_RC=$?
+
 # Print Codex's answer (the whole point of the call).
+if [[ "$CODEX_RC" == "124" ]]; then
+  echo "(codex timed out after ${TIMEOUT_SECS}s and was terminated — a stall no longer hangs the caller. Retry, or reserve --deep for when a repo scan is genuinely needed. Raise CODEX_TIMEOUT/CODEX_DEEP_TIMEOUT if your call legitimately needs longer.)" >&2
+fi
 if [[ -s "$LAST" ]]; then
   cat "$LAST"
-else
+elif [[ "$CODEX_RC" != "124" ]]; then
   echo "(codex returned no final message — check 'codex doctor' / login)" >&2
 fi
+
+# Token usage is logged below REGARDLESS of timeout — if the call produced any
+# usage events before being killed, they're still captured (usage isn't lost).
 
 # Log token usage to codex-tokens.jsonl (exact codex-app-server schema).
 LOG_DIR="$CTX_ROOT/logs/$AGENT"
