@@ -356,11 +356,21 @@ export function checkUpstream(
     return { status: 'up_to_date', message: 'No upstream changes available' };
   }
 
-  // Count changes
+  // Count changes — the BEHIND count (commits in upstream/main not in local HEAD).
   let commitCount = 0;
   try {
     commitCount = parseInt(execSync('git rev-list HEAD..upstream/main --count', { ...execOpts, stdio: 'pipe' }).trim(), 10);
   } catch { /* default 0 */ }
+
+  // Gate status on the BEHIND count, NOT on diff existence. When behind==0 the local
+  // branch is up to date or AHEAD-only (e.g. a parked fork that is N commits ahead /
+  // 0 behind): there is NOTHING to pull, and `git diff HEAD..upstream/main` would be a
+  // destructive REVERT of local commits. Never report updates_available and never emit
+  // a diff in that case. (localHead !== upstreamHead alone is NOT enough — that is also
+  // true when local is purely ahead.)
+  if (!Number.isFinite(commitCount) || commitCount <= 0) {
+    return { status: 'up_to_date', message: 'No upstream commits to pull (local is up to date or ahead of upstream).' };
+  }
 
   let diffStat = '';
   try {
