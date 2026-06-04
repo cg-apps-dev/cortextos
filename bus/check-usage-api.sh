@@ -287,7 +287,7 @@ if [[ -n "$CHAT_ID" ]]; then
     SEND_MSG="CODE RED: Claude Max 7-day usage at ${SEVEN_D}%. Resets: ${SEVEN_D_RESET}. Agents will hit hard limit soon. Action needed: reduce agent frequency or pause non-critical crons."
     # Use send-telegram if available
     if [[ -f "$SCRIPT_DIR/send-telegram.sh" ]]; then
-      bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" 2>/dev/null || true
+      bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
     fi
     ALERT_SENT=true
     echo "$SEND_MSG" >&2
@@ -297,7 +297,7 @@ if [[ -n "$CHAT_ID" ]]; then
   if python3 -c "import sys; v=float('${FIVE_H}'); sys.exit(0 if v >= ${WARN_5H} else 1)" 2>/dev/null; then
     SEND_MSG="Warning: Claude Max 5-hour window at ${FIVE_H}%. Resets: ${FIVE_H_RESET}."
     if [[ -f "$SCRIPT_DIR/send-telegram.sh" ]]; then
-      bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" 2>/dev/null || true
+      bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
     fi
     echo "$SEND_MSG" >&2
   fi
@@ -316,7 +316,7 @@ except: print(9999)
   if python3 -c "import sys; sys.exit(0 if float('${CODEX_EXPIRES}') < 24 else 1)" 2>/dev/null; then
     SEND_MSG="Warning: Codex OAuth token expires in ${CODEX_EXPIRES}h. Run Codex and re-authenticate."
     if [[ -f "$SCRIPT_DIR/send-telegram.sh" ]]; then
-      bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" 2>/dev/null || true
+      bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
     fi
     echo "$SEND_MSG" >&2
   fi
@@ -330,13 +330,13 @@ except: print(9999)
 
     if [[ "$CODEX_LIMIT" == "True" ]]; then
       SEND_MSG="CODE RED: Codex rate limit reached. Sessions blocked until window resets."
-      [[ -f "$SCRIPT_DIR/send-telegram.sh" ]] && bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" 2>/dev/null || true
+      [[ -f "$SCRIPT_DIR/send-telegram.sh" ]] && bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
     elif python3 -c "import sys; v=float('${CODEX_7D}'); sys.exit(0 if v >= ${WARN_7DAY} else 1)" 2>/dev/null; then
       SEND_MSG="Warning: Codex 7-day usage at ${CODEX_7D}%."
-      [[ -f "$SCRIPT_DIR/send-telegram.sh" ]] && bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" 2>/dev/null || true
+      [[ -f "$SCRIPT_DIR/send-telegram.sh" ]] && bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
     elif python3 -c "import sys; v=float('${CODEX_5H}'); sys.exit(0 if v >= ${WARN_5H} else 1)" 2>/dev/null; then
       SEND_MSG="Warning: Codex 5-hour window at ${CODEX_5H}%."
-      [[ -f "$SCRIPT_DIR/send-telegram.sh" ]] && bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" 2>/dev/null || true
+      [[ -f "$SCRIPT_DIR/send-telegram.sh" ]] && bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
     fi
   fi
 fi
