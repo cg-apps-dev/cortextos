@@ -96,15 +96,26 @@ export default function MyTasksPage() {
 
     const pendingParams = new URLSearchParams(base);
     pendingParams.set('status', 'pending');
+    // Blocked human tasks are still action items that need attention — fetch them too.
+    // (Bug fix: previously only pending+completed were fetched, so status=blocked
+    // human-tasks were dropped by the status filter and never rendered here.)
+    const blockedParams = new URLSearchParams(base);
+    blockedParams.set('status', 'blocked');
     const completedParams = new URLSearchParams(base);
     completedParams.set('status', 'completed');
 
     try {
-      const [pRes, cRes] = await Promise.all([
+      const [pRes, bRes, cRes] = await Promise.all([
         fetch(`/api/tasks?${pendingParams.toString()}`),
+        fetch(`/api/tasks?${blockedParams.toString()}`),
         fetch(`/api/tasks?${completedParams.toString()}`),
       ]);
-      if (pRes.ok) setPending(await pRes.json());
+      if (pRes.ok || bRes.ok) {
+        const active: Task[] = [];
+        if (pRes.ok) active.push(...((await pRes.json()) as Task[]));
+        if (bRes.ok) active.push(...((await bRes.json()) as Task[]));
+        setPending(active);
+      }
       if (cRes.ok) {
         const data: Task[] = await cRes.json();
         const dayStart = new Date();
