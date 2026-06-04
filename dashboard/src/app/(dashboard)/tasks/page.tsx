@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useOrg } from '@/hooks/use-org';
 import { Button } from '@/components/ui/button';
 import { IconLayoutKanban, IconList, IconChecklist } from '@tabler/icons-react';
@@ -21,15 +22,31 @@ const DEFAULT_FILTERS = {
   status: 'all',
 };
 
+const VALID_STATUSES = ['pending', 'in_progress', 'blocked', 'completed'];
+
 export default function TasksPage() {
   const { currentOrg } = useOrg();
+  const searchParams = useSearchParams();
 
+  // Seed filters from URL params so deep links from the overview
+  // (e.g. the blocked-count card → /tasks?status=blocked, or
+  // action-required → /tasks?agent=X) actually apply the filter. Without
+  // this the link lands on the default 'all' view and the targeted tasks
+  // are lost in the List view.
   const [view, setView] = useState<ViewMode>('kanban');
   const [tasks, setTasks] = useState<Task[]>([]);
   const [completedToday, setCompletedToday] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [filters, setFilters] = useState(DEFAULT_FILTERS);
+  const [filters, setFilters] = useState(() => {
+    const status = searchParams.get('status');
+    const agent = searchParams.get('agent');
+    return {
+      ...DEFAULT_FILTERS,
+      ...(status && VALID_STATUSES.includes(status) ? { status } : {}),
+      ...(agent ? { agent } : {}),
+    };
+  });
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
 
