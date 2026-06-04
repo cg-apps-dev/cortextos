@@ -68,6 +68,13 @@ export interface Task {
    */
   blocks?: string[];
   blocked_by?: string[];
+  /**
+   * Set at create-time when classifyHumanAsk detects an unambiguous
+   * human-directed ask (credential, login, approval, "remind me"). Mirrors the
+   * optional dependency edges above — absent on existing/agent tasks. Drives
+   * dashboard surfacing alongside the `project=human-tasks` tag.
+   */
+  blocked_on_human?: boolean;
 }
 
 // Event Types

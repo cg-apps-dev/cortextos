@@ -4,6 +4,7 @@ import type { Task, Priority, TaskStatus, BusPaths, StaleTaskReport, ArchiveRepo
 import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
 import { randomDigits } from '../utils/random.js';
 import { validatePriority } from '../utils/validate.js';
+import { classifyHumanAsk } from '../utils/classify-human-ask.js';
 import { logEvent } from './event.js';
 
 /**
@@ -23,6 +24,7 @@ export function createTask(
     dueDate?: string;
     blockedBy?: string[];
     blocks?: string[];
+    autoClassify?: boolean;
   } = {},
 ): string {
   const {
@@ -34,9 +36,26 @@ export function createTask(
     dueDate = '',
     blockedBy = [],
     blocks = [],
+    autoClassify = true,
   } = options;
 
   validatePriority(priority);
+
+  // Create-side auto-classify: if this is an unambiguous human-directed ask and
+  // no explicit project was given, route it to `human-tasks` so it surfaces on
+  // the dashboard action-items list. High-precision only (see classifyHumanAsk);
+  // never overrides a caller-supplied project. Disable with autoClassify:false.
+  let effectiveProject = project;
+  let blockedOnHuman = false;
+  let classifiedSignal: string | undefined;
+  if (autoClassify && project === '') {
+    const match = classifyHumanAsk(title, description);
+    if (match.matched) {
+      effectiveProject = 'human-tasks';
+      blockedOnHuman = true;
+      classifiedSignal = match.signal;
+    }
+  }
 
   const epoch = Date.now();
   // 8 digits: same-millisecond collision probability is ~1e-8 instead of ~1e-3.
@@ -71,7 +90,7 @@ export function createTask(
     created_by: agentName,
     org,
     priority,
-    project,
+    project: effectiveProject,
     kpi_key: null,
     created_at: now,
     updated_at: now,
@@ -80,6 +99,7 @@ export function createTask(
     archived: false,
     ...(blockedBy.length ? { blocked_by: [...blockedBy] } : {}),
     ...(blocks.length ? { blocks: [...blocks] } : {}),
+    ...(blockedOnHuman ? { blocked_on_human: true } : {}),
   };
 
   ensureDir(paths.taskDir);
@@ -91,6 +111,14 @@ export function createTask(
   for (const downId of blocks) addSymmetricEdge(paths, downId, 'blocked_by', taskId);
 
   appendTaskAudit(paths, taskId, { event: 'create', agent: agentName, to: 'pending', note: title });
+
+  if (classifiedSignal) {
+    logEvent(paths, agentName, org, 'action', 'task_auto_classified', 'info', {
+      task_id: taskId,
+      matched_signal: classifiedSignal,
+      project: effectiveProject,
+    });
+  }
 
   return taskId;
 }
