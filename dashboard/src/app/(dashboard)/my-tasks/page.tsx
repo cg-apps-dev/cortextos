@@ -11,8 +11,13 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconRefresh,
+  IconAlertTriangle,
 } from '@tabler/icons-react';
 import type { Task } from '@/lib/types';
+
+// A detective-lane candidate: a task that MIGHT need a human (matched broad
+// signals) but wasn't auto-routed. The human Promotes or Dismisses it.
+type Candidate = Task & { signals: string[] };
 
 // Adam's personal action list. Surfaces every task that needs a human —
 // [HUMAN] tasks, decisions awaiting sign-off, and action-reminders — as a
@@ -79,6 +84,9 @@ export default function MyTasksPage() {
   const [checking, setChecking] = useState<Set<string>>(new Set());
   const [showDone, setShowDone] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [candTruncated, setCandTruncated] = useState(false);
+  const [candBusy, setCandBusy] = useState<Set<string>>(new Set());
 
   function toggleExpand(id: string) {
     setExpanded((s) => {
@@ -131,11 +139,67 @@ export default function MyTasksPage() {
     }
   }, [currentOrg]);
 
+  const fetchCandidates = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (currentOrg && currentOrg !== 'all') params.set('org', currentOrg);
+    try {
+      const res = await fetch(`/api/tasks/human-blocked-candidates?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        setCandidates(Array.isArray(data.candidates) ? data.candidates : []);
+        setCandTruncated(Boolean(data.truncated));
+      }
+    } catch {
+      /* leave existing state on transient failure */
+    }
+  }, [currentOrg]);
+
   useEffect(() => {
     fetchItems();
-    const id = setInterval(fetchItems, 20000); // keep the list live as agents add items
+    fetchCandidates();
+    const id = setInterval(() => { fetchItems(); fetchCandidates(); }, 20000); // keep lists live as agents add items
     return () => clearInterval(id);
-  }, [fetchItems]);
+  }, [fetchItems, fetchCandidates]);
+
+  // Promote a candidate to a real human task (project=human-tasks). It then
+  // appears in My Action Items above and drops out of the review lane.
+  async function promote(task: Candidate) {
+    if (candBusy.has(task.id)) return;
+    setCandBusy((s) => new Set(s).add(task.id));
+    setCandidates((c) => c.filter((t) => t.id !== task.id)); // optimistic
+    try {
+      const res = await fetch(`/api/tasks/${task.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'human-tasks' }),
+      });
+      if (!res.ok) throw new Error('failed');
+      fetchItems();
+    } catch {
+      setCandidates((c) => [task, ...c]); // rollback
+    } finally {
+      setCandBusy((s) => { const n = new Set(s); n.delete(task.id); return n; });
+    }
+  }
+
+  // Dismiss a candidate — persisted to the suppress-list so it won't resurface.
+  async function dismiss(task: Candidate) {
+    if (candBusy.has(task.id)) return;
+    setCandBusy((s) => new Set(s).add(task.id));
+    setCandidates((c) => c.filter((t) => t.id !== task.id)); // optimistic
+    try {
+      const res = await fetch('/api/tasks/human-blocked-candidates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: task.id, action: 'dismiss' }),
+      });
+      if (!res.ok) throw new Error('failed');
+    } catch {
+      setCandidates((c) => [task, ...c]); // rollback
+    } finally {
+      setCandBusy((s) => { const n = new Set(s); n.delete(task.id); return n; });
+    }
+  }
 
   async function complete(task: Task) {
     if (checking.has(task.id)) return;
@@ -256,6 +320,55 @@ export default function MyTasksPage() {
             );
           })}
         </ul>
+      )}
+
+      {candidates.length > 0 && (
+        <div className="mt-8">
+          <div className="mb-1 flex items-center gap-2 text-sm font-medium text-muted-foreground">
+            <IconAlertTriangle size={16} className="text-amber-400" />
+            Possible human-blocked — review ({candidates.length}{candTruncated ? '+' : ''})
+          </div>
+          <p className="mb-3 text-xs text-muted-foreground">
+            These agent tasks look like they might need you. Promote the real ones to your action items, or dismiss the rest.
+          </p>
+          <ul className="space-y-2">
+            {candidates.map((task) => {
+              const busy = candBusy.has(task.id);
+              const desc = task.description || '';
+              return (
+                <li key={task.id} className="rounded-lg border border-dashed border-border/70 bg-muted/20 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium leading-snug">{cleanTitle(task.title)}</span>
+                        {task.signals?.map((s) => (
+                          <Badge key={s} variant="outline" className="border-amber-500/25 bg-amber-500/10 text-[10px] text-amber-400/90">{s}</Badge>
+                        ))}
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {task.assignee ? `${task.assignee} · ` : ''}open {relativeAge(task.created_at)}
+                      </p>
+                      {desc && (
+                        <p className="mt-1 text-xs text-muted-foreground/80">
+                          {desc.length > 140 ? `${desc.slice(0, 140)}…` : desc}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 gap-1.5">
+                      <Button variant="outline" size="xs" disabled={busy} onClick={() => promote(task)}>Promote</Button>
+                      <Button variant="ghost" size="xs" disabled={busy} onClick={() => dismiss(task)}>Dismiss</Button>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          {candTruncated && (
+            <p className="mt-2 text-xs text-muted-foreground/70">
+              Showing the first {candidates.length}. Promote or dismiss to surface more.
+            </p>
+          )}
+        </div>
       )}
 
       {doneToday.length > 0 && (

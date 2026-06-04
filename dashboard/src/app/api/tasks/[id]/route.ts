@@ -134,11 +134,12 @@ export async function PUT(
     return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { title, description, assignee, priority } = body as {
+  const { title, description, assignee, priority, project } = body as {
     title?: string;
     description?: string;
     assignee?: string;
     priority?: string;
+    project?: string;
   };
 
   if (title !== undefined && (!title || title.trim().length === 0)) {
@@ -149,6 +150,12 @@ export async function PUT(
   }
   if (assignee !== undefined && !isValidAgentName(assignee)) {
     return Response.json({ error: 'Invalid assignee' }, { status: 400 });
+  }
+  // project is a free-form label; bound it and reject path/shell metacharacters
+  // since it is persisted to the task JSON and used in filters. Empty string is
+  // allowed (clears the project).
+  if (project !== undefined && (typeof project !== 'string' || project.length > 64 || !/^[a-zA-Z0-9 _-]*$/.test(project))) {
+    return Response.json({ error: 'Invalid project' }, { status: 400 });
   }
 
   // Read and update the task JSON file directly
@@ -169,6 +176,7 @@ export async function PUT(
     if (description !== undefined) taskData.description = description;
     if (assignee !== undefined) taskData.assigned_to = assignee;
     if (priority !== undefined) taskData.priority = priority;
+    if (project !== undefined) taskData.project = project;
     taskData.updated_at = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 
     const tmp = taskFile + '.tmp';
