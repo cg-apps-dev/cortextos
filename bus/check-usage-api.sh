@@ -282,15 +282,68 @@ if [[ -n "$CHAT_ID" ]]; then
   SEVEN_D_RESET=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('seven_day',{}).get('resets_at','unknown'))" 2>/dev/null || echo "unknown")
   FIVE_H_RESET=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('five_hour',{}).get('resets_at','unknown'))" 2>/dev/null || echo "unknown")
 
-  # 7-day critical threshold
-  if python3 -c "import sys; v=float('${SEVEN_D}'); sys.exit(0 if v >= ${WARN_7DAY} else 1)" 2>/dev/null; then
-    SEND_MSG="CODE RED: Claude Max 7-day usage at ${SEVEN_D}%. Resets: ${SEVEN_D_RESET}. Agents will hit hard limit soon. Action needed: reduce agent frequency or pause non-critical crons."
-    # Use send-telegram if available
-    if [[ -f "$SCRIPT_DIR/send-telegram.sh" ]]; then
-      bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
-    fi
-    ALERT_SENT=true
-    echo "$SEND_MSG" >&2
+  # ── 7-day + overage-pool: STATEFUL alerting (no repeat of the static 100% 7d) ──
+  # extra_usage = the overage pool that covers the 7-day window once it maxes. While
+  # overage is ENABLED we SUPPRESS the repetitive 7d CODE RED (handled state) and instead
+  # alert on what's actionable now: overage-pool band crossings (>=75 / >=90 / exhausted)
+  # + 7d STATE CHANGES (overage disabled, or pool exhausted). State persists across cron
+  # runs (monitor-alert-state.json) so we alert on a CROSSING, not on every run.
+  STATE_FILE="${CACHE_DIR}/monitor-alert-state.json"
+  ALERT_MSGS=$(RESPONSE_JSON="$RESPONSE" STATE_FILE="$STATE_FILE" WARN_7DAY="$WARN_7DAY" SEVEN_D="$SEVEN_D" SEVEN_D_RESET="$SEVEN_D_RESET" python3 <<'PY'
+import json, os
+resp = json.loads(os.environ['RESPONSE_JSON'])
+sf = os.environ['STATE_FILE']
+warn7 = float(os.environ['WARN_7DAY'])
+sevend = float(os.environ.get('SEVEN_D') or -1)
+reset = os.environ.get('SEVEN_D_RESET', 'unknown')
+xu = resp.get('extra_usage') or {}
+ov_enabled = bool(xu.get('is_enabled'))
+u = xu.get('utilization')
+ov_util = float(u) if u is not None else -1.0
+limit = int(xu.get('monthly_limit') or 0)
+try:
+    st = json.load(open(sf))
+except Exception:
+    st = {}
+prev_band = int(st.get('ov_band', 0))
+prev_7d_alerted = bool(st.get('sevend_no_overage_alerted', False))
+msgs = []
+if ov_util < prev_band - 5:          # overage pool reset to a new monthly cycle
+    prev_band = 0
+new_band = prev_band
+# overage-pool band crossings (only meaningful while overage is the active cover)
+if ov_enabled and ov_util >= 0:
+    if ov_util >= 100 and prev_band < 100:
+        msgs.append("CODE RED: Claude overage pool EXHAUSTED (%.0f%%). 7-day is maxed with no cover left - hard-stop imminent. 7d resets %s." % (ov_util, reset))
+        new_band = 100
+    elif ov_util >= 90 and prev_band < 90:
+        msgs.append("CODE RED: Claude overage pool at %.0f%% (>=90%%) of the $%s cap. Running on overage while 7-day is maxed; exhaustion = a hard-stop. Throttle agents before the %s reset." % (ov_util, format(limit, ','), reset))
+        new_band = 90
+    elif ov_util >= 75 and prev_band < 75:
+        msgs.append("Warning: Claude overage pool at %.0f%% (>=75%%) of the $%s cap (7-day maxed, running on overage). Watching it toward the %s reset." % (ov_util, format(limit, ','), reset))
+        new_band = 75
+# 7-day CODE RED: fire ONLY when maxed AND overage is OFF (a real hard-stop), once per episode
+sevend_alerted = prev_7d_alerted
+if sevend >= warn7 and not ov_enabled:
+    if not prev_7d_alerted:
+        msgs.append("CODE RED: Claude Max 7-day at %.0f%% and overage is DISABLED - agents will hard-stop. Resets: %s. Enable overage or pause non-critical crons now." % (sevend, reset))
+        sevend_alerted = True
+else:
+    sevend_alerted = False           # reset when 7d drops below threshold OR overage covers it
+try:
+    json.dump({'ov_band': new_band, 'sevend_no_overage_alerted': sevend_alerted}, open(sf, 'w'))
+except Exception:
+    pass
+print('\n'.join(m.replace(chr(10), ' ') for m in msgs))
+PY
+)
+  if [[ -n "$ALERT_MSGS" ]]; then
+    while IFS= read -r SEND_MSG; do
+      [[ -z "$SEND_MSG" ]] && continue
+      [[ -f "$SCRIPT_DIR/send-telegram.sh" ]] && bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
+      ALERT_SENT=true
+      echo "$SEND_MSG" >&2
+    done <<< "$ALERT_MSGS"
   fi
 
   # 5-hour warning threshold
