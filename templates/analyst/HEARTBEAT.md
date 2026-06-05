@@ -133,8 +133,9 @@ here means your memory never reaches the KB):
 RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
   --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private --force 2>&1)
 echo "$RESULT"
-echo "$RESULT" | grep -qE "Ingested [0-9]+|Added [0-9]+ chunk" \
-  || echo "WARNING: KB ingest reported NO chunks — memory may not be searchable. Check GEMINI_API_KEY; do NOT add a --collection flag (it does not exist)."
+if echo "$RESULT" | grep -qE "Errors: [1-9]"; then echo "WARNING: Step 9 KB ingest ERROR (likely Gemini free-tier 429 daily embed-quota, 1000/day/project — blocks KB writes fleet-wide until daily reset/plan upgrade); flag the orchestrator."
+elif echo "$RESULT" | grep -qE "Ingested [0-9]+|Added [0-9]+ chunk"; then echo "Step 9: KB ingest OK"
+else echo "WARNING: Step 9 KB ingest reported NO confirmation — memory may not be searchable. Check GEMINI_API_KEY; do NOT add a --collection flag (it does not exist)."; fi
 ```
 
 Run this every heartbeat cycle — it is NOT automatic, you must run it. Skip only if GEMINI_API_KEY is not configured.
