@@ -144,11 +144,19 @@ export function wrapFenceSafe(input: string): string {
  * Lossy, but these fields are already truncated context hints — acceptable.
  */
 export function sanitizeForPtyInjection(input: string): string {
-  return stripControlChars(input)
-    .replace(/\r\n?/g, '\n')
-    .replace(/`{3,}/g, '``')
-    .replace(
-      /^([ \t]*)(={3,}\s*(?:AGENT MESSAGE|TELEGRAM)\b|Reply using:\s*cortextos\s+bus)/gim,
-      '$1[quoted] $2',
-    );
+  // Zero-width / bidi marks+overrides+isolates / BOM. \u escapes only.
+  const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
+  // Forged daemon header / reply-using line -- tested on the NORMALIZED copy below.
+  const FORGED = /^\s*(={3,}\s*(?:AGENT MESSAGE|TELEGRAM)\b|Reply using:\s*cortextos\s+bus)/i;
+  const text = stripControlChars(input).replace(/\r\n?/g, '\n').replace(/`{3,}/g, '``');
+  return text
+    .split('\n')
+    .map((line) => {
+      // DETECTION-ONLY copy: drop invisibles + NFKC-fold compatibility look-alikes
+      // (fullwidth ===, nbsp/ideographic spaces) so the whole unicode class is caught.
+      // DISPLAYED line stays byte-exact -- only a [quoted] prefix is prepended.
+      const probe = line.replace(INVISIBLE, '').normalize('NFKC');
+      return FORGED.test(probe) ? `[quoted] ${line}` : line;
+    })
+    .join('\n');
 }
