@@ -18,6 +18,8 @@ const allowedDevOrigins = (process.env.DASHBOARD_ALLOWED_DEV_ORIGINS ?? '')
 
 const nextConfig: NextConfig = {
   serverExternalPackages: ['better-sqlite3'],
+  // F5 (pentest 2026-06-06): do not advertise the framework via X-Powered-By.
+  poweredByHeader: false,
   ...(allowedDevOrigins.length > 0 && { allowedDevOrigins }),
   async headers() {
     return [
@@ -26,6 +28,12 @@ const nextConfig: NextConfig = {
         source: '/((?!_next/static).*)',
         headers: [
           { key: 'Cache-Control', value: 'no-store, must-revalidate' },
+          // F2 (pentest 2026-06-06): baseline security headers. Low risk given
+          // Tailscale-only access, but good practice - clickjacking (frame deny),
+          // MIME-sniffing, and a restrictive feature policy.
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), browsing-topics=()' },
         ],
       },
     ];
