@@ -66,10 +66,10 @@ _codex_wham_usage() {
 
   # Get a valid access token (use existing if not expired, refresh otherwise)
   local access_token
-  access_token=$(python3 -c "
-import json, base64, time
+  access_token=$(CODEX_AUTH="$auth_file" python3 -c "
+import json, base64, time, os
 try:
-    auth = json.load(open('$auth_file'))
+    auth = json.load(open(os.environ['CODEX_AUTH']))
     token = auth.get('tokens', {}).get('access_token', '')
     seg = token.split('.')[1]
     seg += '=' * (4 - len(seg) % 4)
@@ -84,10 +84,10 @@ except:
 
   if [[ -z "$access_token" ]]; then
     local refresh_token
-    refresh_token=$(python3 -c "
-import json
+    refresh_token=$(CODEX_AUTH="$auth_file" python3 -c "
+import json, os
 try:
-    auth = json.load(open('$auth_file'))
+    auth = json.load(open(os.environ['CODEX_AUTH']))
     print(auth.get('tokens', {}).get('refresh_token', ''))
 except:
     print('')
@@ -95,17 +95,15 @@ except:
     [[ -z "$refresh_token" ]] && return 1
     access_token=$(curl -sf "https://auth.openai.com/oauth/token" \
       -X POST -H "Content-Type: application/json" \
-      -d "{\"grant_type\":\"refresh_token\",\"refresh_token\":\"$refresh_token\",\"client_id\":\"app_EMoamEEZ73f0CkXaXp7hrann\"}" \
-      --max-time 10 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+      --max-time 10 -K - 2>/dev/null <<<"data = \"{\\\"grant_type\\\":\\\"refresh_token\\\",\\\"refresh_token\\\":\\\"$refresh_token\\\",\\\"client_id\\\":\\\"app_EMoamEEZ73f0CkXaXp7hrann\\\"}\"" | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
     [[ -z "$access_token" ]] && return 1
   fi
 
   local result
   result=$(curl -sf "https://chatgpt.com/backend-api/wham/usage" \
-    -H "Authorization: Bearer $access_token" \
     -H "Accept: application/json" \
     -H "User-Agent: OpenAI-Codex/1.0" \
-    --max-time 10 2>/dev/null) || return 1
+    --max-time 10 -K - 2>/dev/null <<<"header = \"Authorization: Bearer $access_token\"") || return 1
 
   echo "$result" > "$cache_file"
   echo "$result"
@@ -139,7 +137,7 @@ try:
 except Exception as e:
     result['plan_type'] = 'unknown'
     result['token_expires_in_hours'] = None
-    result['jwt_error'] = str(e)
+    result['jwt_error'] = 'decode_failed'
 
 # Live usage % from wham/usage API
 wham_raw = os.environ.get('WHAM_JSON', '')
@@ -193,7 +191,7 @@ if db_path and os.path.exists(db_path):
         result['models_5h']  = models_5h
         conn.close()
     except Exception as e:
-        result['usage_error'] = str(e)
+        result['usage_error'] = 'query_failed'
 
 print(json.dumps(result))
 " 2>/dev/null || echo '{"error":"codex data fetch failed"}'
@@ -255,9 +253,8 @@ fi
 
 # ── Call usage API ───────────────────────────────────────────────────────────
 RESPONSE=$(curl -sf "https://api.anthropic.com/api/oauth/usage" \
-  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
   -H "anthropic-beta: oauth-2025-04-20" \
-  --max-time 10 2>/dev/null || true)
+  --max-time 10 -K - 2>/dev/null <<<"header = \"Authorization: Bearer ${ACCESS_TOKEN}\"" || true)
 
 if [[ -z "$RESPONSE" ]]; then
   echo '{"error":"Usage API request failed or timed out"}' >&2
