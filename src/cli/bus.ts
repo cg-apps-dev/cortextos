@@ -1189,7 +1189,8 @@ busCommand
   .option('--agent <name>', 'Agent name (for private scope)')
   .option('--scope <s>', 'Scope: shared or private', 'shared')
   .option('--force', 'Re-ingest even if already indexed')
-  .action((paths: string[], opts: { org?: string; agent?: string; scope?: string; force?: boolean }) => {
+  .option('--external', 'Mark sources as external/untrusted: forces "external" provenance for the Phase-1 injection scan (otherwise the scanner uses its path heuristic)')
+  .action((paths: string[], opts: { org?: string; agent?: string; scope?: string; force?: boolean; external?: boolean }) => {
     const env = resolveEnv();
     const org = opts.org || env.org;
     if (!org) {
@@ -1204,6 +1205,7 @@ busCommand
       agent: opts.agent || env.agentName,
       scope: (opts.scope as 'shared' | 'private') || 'shared',
       force: opts.force,
+      external: opts.external,
       frameworkRoot: env.frameworkRoot || process.cwd(),
       instanceId: env.instanceId,
     });

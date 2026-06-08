@@ -1,9 +1,108 @@
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import type { BusPaths } from '../types/index.js';
 import { normalizeOrgName } from '../utils/org.js';
+import { resolvePaths } from '../utils/paths.js';
+import { logEvent } from './event.js';
+
+/**
+ * security-agent injection scanner, resolved relative to the framework root
+ * (same base the rest of this module uses). If the security-agent dir is not
+ * present in a given install, the spawn below fails the `r.error` guard and we
+ * fail open — never assume the path exists everywhere.
+ */
+const INJECTION_SCANNER_REL =
+  'orgs/clean-green-marketing/agents/security-agent/tools/injection-scan.js';
+
+/**
+ * Phase-1 injection-scan monitor (security-agent pairing). Scans one path
+ * BEFORE it is embedded/stored and logs the outcome to the bus event stream.
+ *
+ * STRICTLY FAIL-OPEN. This function never throws to its caller and never
+ * blocks or skips ingestion. A timeout, a spawn failure, a missing scanner,
+ * a scanner internal error, OR an active finding all resolve to a single log
+ * line and a return — ingest always proceeds. (Phase 2, NOT enabled here, will
+ * gate embed on `trust === 'external'` findings once the baseline is clean.)
+ *
+ * Events are attributed to `security-agent` (it owns the scan logic); the
+ * source path + count + by_provenance make the baseline queryable in the
+ * activity feed rather than living only in stdout.
+ */
+function scanBeforeIngestMonitor(
+  busPaths: BusPaths,
+  org: string,
+  filePath: string,
+  trust?: 'trusted' | 'external',
+): void {
+  try {
+    const scanner = join(
+      process.env.CTX_FRAMEWORK_ROOT || process.cwd(),
+      INJECTION_SCANNER_REL,
+    );
+    const args = [scanner, filePath, '--json'];
+    if (trust) args.push('--trust', trust);
+    const r = spawnSync('node', args, {
+      encoding: 'utf-8',
+      timeout: 5000, // a slow/hung scan must NOT stall ingest
+      maxBuffer: 8 * 1024 * 1024,
+    });
+
+    // Guard: timeout / spawn failure / scanner missing → log + continue (fail-open)
+    if (r.error || r.status === null) {
+      logEvent(busPaths, 'security-agent', org, 'action', 'injection_scan_skipped', 'warning', {
+        file: filePath,
+        reason: r.error?.message || 'timeout-or-spawn-failure',
+      });
+      return;
+    }
+    // Guard: scanner internal error (exit 2) → non-fatal in Phase 1
+    if (r.status === 2) {
+      logEvent(busPaths, 'security-agent', org, 'action', 'injection_scan_error', 'warning', {
+        file: filePath,
+        stderr: (r.stderr || '').slice(0, 200),
+      });
+      return;
+    }
+
+    // exit 0 = clean, exit 1 = active findings. Parse + log when there are findings.
+    let out: { count?: number; by_severity?: Record<string, number>; by_provenance?: Record<string, number> } = {};
+    try {
+      out = JSON.parse(r.stdout || '{}');
+    } catch {
+      /* tolerate non-JSON stdout — fail open */
+    }
+    if (out.count && out.count > 0) {
+      logEvent(
+        busPaths,
+        'security-agent',
+        org,
+        'action',
+        'injection_scan_finding',
+        out.by_severity?.CRITICAL ? 'error' : 'warning',
+        {
+          file: filePath,
+          count: out.count,
+          by_severity: out.by_severity,
+          by_provenance: out.by_provenance, // {first_party, external} — the triage signal
+          phase: 'monitor', // PHASE 1: logged, NOT blocked
+        },
+      );
+      // Phase 2 (LATER, not now): if trust === 'external' && out.count > 0 → skip embed + flag.
+    }
+  } catch (e: unknown) {
+    // Absolute backstop: scanning must never break ingestion in Phase 1.
+    try {
+      logEvent(busPaths, 'security-agent', org, 'action', 'injection_scan_skipped', 'warning', {
+        file: filePath,
+        reason: e instanceof Error ? e.message : 'unknown',
+      });
+    } catch {
+      /* even the log failed — still must not throw out of the monitor */
+    }
+  }
+}
 
 /**
  * Knowledge base integration — calls mmrag.py directly (cross-platform,
@@ -248,11 +347,12 @@ export function ingestKnowledgeBase(
     agent?: string;
     scope?: 'shared' | 'private';
     force?: boolean;
+    external?: boolean;
     frameworkRoot: string;
     instanceId: string;
   },
 ): void {
-  const { agent, scope = 'shared', force, frameworkRoot, instanceId } = options;
+  const { agent, scope = 'shared', force, external, frameworkRoot, instanceId } = options;
   // Normalize once (see queryKnowledgeBase for rationale).
   const org = normalizeOrgName(frameworkRoot, options.org);
 
@@ -294,8 +394,22 @@ export function ingestKnowledgeBase(
   }
 
   console.log(`Ingesting into collection: ${collection}`);
+  // Phase-1 injection-scan monitor (security-agent pairing): scan each source
+  // BEFORE the embed/store batch below. FAIL-OPEN — see scanBeforeIngestMonitor.
+  // `external` forces 'external' provenance; otherwise omit so the scanner
+  // applies its own path-prefix heuristic.
+  // Resolve event paths under the same fail-open umbrella as the scan itself:
+  // resolvePaths is a pure path-join today, but if it ever throws it must not
+  // abort ingest — drop to null and skip scanning (ingest still proceeds).
+  let busPaths: BusPaths | null = null;
+  try {
+    busPaths = resolvePaths(agent ?? '', instanceId, org);
+  } catch {
+    /* fail-open: path resolution failure must never block ingestion */
+  }
   for (const p of paths) {
     console.log(`  Source: ${p}`);
+    if (busPaths) scanBeforeIngestMonitor(busPaths, org, p, external ? 'external' : undefined);
   }
 
   const args = [mmragPath, 'ingest', ...paths, '--collection', collection];
