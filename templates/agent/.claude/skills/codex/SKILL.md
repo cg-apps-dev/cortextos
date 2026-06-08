@@ -55,6 +55,39 @@ The wrapper:
   as the codex-app-server runtime), so the dashboard **Per-Agent Token Usage**
   card counts Codex usage automatically.
 
+## Write mode — dev executor (`codex-write.sh`)
+
+`codex-peer.sh` is **read-only** (Codex advises, never touches files). For a
+"Claude drives, Codex is the hands" flow — where Codex actually **edits files** —
+use `codex-write.sh`. Claude stays the driver/reviewer/validator/committer;
+Codex does the keystrokes inside a confined feature-branch worktree.
+
+```bash
+# Codex EDITS files inside <worktree> (workspace-write sandbox). Claude then
+# reviews the diff, validates (build/tsc/test), and owns the commit.
+.claude/skills/codex/codex-write.sh "<task: what to build/change, with the patterns to match>" <worktree-dir>
+```
+
+Hard safety rails (the wrapper enforces these, refusing the run otherwise):
+- **Worktree required** and is the only writable root (`-s workspace-write -C`).
+  Codex cannot write outside it.
+- **Protected-branch guard**: refuses if the worktree is on `main`/`master` or a
+  detached HEAD — writes must land on a feature branch.
+- **Never commits / never `git add`s.** Claude reviews the diff and owns the
+  commit. The wrapper only lets Codex mutate the working tree.
+- **`approval_policy=never`**: exec mode can't answer prompts, so anything
+  needing escalation is denied (not hung).
+- Same bash-native watchdog (default **600s**, override `CODEX_WRITE_TIMEOUT`)
+  and token-logging as `codex-peer.sh` — a stall can't hang you, and cost still
+  lands on the dashboard.
+
+The flow per coding task: Claude creates/checks out a feature-branch worktree →
+writes a precise prompt (patterns to match, files to touch, scope limits) →
+`codex-write.sh` → Claude reviews the resulting diff for scope + correctness +
+style → runs `npx tsc --noEmit` + the relevant tests → commits if green (or
+re-prompts Codex with the failures). **Dev STAYS on Opus**; Codex is the hands,
+not a model downgrade.
+
 ## Auth
 
 Codex uses the **ChatGPT login** stored in `~/.codex` (a one-time
