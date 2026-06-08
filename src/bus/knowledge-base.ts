@@ -398,10 +398,18 @@ export function ingestKnowledgeBase(
   // BEFORE the embed/store batch below. FAIL-OPEN — see scanBeforeIngestMonitor.
   // `external` forces 'external' provenance; otherwise omit so the scanner
   // applies its own path-prefix heuristic.
-  const busPaths = resolvePaths(agent ?? '', instanceId, org);
+  // Resolve event paths under the same fail-open umbrella as the scan itself:
+  // resolvePaths is a pure path-join today, but if it ever throws it must not
+  // abort ingest — drop to null and skip scanning (ingest still proceeds).
+  let busPaths: BusPaths | null = null;
+  try {
+    busPaths = resolvePaths(agent ?? '', instanceId, org);
+  } catch {
+    /* fail-open: path resolution failure must never block ingestion */
+  }
   for (const p of paths) {
     console.log(`  Source: ${p}`);
-    scanBeforeIngestMonitor(busPaths, org, p, external ? 'external' : undefined);
+    if (busPaths) scanBeforeIngestMonitor(busPaths, org, p, external ? 'external' : undefined);
   }
 
   const args = [mmragPath, 'ingest', ...paths, '--collection', collection];
