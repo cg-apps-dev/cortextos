@@ -107,8 +107,11 @@ If a call returns no answer, auth is the first thing to check.
   prints a clear message and exits; just retry. Override with `CODEX_TIMEOUT` /
   `CODEX_DEEP_TIMEOUT` (seconds) if a call legitimately needs longer. Any token
   usage produced before a kill is still logged.
-- Read-only by design: for safety, Codex never writes files here — it advises,
-  I implement (and own) the change in my normal Claude flow.
+- `codex-peer.sh` is read-only by design: Codex advises, I implement (and own)
+  the change in my normal Claude flow. When I instead want Codex to make the
+  edits, that is the separate `codex-write.sh` write-mode flow above — and even
+  there Codex is confined to a feature-branch worktree and never commits; I
+  review the diff, validate, and own the commit.
 - Keep prompts self-contained (paste the relevant code/error); Codex starts
   fresh each call (stateless peer tool).
 - Cost shows up per-agent on the dashboard — Codex usage is visible alongside
