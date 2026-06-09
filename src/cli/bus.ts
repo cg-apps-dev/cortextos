@@ -24,6 +24,7 @@ import { resolveEnv } from '../utils/env.js';
 import { IPCClient } from '../daemon/ipc-server.js';
 import { TelegramAPI } from '../telegram/api.js';
 import { logOutboundMessage, cacheLastSent } from '../telegram/logging.js';
+import { appendContextFooter } from '../telegram/context-footer.js';
 import type { Priority, Task, TaskStatus, EventCategory, EventSeverity, ApprovalCategory, ApprovalStatus, OrgContext, CronDefinition } from '../types/index.js';
 
 /**
@@ -1000,17 +1001,25 @@ busCommand
       process.exit(1);
     }
 
+    // Append the context-usage footer (Adam cost-visibility). Reads THIS agent's
+    // statusLine-written context_status.json and appends "ctx: ~Xk / Yk (Z%)".
+    // Applied to the outbound copy only — the logged/cached text stays the
+    // agent-authored original. Omitted gracefully when no fresh data exists.
+    const outbound = (env.agentName && env.ctxRoot)
+      ? appendContextFooter(message, env.ctxRoot, env.agentName)
+      : message;
+
     const api = new TelegramAPI(botToken);
     try {
       let sentMessageId = 0;
       if (opts.image) {
-        const result = await api.sendPhoto(chatId, opts.image, message);
+        const result = await api.sendPhoto(chatId, opts.image, outbound);
         sentMessageId = result?.result?.message_id ?? 0;
       } else if (opts.file) {
-        const result = await api.sendDocument(chatId, opts.file, message);
+        const result = await api.sendDocument(chatId, opts.file, outbound);
         sentMessageId = result?.result?.message_id ?? 0;
       } else {
-        const result = await api.sendMessage(chatId, message, undefined, {
+        const result = await api.sendMessage(chatId, outbound, undefined, {
           parseMode: opts.plainText ? null : 'HTML',
         });
         sentMessageId = result?.result?.message_id ?? 0;

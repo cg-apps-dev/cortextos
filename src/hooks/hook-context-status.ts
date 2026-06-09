@@ -22,6 +22,11 @@ interface StatusLineInput {
   context_window?: {
     used_percentage?: number | null;
     context_window_size?: number;
+    // Current context occupancy (NOT cumulative session totals, per CC v2.1.132+):
+    // total_input_tokens = input + cache_creation + cache_read for the current context.
+    // This is the numerator the Telegram context-usage footer renders (~Xk / size).
+    total_input_tokens?: number;
+    total_output_tokens?: number;
     exceeds_200k_tokens?: boolean;
     current_usage?: {
       input_tokens?: number;
@@ -68,6 +73,9 @@ async function main(): Promise<void> {
   const payload = JSON.stringify({
     used_percentage: typeof cw.used_percentage === 'number' ? cw.used_percentage : null,
     context_window_size: cw.context_window_size ?? null,
+    // Current context occupancy — the Telegram footer's token numerator.
+    total_input_tokens: typeof cw.total_input_tokens === 'number' ? cw.total_input_tokens : null,
+    total_output_tokens: typeof cw.total_output_tokens === 'number' ? cw.total_output_tokens : null,
     exceeds_200k_tokens: Boolean(cw.exceeds_200k_tokens),
     current_usage: cw.current_usage ?? null,
     session_id: data.session_id ?? null,
