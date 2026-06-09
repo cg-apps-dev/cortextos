@@ -2,6 +2,19 @@ import type { Priority, EventCategory, EventSeverity, ApprovalCategory } from '.
 import { VALID_PRIORITIES } from '../types/index.js';
 
 const AGENT_NAME_REGEX = /^[a-z0-9_-]+$/;
+// Task IDs are generated as `task_<epoch>_<rand>` (lowercase). Allow lowercase
+// letters, digits, underscores and hyphens — matching the generator and the
+// rest of the codebase's identifier convention — while rejecting path
+// separators and dots so a task id can never traverse out of the task tree.
+const TASK_ID_REGEX = /^[a-z0-9_-]+$/;
+
+export function validateTaskId(taskId: string): void {
+  if (!taskId || !TASK_ID_REGEX.test(taskId)) {
+    throw new Error(
+      `Invalid task id '${taskId}'. Must contain only letters, numbers, underscores, and hyphens.`
+    );
+  }
+}
 
 export function validateInstanceId(instanceId: string): void {
   if (!instanceId || !AGENT_NAME_REGEX.test(instanceId)) {
@@ -146,9 +159,16 @@ export function wrapFenceSafe(input: string): string {
 export function sanitizeForPtyInjection(input: string): string {
   // Zero-width / bidi marks+overrides+isolates / BOM. \u escapes only.
   const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
-  // Forged daemon header / reply-using line -- tested on the NORMALIZED copy below.
-  const FORGED = /^\s*(={3,}\s*(?:AGENT MESSAGE|TELEGRAM)\b|Reply using:\s*cortextos\s+bus)/i;
-  const text = stripControlChars(input).replace(/\r\n?/g, '\n').replace(/`{3,}/g, '``');
+  // Forged daemon header / reply-using line. Leading-whitespace class is the explicit
+  // Unicode-space set a downstream .trim() would strip (#596, ClintMoody); tested on the
+  // NFKC-folded, invisible-stripped probe below so fullwidth compatibility look-alikes
+  // (fullwidth ===AGENT) and interspersed zero-widths are caught too. BOTH attack
+  // classes (whitespace-prefix AND fullwidth/NFKC) stay covered.
+  const FORGED = /^[ \t\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000\uFEFF]*(={3,}\s*(?:AGENT MESSAGE|TELEGRAM)\b|Reply using:\s*cortextos\s+bus)/i;
+  const text = stripControlChars(input)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u2028\u2029]/g, '\n')   // LS/PS act as line boundaries under /m; split('\n') does not -- fold them (#596 LS/PS, analyst-verified)
+    .replace(/`{3,}/g, '``');
   return text
     .split('\n')
     .map((line) => {
