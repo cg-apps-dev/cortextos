@@ -3,7 +3,7 @@ import type { NextConfig } from "next";
 // Next.js 15.2+ blocks non-localhost origins from /_next/* dev-internal
 // resources by default. When the dashboard is accessed over Tailscale, a LAN
 // IP, or a reverse proxy, the browser receives the SSR HTML but the client
-// bundle cannot finish hydrating because dev-resource requests are rejected —
+// bundle cannot finish hydrating because dev-resource requests are rejected -
 // useEffect never fires, the CSRF token is never fetched, and the login form
 // is stuck.
 //
