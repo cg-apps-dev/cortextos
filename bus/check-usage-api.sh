@@ -224,19 +224,45 @@ if [[ "$FORCE" == "false" && -f "$CACHE_FILE" ]]; then
   fi
 fi
 
-# ── Read OAuth token from Keychain ──────────────────────────────────────────
-if ! command -v security &>/dev/null; then
-  echo '{"error":"macOS Keychain (security) not available"}' >&2
-  exit 1
+# ── Resolve OAuth access token ───────────────────────────────────────────────
+# Precedence MIRRORS src/bus/oauth.ts resolveOAuthAccessToken():
+#   1. active account in accounts.json (state/oauth/accounts.json)
+#   2. CLAUDE_CODE_OAUTH_TOKEN env (bare access-token string)
+#   3. macOS Keychain "Claude Code-credentials" item (legacy, last resort)
+# The legacy keychain item can vanish/relocate under native Claude Code 2.1.x
+# (and is unreadable from some cron/launchd security sessions), so 1/2 are the
+# durable paths; keychain is kept as the current-working last-resort fallback.
+# SECURITY (preserves 786cc33 hardening): tokens are never passed via argv or
+# echoed; file/JSON parsing reads via stdin, the env token is read in-process,
+# and only the source label (never the token) appears in any output.
+ACCESS_TOKEN=""
+TOKEN_SOURCE=""
+
+# 1) accounts.json active account
+ACCOUNTS_FILE="${CTX_ROOT}/state/oauth/accounts.json"
+if [[ -z "$ACCESS_TOKEN" && -f "$ACCOUNTS_FILE" ]]; then
+  ACCESS_TOKEN=$(python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d['accounts'][d['active']]['access_token'])
+except Exception:
+    pass
+" < "$ACCOUNTS_FILE" 2>/dev/null || true)
+  [[ -n "$ACCESS_TOKEN" ]] && TOKEN_SOURCE="accounts.json"
 fi
 
-RAW_CREDS=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || true)
-if [[ -z "$RAW_CREDS" ]]; then
-  echo '{"error":"Claude Code credentials not found in Keychain"}' >&2
-  exit 1
+# 2) CLAUDE_CODE_OAUTH_TOKEN env (bare access-token string)
+if [[ -z "$ACCESS_TOKEN" && -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+  ACCESS_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN"
+  TOKEN_SOURCE="env"
 fi
 
-ACCESS_TOKEN=$(echo "$RAW_CREDS" | python3 -c "
+# 3) macOS Keychain (legacy npm Claude Code item - last resort)
+if [[ -z "$ACCESS_TOKEN" ]] && command -v security &>/dev/null; then
+  RAW_CREDS=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || true)
+  if [[ -n "$RAW_CREDS" ]]; then
+    ACCESS_TOKEN=$(echo "$RAW_CREDS" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -245,9 +271,12 @@ except Exception as e:
     sys.stderr.write(str(e) + '\n')
     sys.exit(1)
 " 2>/dev/null || true)
+    [[ -n "$ACCESS_TOKEN" ]] && TOKEN_SOURCE="keychain"
+  fi
+fi
 
 if [[ -z "$ACCESS_TOKEN" ]]; then
-  echo '{"error":"Could not parse access token from Keychain credentials"}' >&2
+  echo '{"error":"No OAuth token available (no active accounts.json account, CLAUDE_CODE_OAUTH_TOKEN not set, and no Claude Code Keychain credential). Provision a token via `claude setup-token` and set CLAUDE_CODE_OAUTH_TOKEN in the daemon/agent env."}' >&2
   exit 1
 fi
 
