@@ -55,15 +55,15 @@ export function acquireLock(dir: string): boolean {
     return true;
   } catch (err) {
     // Only EEXIST means contention. EACCES / ENOSPC / EROFS / etc. are real
-    // filesystem failures — propagate so the caller (withFileLockSync) does
+    // filesystem failures - propagate so the caller (withFileLockSync) does
     // not loop forever against a directory that will never be writable.
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== 'EEXIST') {
       throw err;
     }
-    // mkdirSync failed with EEXIST — another process holds (or is mid-acquire
+    // mkdirSync failed with EEXIST - another process holds (or is mid-acquire
     // of) the lock.  We must NOT treat the gap between mkdirSync and
-    // writeFileSync as "stale" — doing so allows two acquirers to interleave
+    // writeFileSync as "stale" - doing so allows two acquirers to interleave
     // and BOTH believe they hold the lock (the actual race that broke iter
     // 12).  When the PID file is missing, the holder is mid-acquire; the
     // caller should retry.
@@ -137,13 +137,13 @@ const SLEEP_SAB  = new SharedArrayBuffer(4);
 const SLEEP_VIEW = new Int32Array(SLEEP_SAB);
 
 /**
- * Acquire `dir`'s mutex, run `fn`, then release the lock — even if `fn`
+ * Acquire `dir`'s mutex, run `fn`, then release the lock - even if `fn`
  * throws.  Retries with exponential backoff (capped) until `timeoutMs`.
  *
  * Use this around any read-modify-write sequence on a per-agent file
  * (crons.json etc.) so two concurrent processes can't lose each other's
  * mutations between the read and the write (the atomic rename in
- * writeCrons is per-write only — it does NOT make the surrounding
+ * writeCrons is per-write only - it does NOT make the surrounding
  * read-modify-write transactional).
  *
  * @throws if the lock cannot be acquired within `timeoutMs`.
