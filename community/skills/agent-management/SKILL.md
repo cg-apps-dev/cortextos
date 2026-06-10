@@ -122,6 +122,14 @@ cortextos enable "$AGENT_NAME" --org "$ORG"
 
 **Common Mistake (Becky Bug):** If you skip the .env creation, the agent inherits YOUR credentials from the parent environment. Messages meant for the other user go to YOU instead. ALWAYS create .env BEFORE enabling.
 
+### Agent-specific skills (REQUIRED post-create for some agents)
+
+The base `add-agent` only lays down the template skills. Some org agents depend on EXTRA skills that live in the community catalog (version-controlled, opt-in). After creating or RE-creating one of these agents you MUST install its skill(s), or it boots without a capability it needs. This list is load-bearing: a freshly re-created agent cannot self-discover a skill it does not yet have, so the requirement is documented HERE (in the agent-management runbook), not only inside the skill itself.
+
+| Agent (org) | Post-create step |
+|---|---|
+| `meta-ads-agent` (clean-green-marketing) | `cortextos bus install-community-item creative-compliance-scan` (also verify host prereqs: `tesseract`, `ffmpeg`, `whisper` - see that skill's "Host prerequisites" section) |
+
 ---
 
 ## 2. Restarting Agents
