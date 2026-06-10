@@ -65,6 +65,19 @@ export class AgentPTY {
     // Build environment variables for the PTY process
     const ptyEnv: Record<string, string> = {
       ...this.getBaseEnv(),
+      // Disable Claude Code's startup auto-update check. The native CLI runs a
+      // "Checking for updates" step at boot; during CC version churn that check
+      // can hang indefinitely, so the spawned agent never reaches its ready
+      // prompt and its heartbeat freezes (looks like a dead agent; only a
+      // stop/settle/start recovers it). DISABLE_AUTOUPDATER=1 skips the startup
+      // check entirely (verified for the 2.1.x line), so every agent boots
+      // straight through and stays on its spawned CC version until a CONTROLLED
+      // manual update - which is what we want (no auto-update churn). Set as a
+      // fleet default here. An agent .env (loaded below) CAN override it by
+      // setting DISABLE_AUTOUPDATER=0, but doing so RE-EXPOSES that agent to the
+      // startup update-check hang this prevents - only flip it deliberately
+      // (e.g. to canary a new CC version on one agent), never casually.
+      DISABLE_AUTOUPDATER: '1',
       CTX_INSTANCE_ID: this.env.instanceId,
       CTX_ROOT: this.env.ctxRoot,
       CTX_FRAMEWORK_ROOT: this.env.frameworkRoot,
