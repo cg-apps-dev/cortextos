@@ -1,5 +1,42 @@
-import { mkdirSync, rmdirSync, writeFileSync, readFileSync, rmSync } from 'fs';
+import { mkdirSync, rmdirSync, writeFileSync, readFileSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
+
+/**
+ * A lock dir whose PID file is missing or unparseable is normally a holder
+ * mid-acquire (the mkdirSync -> writeFileSync gap, microseconds). But if the
+ * holder dies inside that gap, the orphan can never be cleared by the
+ * dead-PID check (there is no PID to probe) and every acquirer refuses it
+ * forever (prod hit: the-analyst inbox wedged ~18h, 2026-06-09). Age is the
+ * discriminator: a real mid-acquire gap is far below this threshold, so an
+ * older pid-less lock has no live acquirer and is stealable.
+ */
+const ORPHAN_LOCK_STALE_MS = 60_000;
+
+function lockDirAgeMs(lockDir: string): number {
+  try {
+    return Date.now() - statSync(lockDir).mtimeMs;
+  } catch {
+    // Lock dir vanished (holder released between EEXIST and stat) - report
+    // fresh so the caller retries; the next acquire attempt will succeed.
+    return 0;
+  }
+}
+
+/**
+ * Remove a stale lock and re-acquire atomically. mkdirSync is the arbiter:
+ * if another process steals first, ours throws EEXIST and we report failure
+ * so the caller retries.
+ */
+function stealLock(lockDir: string, pidFile: string): boolean {
+  try {
+    rmSync(lockDir, { recursive: true, force: true });
+    mkdirSync(lockDir);
+    writeFileSync(pidFile, String(process.pid));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Acquire a mutex lock using mkdir (atomic on all filesystems).
@@ -34,16 +71,25 @@ export function acquireLock(dir: string): boolean {
     try {
       storedPidRaw = readFileSync(pidFile, 'utf-8').trim();
     } catch {
-      // PID file not yet written.  Holder is between mkdir and writeFileSync.
-      // Refuse the lock — the caller's retry loop will try again.
+      // PID file not yet written.  A FRESH lock means the holder is between
+      // mkdir and writeFileSync - refuse and let the caller's retry loop try
+      // again.  An AGED one means the holder died inside that gap and no PID
+      // will ever appear - steal it (see ORPHAN_LOCK_STALE_MS).
+      if (lockDirAgeMs(lockDir) > ORPHAN_LOCK_STALE_MS) {
+        return stealLock(lockDir, pidFile);
+      }
       return false;
     }
 
     const storedPid = parseInt(storedPidRaw, 10);
     if (isNaN(storedPid) || storedPidRaw === '') {
-      // Corrupt PID file.  Don't steal — let caller retry; if it persists
-      // the holder is broken and a future stale-detection pass (process.kill
-      // check below, after the PID is written cleanly) will recover.
+      // Corrupt PID file.  Same wedge shape as the missing-PID case: there is
+      // no PID to probe, so no future dead-PID pass can ever recover it.  A
+      // fresh one may still be mid-write - refuse and retry; an aged one is
+      // permanently broken - steal it.
+      if (lockDirAgeMs(lockDir) > ORPHAN_LOCK_STALE_MS) {
+        return stealLock(lockDir, pidFile);
+      }
       return false;
     }
 
@@ -54,15 +100,7 @@ export function acquireLock(dir: string): boolean {
       return false;
     } catch {
       // Process is dead - stale lock, remove and re-acquire atomically.
-      try {
-        rmSync(lockDir, { recursive: true, force: true });
-        mkdirSync(lockDir);
-        writeFileSync(pidFile, String(process.pid));
-        return true;
-      } catch {
-        // Another process beat us to the steal — let caller retry.
-        return false;
-      }
+      return stealLock(lockDir, pidFile);
     }
   }
 }
