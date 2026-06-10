@@ -17,6 +17,13 @@ npm test
 3. Match existing patterns in `src/` for new features
 4. Add unit tests in `tests/` for any new code
 
+> Run `npm test` from a clean shell or CI, NOT from inside a running cortextOS
+> agent session. A live agent exports `CTX_*` env vars (`CTX_AGENT_DIR`, etc.)
+> that otherwise leak into CLI-invoking tests and trip the CLI's sandbox-leak
+> guard, causing ~33 spurious failures. The vitest setup
+> (`tests/setup/scrub-ctx-env.ts`) scrubs `CTX_*` automatically so the suite
+> stays green either way, but a clean shell remains the canonical run env.
+
 ## Project Structure
 
 - `src/` — TypeScript source (bus, cli, daemon, hooks, types, utils)

@@ -16,6 +16,10 @@ export default defineConfig({
   test: {
     globals: true,
     testTimeout: 10000,
+    // Scrub CTX_* env vars (leaked from a live agent shell) at the start of each
+    // test file so the suite is green whether run from CI, a clean shell, or from
+    // inside a running agent session. See tests/setup/scrub-ctx-env.ts.
+    setupFiles: ['./tests/setup/scrub-ctx-env.ts'],
     include: [
       'tests/**/*.test.ts',
       'dashboard/src/**/__tests__/**/*.test.ts',
