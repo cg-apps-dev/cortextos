@@ -23,6 +23,7 @@ WORD_HARD=[
 # NUMBER bans (run on RAW text) - the bug fix
 NUM_HARD=[
  ("M-2 4/20", re.compile(r'\b4\s*[:/]\s*20\b|\b420\b')),
+ ("M-2 delivery-time-guarantee", re.compile(r'deliver\w*\s+in\s+\d+\s*(hours?|days?)|\d+[- ]?(hour|day)[- ]?(delivery|shipping)|\b(24|48|72)[- ]?hours?\b')),
  ("M-16 outcome-timing", re.compile(r'\b8\s*hours?\b|asleep in \d+\s*min|knocked? (you |me )?out in \d|results? in \d+\s*days?')),
 ]
 NUM_REVIEW=[
