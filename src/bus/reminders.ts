@@ -8,7 +8,10 @@
  *
  * Lifecycle:
  *   1. Agent calls `cortextos bus create-reminder <fire-at> <prompt>`
- *   2. Daemon boot prompt includes any overdue pending reminders
+ *   2. The fast-checker poll loop injects it LIVE when fire_at passes
+ *      (getDueReminders -> markReminderDelivered); the daemon boot prompt
+ *      additionally includes any overdue un-acked reminders as the
+ *      restart-survival path (getOverdueReminders)
  *   3. Agent processes the reminder, calls `cortextos bus ack-reminder <id>`
  */
 
@@ -22,10 +25,18 @@ export interface Reminder {
   id: string;
   created_at: string;
   fire_at: string;      // ISO 8601 UTC — when the reminder should fire
-  prompt: string;       // The text to inject into the boot prompt when overdue
-  status: 'pending' | 'acked';
+  prompt: string;       // The text to inject when due (live poll or boot prompt)
+  status: 'pending' | 'delivered' | 'acked';
+  delivered_at?: string; // last live injection into a running session
   acked_at?: string;
 }
+
+/**
+ * A delivered-but-unacked reminder is re-injected after this long, mirroring
+ * the inbox un-ACK redelivery semantics (the agent may have crashed or
+ * compacted between injection and handling).
+ */
+export const REMINDER_REDELIVER_MS = 5 * 60 * 1000;
 
 function remindersPath(paths: BusPaths): string {
   return join(paths.stateDir, 'pending-reminders.json');
@@ -76,23 +87,67 @@ export function createReminder(paths: BusPaths, fireAt: string, prompt: string):
 }
 
 /**
- * List reminders. By default returns only pending ones.
+ * List reminders. By default returns outstanding ones (pending or delivered
+ * but not yet acked).
  */
 export function listReminders(paths: BusPaths, opts: { all?: boolean } = {}): Reminder[] {
   const reminders = readReminders(paths);
   if (opts.all) return reminders;
-  return reminders.filter(r => r.status === 'pending');
+  return reminders.filter(r => r.status !== 'acked');
 }
 
 /**
- * Return pending reminders whose fire_at is in the past (overdue).
- * Used by agent-process.ts to inject into the boot prompt.
+ * Return un-acked reminders whose fire_at is in the past (overdue).
+ * Used by agent-process.ts to inject into the boot prompt. Includes
+ * 'delivered' reminders so one injected into a session that died before
+ * handling it re-surfaces on the next boot.
  */
 export function getOverdueReminders(paths: BusPaths): Reminder[] {
   const now = Date.now();
   return readReminders(paths).filter(
-    r => r.status === 'pending' && Date.parse(r.fire_at) <= now,
+    r => r.status !== 'acked' && Date.parse(r.fire_at) <= now,
   );
+}
+
+/**
+ * Return reminders due for LIVE injection into a running session: overdue
+ * and either never delivered, or delivered longer than redeliverMs ago
+ * without an ack. Used by the fast-checker poll loop - without this path a
+ * reminder created mid-session only ever fired at the next restart (the
+ * silent non-fire that left the fleet paused 35 min past its resume window,
+ * 2026-06-10).
+ */
+export function getDueReminders(
+  paths: BusPaths,
+  redeliverMs: number = REMINDER_REDELIVER_MS,
+): Reminder[] {
+  const now = Date.now();
+  return readReminders(paths).filter(r => {
+    if (r.status === 'acked') return false;
+    if (Date.parse(r.fire_at) > now) return false;
+    if (r.status === 'pending') return true;
+    const deliveredAt = r.delivered_at ? Date.parse(r.delivered_at) : 0;
+    return now - deliveredAt >= redeliverMs;
+  });
+}
+
+/**
+ * Mark a reminder as delivered (live-injected into a running session).
+ * The agent still acks it after handling; un-acked delivered reminders
+ * are re-injected after REMINDER_REDELIVER_MS and re-surface at boot.
+ */
+export function markReminderDelivered(paths: BusPaths, id: string): void {
+  const reminders = readReminders(paths);
+  const idx = reminders.findIndex(r => r.id === id);
+  if (idx === -1) {
+    throw new Error(`Reminder ${id} not found`);
+  }
+  reminders[idx] = {
+    ...reminders[idx],
+    status: 'delivered',
+    delivered_at: new Date().toISOString(),
+  };
+  writeReminders(paths, reminders);
 }
 
 /**

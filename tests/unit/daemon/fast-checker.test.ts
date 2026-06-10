@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { FastChecker } from '../../../src/daemon/fast-checker';
+import { createReminder, listReminders } from '../../../src/bus/reminders';
 import type { BusPaths, TelegramCallbackQuery } from '../../../src/types';
 
 // Minimal mock for AgentProcess
@@ -270,6 +271,90 @@ describe('FastChecker', () => {
       const checker = new FastChecker(agent, paths, '/tmp/framework');
 
       expect(checker.isAgentActive()).toBe(false);
+    });
+  });
+
+  describe('live reminder delivery (via pollCycle)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Run one pollCycle, advancing fake timers through the post-inject cooldown. */
+    async function runPollCycle(checker: FastChecker): Promise<void> {
+      const p = (checker as any).pollCycle();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await p;
+    }
+
+    // Regression for the 2026-06-10 silent non-fire: reminder created
+    // MID-SESSION (after boot) must inject once fire_at passes, without
+    // any session restart.
+    it('injects a due mid-session reminder and marks it delivered (not acked)', async () => {
+      const agent = createMockAgent();
+      const checker = new FastChecker(agent, paths, '/tmp/framework');
+      const r = createReminder(paths, new Date(Date.now() - 1000).toISOString(), 'resume the fleet');
+
+      await runPollCycle(checker);
+
+      expect(agent.injectMessage).toHaveBeenCalledTimes(1);
+      const injected = agent.injectMessage.mock.calls[0][0] as string;
+      expect(injected).toContain('=== REMINDER FIRED');
+      expect(injected).toContain(r.id);
+      expect(injected).toContain('resume the fleet');
+      expect(injected).toContain(`ack-reminder ${r.id}`);
+
+      const all = listReminders(paths, { all: true });
+      expect(all[0].status).toBe('delivered');
+      expect(all[0].delivered_at).toBeTruthy();
+    });
+
+    it('does not re-inject a delivered reminder within the redeliver window', async () => {
+      const agent = createMockAgent();
+      const checker = new FastChecker(agent, paths, '/tmp/framework');
+      createReminder(paths, new Date(Date.now() - 1000).toISOString(), 'once only');
+
+      await runPollCycle(checker);
+      expect(agent.injectMessage).toHaveBeenCalledTimes(1);
+
+      // Force the throttle open; the reminder is delivered, so nothing fires.
+      (checker as any).lastReminderCheckAt = 0;
+      await runPollCycle(checker);
+      expect(agent.injectMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('throttles the reminder file check to the 15s interval', async () => {
+      const agent = createMockAgent();
+      const checker = new FastChecker(agent, paths, '/tmp/framework');
+
+      // First poll arms the throttle (no reminders exist yet).
+      await runPollCycle(checker);
+      expect(agent.injectMessage).not.toHaveBeenCalled();
+
+      // Reminder lands mid-session; an immediate next poll is inside the
+      // throttle window, so it is not picked up yet...
+      createReminder(paths, new Date(Date.now() - 1000).toISOString(), 'throttled');
+      await runPollCycle(checker);
+      expect(agent.injectMessage).not.toHaveBeenCalled();
+
+      // ...but once the interval elapses, it fires.
+      await vi.advanceTimersByTimeAsync(15_000);
+      await runPollCycle(checker);
+      expect(agent.injectMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the reminder pending when injection fails (retry next cycle)', async () => {
+      const agent = createMockAgent();
+      agent.injectMessage.mockReturnValue(false);
+      const checker = new FastChecker(agent, paths, '/tmp/framework');
+      createReminder(paths, new Date(Date.now() - 1000).toISOString(), 'inject failed');
+
+      await runPollCycle(checker);
+
+      const all = listReminders(paths, { all: true });
+      expect(all[0].status).toBe('pending');
     });
   });
 
