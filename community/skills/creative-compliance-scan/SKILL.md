@@ -63,6 +63,12 @@ Scan every creative on a tab INDEPENDENTLY (no dedup - variants differ) and writ
 - **META'S OWN VERDICT** (the sheet's `Meta Review Status` col) is free ground truth - reconcile against it.
 - **UNCLEAR** absorbs every can't-call-with-100%-certainty case (imagery disagreement, ambiguous semantic claim, low-confidence read). Never guess.
 
+**STANDING SCAN RULE - the Adam 100% standard (verbatim, 2026-06-10, supersedes any close-at-0-UNCLEAR flow):** *"It is better to leave the row as UNCLEAR (light blue color) than try and guess if its PASS/FAIL. Only mark rows as pass or fail if it is 100% certainty. If it is anything under 100% certainty, mark it as unclear."* This binds EVERY verdict writer, including adjudication: meta-compliance may flip an UNCLEAR to FAIL only on verbatim-confirmed banned text, or to PASS only at 100% certainty with a rule cite; anything under 100% STAYS UNCLEAR and gets a one-line human note in the cell (what to look at: the on-image area, the ambiguous phrase, the missing context). An honest UNCLEAR bucket beats a forced-clean one - report FAIL (rework queue) and UNCLEAR (human-review queue) as separate lines, never summed.
+
+**DELIVERY-TIME GUARANTEE - HARD BAN (Adam directive 2026-06-10, REJECTION-PROVEN - final after reversing twice in one day):** ANY quantified delivery-time promise is a HARD FAIL - "delivered in 72 hours", "72-hour delivery", "at your door in 48 hours". Meta REJECTED flower rows 522-524 carrying delivery-time-guarantee / money-back-guarantee wording even though the old brain rules.md M-3 example offered "at your door in under 72 hours" as approved substitute text - REAL REJECTIONS BEAT RULEBOOK THEORY; the rules.md example is amended by brain PR. Compliant: "delivered fast", "fast shipping", "fast tracked to your door" (speed, no number). Quantified OUTCOME timing stays banned too (M-16: asleep in 10 minutes, 8 hours guaranteed, results in X days). Discretion words (discreet/plain box/plain billing) also fail on their own merits - cite both when both present. Full grep in `references/banned-grep.md`.
+
+**M-24 SCOPE (mc ruling 2026-06-10):** M-24 bans the standalone brand-name phrase (`\bclean green\b`, word-boundary) as creative/copy text. Concatenated tokens are EXEMPT: social handles (@cleangreenstore) and brand-domain URLs (cleangreencare.com, hellocleangreen.com) do not trip M-24 - the rule targets the brand NAME as a promotional phrase, not every string containing the characters.
+
 ### Step 0 - Task + announce + pull LIVE rules
 create-task; col B is the creative-verdict lane. **Pull the brain rules FRESH this run** (`cd /tmp && rm -rf brain && gh repo clone CLEAN-APPS-DEV/clean-green-marketing-brain brain -- --depth 1`) - the banned-term set is rebuilt from `agents/meta-compliance-agent/references/rules.md` every run (see `references/banned-grep.md`). Verify col-B conditional formatting is present incl. the UNCLEAR rule (`references/colb-formatting.md`).
 
@@ -95,6 +101,8 @@ Reconcile the preliminary verdict with the row's `Meta Review Status`. **The rec
 - our **FAIL (deterministic grep hit)** + Meta = **ACTIVE / APPROVED** -> **KEEP FAIL.** A literal banned word on the creative is a real violation regardless of Meta's current status; do NOT soften it - those are exactly the ads at risk of retro-disapproval. (Optionally append a note "Meta currently ACTIVE but has banned on-image text - at retro-disapproval risk".)
 - our **FAIL (JUDGMENT-only: imagery call or ambiguous-semantic, NOT a grep hit)** + Meta = **ACTIVE / APPROVED** -> downgrade to **UNCLEAR** (weak over-call signal worth a human eye; the deterministic layer did not fire, so the call rested on judgment Meta's running status mildly contradicts).
 - otherwise keep the verdict. (Blank/PENDING_REVIEW Meta status -> no change.)
+
+**READ META STATUS LIVE AT VERDICT TIME - never from a cached extraction record (gap caught 2026-06-10):** a re-scan that reuses stored extraction records MUST re-read the `Meta Review Status` column fresh for the cross-check. The record's `meta` field is a snapshot from extraction day; Meta disapprovals land AFTER. Proven failure: flower row 522 sat scan-PASS while live col E said DISAPPROVED, because the re-verdict used the record's empty meta field - the asymmetric override never fired. Rule: extraction records carry text + imagery only; the Meta status input to reconciliation is ALWAYS a live read.
 
 ### Step 7 - Write col B (clobber-guard + evidence)
 Build the write-plan: each cell starts with `PASS` / `FAIL` / `UNCLEAR` then ` (creative v2 <PT date>) - <evidence>` (matched terms / imagery note / Meta-reconcile note). Writer subagent: `GOOGLESHEETS_BATCH_UPDATE` (USER_ENTERED) in chunks of ~34 per `COMPOSIO_MULTI_EXECUTE_TOOL`; READ BACK the range and assert every target row starts with its expected verdict word.
@@ -196,6 +204,8 @@ When Adam asks to make the COPY compliant on the PASS rows. SCOPE = every col-B 
 
 The 8-step Phase 2 above is the per-row contract; this is how to run it across the WHOLE PASS set reliably. The shape is the same gate-layered design as Phase 1 v2: subagents do the bulk, a CENTRAL deterministic gate decides, an authority (meta-compliance) resolves semantics, and you VERIFY by read-back. Never trust copywriter self-grep alone.
 
+**STATED CONVENTION - KEY EVERY CROSS-TAB ARTIFACT BY (tab, row), NEVER BARE ROW NUMBER.** The gummies and flower tabs share row numbers (30 collisions in the 2026-06-10 401-row run). A flat `{row: ...}` dict keyed by bare row number silently OVERWRITES one tab's entry with the other's - 30 gummies rows lost their generated copy this way and the loss was invisible until a scope-vs-generated diff. Every accumulator, write plan, verdict map, hash map, and worklist that can ever hold rows from both tabs uses a composite key (`"GUM:84"` / `("IMAGES (Flower)", 84)` / per-tab namespaces). Reconcile scope-list vs generated-set COUNTS per tab before writing - the diff is one line and catches the whole class.
+
 ### Step A - Enumerate PASS rows + fileids (host-staged)
 Header-resolve live, then BATCH_GET col B + 1x1 (FORMULA) + Code + Customer Avatar + FUNNEL STAGE over the data range; PASS rows = col B starts with `PASS`. Stage `row<TAB>product<TAB>fileid` to HOST tsv (NOT the Composio sandbox - it rotates + /mnt drops mid-run), split into ~22-row copywriter batches. (2026-06-10: 401 PASS = 183 flower + 218 gummies.)
 
@@ -234,6 +244,7 @@ The sheet now carries per-account `{account} - Review Status` + `{account} - Ad 
 - **Single-voice to Adam via the orchestrator** for decisions/narrative; answer Adam's direct factual pings briefly + loop the orchestrator.
 - **col-B formatting:** FAIL->red / PASS->green / else->yellow; the NOT_BLANK-yellow rule must be the LOWEST priority (see `references/colb-formatting.md` - fixing this was a real Adam ask).
 - **No 🌿** in copy (M-19e) - the brain copy-framework §5.5 was stale on this (fixed PR #108); rules.md wins.
+- **Durability note:** this skill lives in `orgs/` (gitignored runtime). The durable home is `community/skills/creative-compliance-scan/` (org-private, opt-in - NOT `templates/agent/`, it is Clean-Green-specific and must not auto-load on new agents). Re-acquire via `cortextos bus install-community-item creative-compliance-scan`; dev re-snapshots the community copy when the runtime version stabilizes.
 
 ---
 
@@ -257,7 +268,7 @@ Quick check: `command -v tesseract ffmpeg gh python3 && (command -v whisper || l
 
 This skill is ORG-PRIVATE to clean-green-marketing and meta-ads-agent-specific. The runtime copy lives in `orgs/.../meta-ads-agent/.claude/skills/creative-compliance-scan/` (gitignored), so the DURABLE, version-controlled copy is here in `community/skills/creative-compliance-scan/`.
 
-- **Do NOT** put it in `templates/agent/` - that base template is copied into EVERY new agent and would force this brand-specific skill onto unrelated agents (the prior version of this note wrongly said to do that; it was an anti-pattern).
+- **Do NOT** put it in `templates/agent/` - that base template is copied into EVERY new agent and would force this brand-specific skill onto unrelated agents.
 - **Re-acquire after a re-create** (the base `add-agent` only lays down template skills, so meta-ads boots WITHOUT this skill until you install it):
   ```bash
   cortextos bus install-community-item creative-compliance-scan

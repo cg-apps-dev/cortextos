@@ -65,7 +65,10 @@ HARD_ALPHA = [
 HARD_DIGIT = [
  ("M-2 4/20", re.compile(r'\b4\s*[:/]\s*20\b|\b420\b')),
  ("M-16 outcome-timing", re.compile(r'asleep in \d+\s*min|knocked? (you |me )?out in \d|results? in \d+\s*days?')),
+ # Adam HARD ban 2026-06-10 (rejection-proven, flower 522-524): ANY quantified delivery-time promise
+ ("M-2 delivery-time-guarantee", re.compile(r'deliver\w*\s+in\s+\d+\s*(hours?|days?)|\d+[- ]?(hour|day)[- ]?(delivery|shipping)|\b(24|48|72)[- ]?hours?\b')),
 ]
+SHIPCTX = re.compile(r'\b(ship|shipped|shipping|deliver|delivered|delivery|arrive|arrives|arrival|doorstep|door|mail|mailed)\b')
 SINGLE_TOKEN_BANS = {
  'bud','buds','flower','flowers','cannabis','marijuana','weed','thc','thca','cbd',
  'hemp','strain','strains','dispensary','nug','nugs','dank','ganja','reefer','medical','discreet'
@@ -138,6 +141,10 @@ def verdict_for(rec):
         else:
             fails.append(f"{label}:'{val}'")
     for label, val in find_all(union_raw_l, HARD_DIGIT):
+        if label=="M-2 delivery-time-guarantee" and re.fullmatch(r'(24|48|72)[- ]?hours?', val.strip()):
+            # bare hours number: HARD only with a ship/deliver word in the text (else it could be product info)
+            if not SHIPCTX.search(union_raw_l):
+                unclears.append(f"{label}(no ship context):'{val}' - verify"); continue
         fails.append(f"{label}:'{val}'")
 
     # letterspace-collapsed evasion: also corroboration-gated
