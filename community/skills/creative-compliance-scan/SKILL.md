@@ -77,7 +77,7 @@ Run all three; UNION their text before grepping. They are COMPLEMENTARY (proven:
 - **(a) Vision pass A** - a transcription-only subagent. Download full-res (`GOOGLEDRIVE_DOWNLOAD_FILE` -> `s3url` -> `curl`). The Read tool caps at 256KB, so DO NOT just downscale (that drops small print). Instead TILE: `ffmpeg -nostdin -loglevel error -i img -vf "crop=iw/2:ih/2:0:0" tl.png` (and `iw/2:0`, `0:ih/2`, `iw/2:ih/2` for the other quadrants) + read the whole image downscaled for layout. `Read` each tile (NATIVE VISION) and transcribe ALL visible text VERBATIM; union the tiles. Also emit imagery flags (below). NO verdict.
 - **(b) Vision pass B** - a SECOND, independent transcription subagent (ideally a different model so errors do not correlate), same tiling, separately.
 - **(c) OCR** - run the bundled `scripts/extract_text.sh <image_path>` (tesseract at full res + 2x upscale + 4 quadrant tiles; prints all recovered text). Deterministic, zero tokens.
-**NORMALIZE the unioned text before grep** to defeat obfuscation: lowercase; collapse intra-word spacing/dots (`F L O W E R` / `f.l.o.w.e.r` -> `flower`); leet-map `0->o 1->i 3->e 4->a 5->s`. (See `references/banned-grep.md`.)
+**NORMALIZE the unioned text before grep - SPLIT BY PATTERN TYPE (v2.1, 2026-06-10):** lowercase always; collapse intra-word spacing/dots (`F L O W E R` / `f.l.o.w.e.r` -> `flower`). The leet-map `0->o 1->i 3->e 4->a 5->s` applies ONLY to ALPHA-word patterns - NEVER to digit-bearing patterns (it corrupts them: `420`->`a2o`, `60,000+ customers`->`6o,ooo+ customers` -> silent false-PASS, caught in prod 2026-06-10). Digit patterns (M-2 4/20, M-6 social-proof counts/ratings, M-16 outcome timing, M-13 `8 hours`) match on RAW lowered text. `scripts/grep_verdict.py` (v2.1) implements the split - use it, do not re-derive. THREE more v2.1 rules baked into it: (1) single-token product words (flower/bud/hemp/...) FAIL only when CORROBORATED by >=2 independent sources (vision A, vision B, OCR) - a single-source hit is UNCLEAR (`verify on image`), because extractors leak CATEGORY words from descriptions (rows 786-793 false-FAIL class); extraction prompts must demand VERBATIM on-image text only. (2) Plain delivery/shipping timeframes (24/48/72 hours) are NOT banned (brain rules.md M-3 approved text: "at your door in under 72 hours") - only the discretion stack (discreet/plain box/plain billing) and M-16 quantified OUTCOME timing fail. (3) Word-gap classes confirmed banned and included: `farm bill` (M-2 legality), `lab-tested`/`third-party tested`/`COA` (M-2/M-7), `no chemicals`. (See `references/banned-grep.md`.)
 
 ### Step 4 - Imagery flags (the only vision JUDGMENT)
 Passes A and B each return, per row: `bud_plant` (yes/no/maybe) = a real cannabis bud/nug/plant/fan-leaf depicted; `leaf_icon` (yes/no/maybe) = a STANDALONE decorative leaf/sprig graphic or leaf emoji placed inline with text. **EXEMPT (always "no"):** the Clean Green brand logo / "g" leaf mark / wordmark; pine trees / mountains / sun / generic nature SCENERY printed on the product pouch; the gummy product itself.
@@ -192,6 +192,41 @@ When Adam asks to make the COPY compliant on the PASS rows. SCOPE = every col-B 
 
 ---
 
+## PHASE 2 AT-SCALE pipeline (v2, proven 2026-06-10 on 401 image-PASS rows: 183 flower + 218 gummies)
+
+The 8-step Phase 2 above is the per-row contract; this is how to run it across the WHOLE PASS set reliably. The shape is the same gate-layered design as Phase 1 v2: subagents do the bulk, a CENTRAL deterministic gate decides, an authority (meta-compliance) resolves semantics, and you VERIFY by read-back. Never trust copywriter self-grep alone.
+
+### Step A - Enumerate PASS rows + fileids (host-staged)
+Header-resolve live, then BATCH_GET col B + 1x1 (FORMULA) + Code + Customer Avatar + FUNNEL STAGE over the data range; PASS rows = col B starts with `PASS`. Stage `row<TAB>product<TAB>fileid` to HOST tsv (NOT the Composio sandbox - it rotates + /mnt drops mid-run), split into ~22-row copywriter batches. (2026-06-10: 401 PASS = 183 flower + 218 gummies.)
+
+### Step B - Copywriter subagents (generate only, ~22 rows each, parallel/background)
+Each: read its host batch + a shared `RULES.md` (per-product generation + the full ban-set, rebuilt from live brain rules), FETCH each creative BY FILEID (Composio Drive -> presigned -> curl -> Read; do NOT reuse `/tmp/scan/imgs/<row>.img` - flower & gummies tabs COLLIDE on row number), generate 5 distinct headlines + 5 bodies asset-aligned, self-grep, emit `{row,product,headlines[5],bodies[5],mismatch,asset_text,notes}` to host jsonl. Copywriters are good but MISS things (invented social-proof numbers, URL/@handle in CTAs) - that's what the central gate is for.
+
+### Step C - CENTRAL deterministic grep-gate (the real gate - you run it, not the subagents)
+Aggregate all copy jsonl; grep each row's headlines+bodies (NOT notes/asset_text) into THREE buckets:
+- **CLEAN** -> write as-is.
+- **HARD** (deterministic violation): banned product/legality/stealth (bud/flower/legal/medical/discreet/72-hour), M-25 scam/fake, M-13 sleep-onset (gummies), M-5 grogginess, em-dash, real brand-claim. -> fix.
+- **REVIEW** (semantic, can't call deterministically): M-4 health-state (relief/feel-the-difference/feel-present/changed-my-evening), M-5 fog/grog (clear morning/foggy), M-8 press (CBS/FOX/MSNBC/as-seen-on), M-20 comparison (better than), social-proof COUNTS, quoted-review stars, attributed numbers. -> meta-compliance.
+
+### Step D - MECHANICAL auto-fix (clears the biggest false-FAIL class)
+Most "M-24 cleangreen" hits are NOT brand-claims - they are `@cleangreenstore` handles or `hellocleangreen.com`/`cleangreencare.com` URLs the copywriter put in a CTA line (which should not be in body copy at all). Deterministically strip them -> "Shop now"; drop a brand-product prefix ("Clean Green DeepSleep" -> "DeepSleep"); residual standalone "Clean Green" -> "this". Re-gate. (2026-06-10: this auto-resolved 33 of ~40 M-24 FAILs.)
+
+### Step E - meta-compliance semantic fix (the authority)
+Batch the remaining HARD + all REVIEW rows to the meta-compliance-agent (running fleet agent) as a `/tmp` json of `{row,product,issues,headlines,bodies,asset_text}`. Ask for a definitive per-row FIXED (corrected headlines[5]+bodies[5]) or PASS. KEY RULINGS it applies: social-proof COUNTS (customers/reviews/orders) are DROPPED even if on-asset (the substantiation risk); on-asset STAR ratings are OK; "fixed/changed/transformed my evenings" = M-4/M-13 treatment-claim (paraphrase); press is OK only for the verified set (CBS/FOX News/MSNBC/USA Today), NBC/others = M-8 fail. Apply its fixes, re-gate to confirm.
+
+### Step F - Write (copy block ONLY) + read-back
+Writer subagents write the contiguous copy block per tab, header-resolved: IMAGES (Sleep Gummies) `X:AG` (Headline..Primary Var.4), IMAGES (Flower) `AA:AJ` (post-Schema-A, unshifted). Write ONLY the 10 copy cells - NEVER touch avatar/funnel/col-B/assets/Ad Name. Read-back verify 10 non-empty cells/row.
+
+### Step G - TAB-MISMATCH rows + comprehensive absence-scan
+- MISMATCH rows (copywriter flagged a wrong-product creative, e.g. gummies/bundle on the flower tab): do NOT write copy; append `\nMISMATCH: <product> creative on <tab> - copy skipped` to col B (preserve the PASS prefix). Report the count BY TAB to the orchestrator (it's a data-quality/refile finding). (2026-06-10: 21 such rows, all on the flower tab, mostly rows 59-92.)
+- COMPREHENSIVE ABSENCE-SCAN: after all writes, re-read the written copy block and assert the full ban-set returns ZERO across every row (not a spot check). Report counts written + the absence-scan result.
+- Broken creative links (404 on fetch): can't generate copy -> leave existing copy, fold the row into the dead-links [HUMAN] re-share task.
+
+### Schema A note (per-account columns, added 2026-06-10)
+The sheet now carries per-account `{account} - Review Status` + `{account} - Ad ID` columns (far-right paired blocks, all 4 tabs) for the media-buyer's launch tracker. They do NOT shift the copy block (far-right append). `Meta Review Status` (col E) is the media-buyer's per-row rollup; the legacy single `Ad ID` is frozen. Not the compliance agent's write lane - leave them alone.
+
+---
+
 ## Cross-cutting hard rules / gotchas
 - **Native vision only judges/writes.** Workbench `invoke_llm` fabricates - use the workbench ONLY to parse sheet data / emit fileid lists.
 - **Re-resolve columns every run** by header name - the sheet gains inserted columns over time; doc letters go stale.
@@ -211,9 +246,10 @@ The deterministic pipeline shells out to local binaries. A fresh host (or re-cre
 | `tesseract` | Phase 1 + 1-V OCR text source (`scripts/extract_text.sh`) | `brew install tesseract` |
 | `ffmpeg` | Image quadrant tiling (Phase 1 Step 3), video frame sampling + audio extraction (Phase 1-V) | `brew install ffmpeg` |
 | `whisper` | Phase 1-V local audio transcription (zero LLM tokens) | openai-whisper at `~/Library/Python/3.9/bin` (`pip3 install openai-whisper`), or whisper.cpp `whisper-cli -m ~/.cortextos/models/ggml-tiny.en.bin` |
+| `python3` | Deterministic gate scripts (`scripts/grep_verdict.py`, `scripts/copy_gate.py`) | system python3 |
 | `gh` | Live brain-repo rules pull (COMPLIANCE SOURCE RULE) | authed with read on `CLEAN-APPS-DEV/clean-green-marketing-brain` |
 
-Quick check: `command -v tesseract ffmpeg gh && (command -v whisper || ls ~/Library/Python/3.9/bin/whisper)` - resolve any miss before starting a run (video scans hard-require all of tesseract/ffmpeg/whisper).
+Quick check: `command -v tesseract ffmpeg gh python3 && (command -v whisper || ls ~/Library/Python/3.9/bin/whisper)` - resolve any miss before starting a run (video scans hard-require all of tesseract/ffmpeg/whisper).
 
 ---
 
