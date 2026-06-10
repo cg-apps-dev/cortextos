@@ -1,4 +1,9 @@
 node_modules/
+# Also ignore a bare `node_modules` symlink file (no trailing slash). Worktree-isolated
+# branches symlink node_modules back to the main repo so tsc/vitest resolve deps;
+# the trailing-slash rule above only matches a real directory, not the symlink file,
+# so without this line `git add -A` in a worktree stages a machine-specific symlink.
+node_modules
 .claude/
 !.claude/commands/
 !.claude/commands/**
