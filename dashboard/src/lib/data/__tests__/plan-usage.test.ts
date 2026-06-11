@@ -132,3 +132,25 @@ describe('getMultiAccountUsage (3-account subscription panel)', () => {
     expect(r.accounts[0].plan).toBe('Claude Plan');
   });
 });
+
+describe('getCodexUsage (read-only codex card)', () => {
+  it('returns null when codex-usage.json is absent', () => {
+    expect(reports.getCodexUsage()).toBeNull();
+  });
+
+  it('reads + rounds the codex snapshot written by the 15-min sync', () => {
+    fs.writeFileSync(path.join(usageDir, 'codex-usage.json'), JSON.stringify({
+      generated_at: '2026-06-11T18:00:00.000Z',
+      codex: {
+        primary: { used_percent: 12.6, window_minutes: 300, resets_at: 1781153962 },
+        secondary: { used_percent: 88, window_minutes: 10080, resets_at: 1781560275 },
+        plan_type: 'pro', rate_limit_reached: false, as_of: '2026-06-11T00:44:38.391Z',
+      },
+    }));
+    const c = reports.getCodexUsage()!;
+    expect(c.primary!.used_pct).toBe(13); // rounded
+    expect(c.secondary!.used_pct).toBe(88);
+    expect(c.plan_type).toBe('pro');
+    expect(c.as_of).toBe('2026-06-11T00:44:38.391Z');
+  });
+});

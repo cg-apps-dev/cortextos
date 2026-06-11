@@ -32,6 +32,7 @@ import { join } from 'path';
 import { createHash, randomBytes } from 'crypto';
 import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
 import { loadAccounts, saveAccounts, type AccountsStore, type OAuthAccount } from './oauth.js';
+import { readCodexUsage } from './codex-usage.js';
 
 // --- Types ---
 
@@ -756,5 +757,20 @@ export async function checkAllUsage(ctxRoot: string): Promise<AllUsageResult> {
     join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'),
     JSON.stringify({ generated_at: now, accounts: usages }, null, 2),
   );
+
+  // Fold the Codex (ChatGPT plan) usage into the same 15-min write so it rides
+  // the existing sync (no new launchd job, no dashboard render-time scan of
+  // ~/.codex/sessions). ZERO-TOKEN local-file read - failure is non-fatal
+  // (Codex is an adjacent display, never blocks the Claude usage write).
+  try {
+    const codex = readCodexUsage();
+    if (codex) {
+      atomicWriteSync(
+        join(ctxRoot, 'state', 'usage', 'codex-usage.json'),
+        JSON.stringify({ generated_at: now, codex }, null, 2),
+      );
+    }
+  } catch { /* Codex usage is best-effort; never break the Claude write */ }
+
   return { accounts: usages, alerts };
 }

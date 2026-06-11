@@ -1,5 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import type { AccountUsagePanelEntry } from '@/lib/data/reports';
+import type { AccountUsagePanelEntry, CodexUsagePanel } from '@/lib/data/reports';
 
 /** Render an ISO timestamp in Pacific time (fleet rule: humans see PT). */
 function ptTime(iso: string | undefined): string {
@@ -85,28 +85,53 @@ function AccountCard({ entry }: { entry: AccountUsagePanelEntry }) {
   );
 }
 
+/** Codex (OpenAI ChatGPT plan) usage card - read-only, last-seen, as-of stamped. */
+function CodexCard({ codex }: { codex: CodexUsagePanel }) {
+  const plan = codex.plan_type ? codex.plan_type.charAt(0).toUpperCase() + codex.plan_type.slice(1) : 'ChatGPT';
+  const resetIso = (s?: number) => (s ? new Date(s * 1000).toISOString() : undefined);
+  return (
+    <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+      <div>
+        <p className="text-sm font-semibold">Codex (OpenAI)</p>
+        <p className="text-xs text-muted-foreground">{plan} Plan</p>
+      </div>
+      <div className="space-y-3">
+        <UsageRow label="5-Hour" pct={codex.primary?.used_pct} resets={resetIso(codex.primary?.resets_at)} />
+        <UsageRow label="Weekly" pct={codex.secondary?.used_pct} resets={resetIso(codex.secondary?.resets_at)} />
+        {codex.rate_limit_reached && (
+          <p className="text-xs text-red-600 dark:text-red-400">Rate limit reached</p>
+        )}
+        <p className="text-[10px] text-muted-foreground">as of {ptTime(codex.as_of)} (last Codex run)</p>
+      </div>
+    </div>
+  );
+}
+
 export function SubscriptionUsage({
   data,
+  codex,
 }: {
   data: { generatedAt: string; accounts: AccountUsagePanelEntry[] } | null;
+  codex?: CodexUsagePanel | null;
 }) {
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
-          Claude Subscription Usage
+          Subscription Usage
         </CardTitle>
       </CardHeader>
       <CardContent>
-        {data && data.accounts.length > 0 ? (
+        {(data && data.accounts.length > 0) || codex ? (
           <div className="space-y-3">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {data.accounts.map((a) => (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {data?.accounts.map((a) => (
                 <AccountCard key={a.account} entry={a} />
               ))}
+              {codex && <CodexCard codex={codex} />}
             </div>
             <p className="text-[10px] text-muted-foreground">
-              Last updated: {ptTime(data.generatedAt)} · refreshes every 2h
+              {data ? `Claude updated ${ptTime(data.generatedAt)} · ` : ''}refreshes every 15 min
             </p>
           </div>
         ) : (

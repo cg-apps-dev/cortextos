@@ -401,6 +401,53 @@ export function getMultiAccountUsage(): { generatedAt: string; accounts: Account
 }
 
 // ---------------------------------------------------------------------------
+// Codex (OpenAI ChatGPT plan) usage - read-only, zero-token
+// ---------------------------------------------------------------------------
+
+export interface CodexUsagePanel {
+  primary?: { used_pct: number; window_minutes: number; resets_at?: number };
+  secondary?: { used_pct: number; window_minutes: number; resets_at?: number };
+  plan_type?: string;
+  rate_limit_reached?: boolean;
+  as_of: string;
+}
+
+/**
+ * Read the Codex usage snapshot written into the 15-min consolidated sync by
+ * `cortextos bus check-all-usage` (which reads codex's own rollout files - no
+ * token, no endpoint, no auth). Returns null until codex has been run with a
+ * rate-limit reading. The value is last-seen (the panel wears the as-of time).
+ */
+export function getCodexUsage(): CodexUsagePanel | null {
+  const file = path.join(CTX_ROOT, 'state', 'usage', 'codex-usage.json');
+  if (!fs.existsSync(file)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
+      codex?: {
+        primary?: { used_percent: number; window_minutes: number; resets_at?: number };
+        secondary?: { used_percent: number; window_minutes: number; resets_at?: number };
+        plan_type?: string;
+        rate_limit_reached?: boolean;
+        as_of: string;
+      };
+    };
+    const c = raw.codex;
+    if (!c) return null;
+    const win = (w?: { used_percent: number; window_minutes: number; resets_at?: number }) =>
+      w ? { used_pct: Math.round(w.used_percent), window_minutes: w.window_minutes, resets_at: w.resets_at } : undefined;
+    return {
+      primary: win(c.primary),
+      secondary: win(c.secondary),
+      plan_type: c.plan_type,
+      rate_limit_reached: c.rate_limit_reached,
+      as_of: c.as_of,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Historical Plan Usage (time series from JSONL logs)
 // ---------------------------------------------------------------------------
 

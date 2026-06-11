@@ -16,7 +16,7 @@ import { CostTracking } from '@/components/analytics/cost-tracking';
 import { ModelComparison } from '@/components/analytics/model-comparison';
 import { GoalProgress } from '@/components/analytics/goal-progress';
 import { FleetHealth } from '@/components/analytics/fleet-health';
-import { getFleetHealth, getLatestSnapshot, getPlanUsage, getUsageHistory, getMultiAccountUsage } from '@/lib/data/reports';
+import { getFleetHealth, getLatestSnapshot, getPlanUsage, getUsageHistory, getMultiAccountUsage, getCodexUsage } from '@/lib/data/reports';
 import { SubscriptionUsage } from '@/components/analytics/subscription-usage';
 
 export default async function AnalyticsPage({
@@ -33,7 +33,7 @@ export default async function AnalyticsPage({
   syncCostsLazy();
 
   // Fetch all data in parallel
-  const [taskData, agentStats, dailyCosts, dailyCostByModel, monthCost, costByAgent, modelUsage, goalsData, fleetHealth, planUsage, usageHistory, multiAccountUsage] =
+  const [taskData, agentStats, dailyCosts, dailyCostByModel, monthCost, costByAgent, modelUsage, goalsData, fleetHealth, planUsage, usageHistory, multiAccountUsage, codexUsage] =
     await Promise.all([
       Promise.resolve(getTaskThroughput(30, org || undefined)),
       Promise.resolve(getAgentEffectiveness(org || undefined)),
@@ -47,6 +47,7 @@ export default async function AnalyticsPage({
       Promise.resolve(getPlanUsage()),
       Promise.resolve(getUsageHistory(7)),
       Promise.resolve(getMultiAccountUsage()),
+      Promise.resolve(getCodexUsage()),
     ]);
 
   // Project monthly cost: (month-to-date / days elapsed) * days in month
@@ -88,7 +89,7 @@ export default async function AnalyticsPage({
       />
 
       {/* Claude subscription usage - 3 accounts */}
-      <SubscriptionUsage data={multiAccountUsage} />
+      <SubscriptionUsage data={multiAccountUsage} codex={codexUsage} />
 
       {/* Claude vs Codex usage comparison */}
       <ModelComparison data={modelUsage} />
