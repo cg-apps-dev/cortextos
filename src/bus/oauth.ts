@@ -354,7 +354,12 @@ export function toPlanUsageSnapshot(
 function writePlanUsage(ctxRoot: string, snapshot: PlanUsageSnapshot): void {
   ensureDir(usageDir(ctxRoot));
   // SECURITY: snapshot holds only usage numbers + reset times — never a token.
+  // latest.json = the active series; latest-<account>.json = per-account, so a
+  // job recovering under a DIFFERENT account can never splice its numbers into
+  // another account's unlabeled series (the 84% me-com ghost, 2026-06-11).
   atomicWriteSync(usageLatestPath(ctxRoot), JSON.stringify(snapshot, null, 2));
+  const safe = snapshot.account.replace(/[^A-Za-z0-9._-]/g, '_');
+  atomicWriteSync(join(usageDir(ctxRoot), `latest-${safe}.json`), JSON.stringify(snapshot, null, 2));
   appendFileSync(usageDailyPath(ctxRoot), JSON.stringify(snapshot) + '\n');
 }
 
@@ -366,8 +371,22 @@ function writePlanUsage(ctxRoot: string, snapshot: PlanUsageSnapshot): void {
  * call; it is never logged, returned, or written. Only usage numbers + reset
  * times are persisted.
  */
-export async function refreshUsage(ctxRoot: string): Promise<PlanUsageSnapshot> {
-  const { accessToken, accountName } = resolveOAuthAccessToken(ctxRoot);
+export async function refreshUsage(ctxRoot: string, account?: string): Promise<PlanUsageSnapshot> {
+  // Prefer the named/active account's USAGE credential (login-class,
+  // user:profile scope) - the inference token may be a setup-token that 403s
+  // on the usage API (bit the dashboard post-seat-swap, 2026-06-11). Fall
+  // back to the legacy resolution chain when no usage credential exists.
+  const store = loadAccounts(ctxRoot);
+  const name = account ?? store?.active;
+  const usageCred = name ? store?.accounts[name]?.usage_credential : undefined;
+  let accessToken: string;
+  let accountName: string;
+  if (usageCred?.access_token && name) {
+    accessToken = usageCred.access_token;
+    accountName = name;
+  } else {
+    ({ accessToken, accountName } = resolveOAuthAccessToken(ctxRoot, account));
+  }
 
   const response = await fetch('https://api.anthropic.com/api/oauth/usage', {
     headers: {
@@ -376,8 +395,9 @@ export async function refreshUsage(ctxRoot: string): Promise<PlanUsageSnapshot> 
     },
   });
   if (!response.ok) {
-    // Note: never include the token in errors; status only.
-    throw new Error(`Usage API returned ${response.status}`);
+    // Note: never include the token in errors; status only. Name the account
+    // so a 403 is attributable instead of an unlabeled series mystery.
+    throw new Error(`Usage API returned ${response.status} for account "${accountName}"`);
   }
 
   const data = await response.json() as UsageApiResponse;
