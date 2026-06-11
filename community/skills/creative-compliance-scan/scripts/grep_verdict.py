@@ -60,6 +60,8 @@ HARD_ALPHA = [
  ("M-2 medical(bare)", re.compile(r'\bmedical\b')),
  ("M-2/M-7 lab-claim", re.compile(r'lab[- ]?tested|third[- ]?party tested|certificate of analysis|\bcoa\b|no chemicals')),
  ("M-25 scam/fake", re.compile(r'\b(scam(med|my)?|rip[- ]?off|ripped off|fakes?|faking|faked|fraud(ulent)?|counterfeit|knock[- ]?off|bogus|hoax|swindle[ds]?|swindling|illegitimate)\b|too good to be true')),
+ # mc banked ruling (video batch 2026-06-10, flower 833 2026-06-11): clear-morning class = M-5 side-effect-absence claim
+ ("M-5 morning-clarity", re.compile(r'mornings? (are|were|feel) clear|clear mornings?|clear[- ]headed (morning|day)|wake up clear')),
 ]
 # ---- DIGIT hard bans: matched on RAW lowered text (leet would corrupt them) ----
 HARD_DIGIT = [
@@ -67,6 +69,9 @@ HARD_DIGIT = [
  ("M-16 outcome-timing", re.compile(r'asleep in \d+\s*min|knocked? (you |me )?out in \d|results? in \d+\s*days?')),
  # Adam HARD ban 2026-06-10 (rejection-proven, flower 522-524): ANY quantified delivery-time promise
  ("M-2 delivery-time-guarantee", re.compile(r'deliver\w*\s+in\s+\d+\s*(hours?|days?)|\d+[- ]?(hour|day)[- ]?(delivery|shipping)|\b(24|48|72)[- ]?hours?\b')),
+ # M-16a (rules.md 2026-06-11, rejection-proven): ANY specific count tied to a social-proof noun = HARD,
+ # any surface incl on-image. Standalone ratings ("4.8 stars") stay PASS; "thousands of" is the APPROVED form.
+ ("M-16a social-proof-count", re.compile(r'(?<![\$])\b\d[\d,]*\s*\+?\s*(?:\w+\s+)?(customers?|reviews?|subscribers?|households?|people|orders?|families|sleepers?|users?|five[- ]star)\b|\b\d+k\+?\s*(customers?|reviews?|subscribers?|people)\b|\b\d(\.\d)?\s*stars?\s+from\s+\d')),
 ]
 SHIPCTX = re.compile(r'\b(ship|shipped|shipping|deliver|delivered|delivery|arrive|arrives|arrival|doorstep|door|mail|mailed)\b')
 SINGLE_TOKEN_BANS = {
@@ -82,7 +87,8 @@ AMBIG_ALPHA = [
  ("M-20 comparison", re.compile(r'better than|better\s+\w+\s+than|stronger than|more potent|not weak|not gas station|higher.?quality than|quality than|than (the|my|any|anything|what|i|your)\b.{0,18}\b(getting|got|had|used|tried|before|old|local|shop|dispensar)')),
 ]
 AMBIG_DIGIT = [
- ("M-6 social-proof#", re.compile(r'(?<![\$])\b\d[\d,]*[ ]*\+?[ ]*(?:\w+[ ]+)?(customers?|reviews?|people|orders?|families|sleepers?|users?|five[- ]star)\b|\b\d(\.\d)?\s*/\s*5\b|\b\d(\.\d)?\s*stars?\b|\b\d+k\+?\s*(customers?|reviews?|people)\b|thousands of')),
+ # (M-6 social-proof# count class moved to HARD_DIGIT as M-16a 2026-06-11; standalone star ratings and
+ #  "thousands of" are explicitly APPROVED per rules.md M-16a and are no longer flagged)
 ]
 GUM_HARD_ALPHA = [
  ("M-13 sleep-onset", re.compile(r'fall asleep|asleep all night|sleep through the night|slept through the night|drift off|wake up rested|stay asleep|stayed asleep|natural sleep aid|non[- ]?habit[- ]?forming')),
@@ -101,7 +107,7 @@ def find_all(text, pats):
     for label, rx in pats:
         for m in rx.finditer(text):
             # $-price guard for social-proof ("orders over $99")
-            if label=="M-6 social-proof#":
+            if label in ("M-6 social-proof#", "M-16a social-proof-count"):
                 s=max(0,m.start()-12)
                 if re.search(r'over \$|\$\d', text[s:m.end()+3]): continue
             hits.append((label, m.group(0)))

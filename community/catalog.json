@@ -343,7 +343,7 @@
       "description": "ORG-PRIVATE (clean-green-marketing) - NOT a generic reusable skill, do not publish upstream. Meta ad creative + copy compliance playbook for the META Ad Upload Sheet. PHASE 1 (v2 deterministic): extract on-image text from three sources (two tiled native-vision passes + tesseract OCR), deterministic banned-word grep, two-pass imagery adjudication, Meta-review-status cross-check, three-outcome col-B verdict (PASS/FAIL/UNCLEAR) with at-scale execution patterns (extractor/grep/writer split, marker-verify, DOWNLOAD_FAIL recovery, UNCLEAR batch to meta-compliance-agent). PHASE 1-V: video variant (local Whisper transcript + sampled hook/CTA frames). PHASE 2 (Adam-triggered): gated copy rewrite on image-PASS rows. Brand-specific (hardcoded Clean Green sheet IDs + product tabs); pulls all compliance rules LIVE from the clean-green-marketing-brain repo (zero embedded ban lists). Installed only into meta-ads-agent. Host prereqs: tesseract, ffmpeg, whisper.",
       "author": "clean-green-marketing/meta-ads-agent",
       "type": "skill",
-      "version": "2.1.5",
+      "version": "2.1.6",
       "tags": ["org-private", "do-not-submit-upstream", "meta-ads", "compliance", "clean-green-marketing"],
       "review_status": "org-private",
       "dependencies": [],
