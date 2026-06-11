@@ -10,6 +10,7 @@ import {
   captureKeychainUsageCredential,
   resolveUsageToken,
   beginUsageAuth,
+  assertGrantedScopeSafe,
   USAGE_ALERT_5H_PCT,
   USAGE_ALERT_7D_PCT,
   type AccountUsage,
@@ -251,11 +252,35 @@ describe('usage-accounts', () => {
     });
   });
 
+  describe('assertGrantedScopeSafe (fail-closed post-grant assertion)', () => {
+    it('STORES (returns scopes) on a confirmed drop - scope present, no org:create_api_key', () => {
+      const got = assertGrantedScopeSafe('user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload');
+      expect(got).toContain('user:inference');
+      expect(got).not.toContain('org:create_api_key');
+    });
+
+    it('TRIPS when granted scope INCLUDES org:create_api_key (key-mint present)', () => {
+      expect(() => assertGrantedScopeSafe('org:create_api_key user:profile user:inference'))
+        .toThrow(/GRANT-ASSERTION TRIP.*key-mint/);
+    });
+
+    it('TRIPS when the scope field is ABSENT (RFC6749: grant==request==key-mint, unconfirmable)', () => {
+      expect(() => assertGrantedScopeSafe(undefined)).toThrow(/GRANT-ASSERTION TRIP.*omitted/);
+    });
+
+    it('TRIPS when the scope field is EMPTY/whitespace (unconfirmable)', () => {
+      expect(() => assertGrantedScopeSafe('   ')).toThrow(/GRANT-ASSERTION TRIP/);
+    });
+  });
+
   describe('beginUsageAuth', () => {
     it('writes a 0600 pending file and returns a PKCE authorize URL without the verifier', () => {
       const r = beginUsageAuth(ctxRoot, 'me-com-max');
-      expect(r.url).toContain('https://claude.ai/oauth/authorize');
+      // Consumer/Max authorize host (claude.com/cai) from the live binary.
+      expect(r.url).toContain('https://claude.com/cai/oauth/authorize');
       expect(r.url).toContain('code_challenge_method=S256');
+      // Full canonical Zq8 set is requested (post-grant assertion enforces at-rest class).
+      expect(r.url).toContain(encodeURIComponent('org:create_api_key'));
       expect(r.url).toContain(encodeURIComponent('user:profile'));
       const path = join(ctxRoot, 'state', 'oauth', 'pending-usage-auth.json');
       expect(existsSync(path)).toBe(true);

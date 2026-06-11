@@ -71,30 +71,74 @@ export interface AllUsageResult {
 export const USAGE_ALERT_5H_PCT = 80;
 export const USAGE_ALERT_7D_PCT = 60;
 
-// OAuth endpoints + scope set are taken VERBATIM from the live Claude Code
-// 2.1.173 binary (string-extracted, not reconstructed from memory) after the
-// first fix's memory-based URLs failed Adam's approve step with "Invalid
-// request format". The endpoints MIGRATED to platform.claude.com; the old
-// claude.ai / console.anthropic.com hosts are stale. The redirect_uri is the
-// smoking gun: a redirect not matching the client's registration renders the
-// authorize page but fails the approve POST (proven live 2026-06-11).
+// All OAuth constants are taken VERBATIM from the live Claude Code 2.1.173
+// binary (string-extracted from its G86 authorize-URL builder), NOT
+// reconstructed from memory - memory-based URLs failed Adam's approve step
+// three times. The builder keys the authorize HOST on account type:
+// loginMethod "claudeai" (personal Max / consumer) -> CLAUDE_AI_AUTHORIZE_URL
+// (claude.com/cai, which 307s to claude.ai); "console" -> platform.claude.com.
+// Adam's accounts are personal Max = "claudeai", so we MUST use the cai host;
+// using the console host got the org-select page then failed at the Max step.
 const USAGE_API = 'https://api.anthropic.com/api/oauth/usage';
 const TOKEN_API = 'https://platform.claude.com/v1/oauth/token';
-const AUTHORIZE_URL = 'https://platform.claude.com/oauth/authorize';
-// Claude Code's PUBLIC OAuth client id (present verbatim in the binary;
-// public by design for PKCE, not a secret).
+// CLAUDE_AI_AUTHORIZE_URL from the binary - the consumer/Max authorize host.
+const AUTHORIZE_URL = 'https://claude.com/cai/oauth/authorize';
+// Claude Code's PUBLIC OAuth client id (verbatim in the binary; public by
+// design for PKCE, not a secret).
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-// The ONLY /oauth/code/callback literal in the binary (console.anthropic.com
-// appears nowhere) - this is the client's registered redirect.
+// MANUAL_REDIRECT_URL from the binary - the hosted paste-back callback
+// (isManual=true), so Adam can copy the code. Registered for this client.
 const REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback';
-// The Claude Code LOGIN scope family (matches the seat keychain token that
-// already works against the usage API: user:profile/inference/sessions/
-// mcp_servers/file_upload). NOT org:create_api_key - that is the SEPARATE
-// setup-token / API-key-creation flow; mixing it in was the first fix's
-// error. Dropping it also REMOVES the key-mint trust class (security note
-// 2026-06-11): the token is spend-capable (user:inference, same as the seat
-// already at rest) but NOT key-mint-capable.
-const DEFAULT_SCOPES = 'user:profile user:inference user:sessions:claude_code user:mcp_servers';
+// The FULL canonical Zq8 scope set the binary requests (dedup union of
+// [org:create_api_key, user:profile] and the user:* login family). We request
+// it byte-for-byte to match the real client (the discipline that ends the
+// frankenstein-deviation failures); the at-rest trust class is then ENFORCED,
+// not assumed, by assertGrantedScopeSafe() below - personal Max accounts drop
+// org:create_api_key at grant (seat precedent), and any token that comes back
+// still carrying key-mint is refused storage and escalated.
+const DEFAULT_SCOPES = 'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload';
+
+// The key-mint scope - must never reach at-rest storage on a usage credential.
+const KEY_MINT_SCOPE = 'org:create_api_key';
+
+/**
+ * Post-grant scope assertion (security-mandated, fail-closed). The usage
+ * credential must NOT be key-mint-capable at rest. We request the full
+ * canonical set, but only store a token whose GRANTED scope is confirmed to
+ * EXCLUDE org:create_api_key.
+ *
+ * Per RFC6749 5.1 the token response echoes `scope` ONLY when the grant
+ * differs from the request. So:
+ *  - scope present + no key-mint  -> confirmed drop, safe to store.
+ *  - scope present + key-mint     -> granted key-mint, REFUSE.
+ *  - scope absent/empty           -> grant == request == key-mint present;
+ *                                    UNCONFIRMABLE, REFUSE (absence of
+ *                                    confirmation is not confirmation of
+ *                                    absence).
+ * Returns the granted scope array on success; throws on any refusal so the
+ * caller never stores. The caller escalates + flags the issued token for
+ * possible revocation (it was minted server-side even if we discard it).
+ */
+export function assertGrantedScopeSafe(grantedScopeField: string | undefined): string[] {
+  const granted = (grantedScopeField ?? '').trim();
+  if (!granted) {
+    throw new Error(
+      'GRANT-ASSERTION TRIP: token response omitted `scope` - per RFC6749 5.1 that means ' +
+      'granted == requested, i.e. org:create_api_key (key-mint) was GRANTED. Refusing to ' +
+      'store an unconfirmable/key-mint-capable usage credential. Escalate + consider revoking ' +
+      'the issued token.',
+    );
+  }
+  const scopes = granted.split(/\s+/).filter(Boolean);
+  if (scopes.includes(KEY_MINT_SCOPE)) {
+    throw new Error(
+      `GRANT-ASSERTION TRIP: granted scope INCLUDES ${KEY_MINT_SCOPE} (key-mint) - this account's ` +
+      'grant behavior differs from the personal-Max precedent. Refusing to store a key-mint-capable ' +
+      'usage credential. Escalate + consider revoking the issued token.',
+    );
+  }
+  return scopes;
+}
 
 const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 
@@ -302,6 +346,13 @@ export async function completeUsageAuth(
     throw new Error('Token exchange response missing access_token/refresh_token.');
   }
 
+  // POST-GRANT SCOPE ASSERTION (fail-closed) - BEFORE any store. Throws if the
+  // granted scope is key-mint-capable or unconfirmable, so nothing reaches
+  // accounts.json. The pending file is intentionally LEFT in place on a trip
+  // (we do not consume the flow) and the issued token is flagged for possible
+  // revocation in the thrown message.
+  const grantedScopes = assertGrantedScopeSafe(tokens.scope);
+
   const expiresAt = Date.now() + (tokens.expires_in ?? 3600) * 1000;
   const store = requireStore(ctxRoot);
   const account = ensureAccount(store, accountName);
@@ -309,7 +360,7 @@ export async function completeUsageAuth(
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token,
     expires_at: expiresAt,
-    scopes: tokens.scope ? tokens.scope.split(' ') : undefined,
+    scopes: grantedScopes,
     source: 'pkce-authorize',
     captured_at: new Date().toISOString(),
   };
