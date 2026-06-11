@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, renameSync, statSync, existsSync } from 'fs';
+import { appendFileSync, readdirSync, readFileSync, renameSync, statSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createHmac, timingSafeEqual } from 'crypto';
 import type { InboxMessage, Priority, BusPaths } from '../types/index.js';
@@ -83,6 +83,13 @@ export function sendMessage(
   const inboxDir = join(paths.ctxRoot, 'inbox', to);
   ensureDir(inboxDir);
   atomicWriteSync(join(inboxDir, filename), JSON.stringify(message));
+
+  try {
+    ensureDir(paths.logDir);
+    appendFileSync(join(paths.logDir, 'message-history.jsonl'), `${JSON.stringify(message)}\n`, 'utf-8');
+  } catch {
+    // History logging is best-effort; delivery succeeded once the inbox write completed.
+  }
 
   return msgId;
 }
