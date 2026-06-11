@@ -71,22 +71,30 @@ export interface AllUsageResult {
 export const USAGE_ALERT_5H_PCT = 80;
 export const USAGE_ALERT_7D_PCT = 60;
 
+// OAuth endpoints + scope set are taken VERBATIM from the live Claude Code
+// 2.1.173 binary (string-extracted, not reconstructed from memory) after the
+// first fix's memory-based URLs failed Adam's approve step with "Invalid
+// request format". The endpoints MIGRATED to platform.claude.com; the old
+// claude.ai / console.anthropic.com hosts are stale. The redirect_uri is the
+// smoking gun: a redirect not matching the client's registration renders the
+// authorize page but fails the approve POST (proven live 2026-06-11).
 const USAGE_API = 'https://api.anthropic.com/api/oauth/usage';
-const TOKEN_API = 'https://console.anthropic.com/v1/oauth/token';
-const AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
-// Claude Code's PUBLIC OAuth client id (the same one the interactive
-// `claude` login uses - public by design for PKCE; not a secret).
+const TOKEN_API = 'https://platform.claude.com/v1/oauth/token';
+const AUTHORIZE_URL = 'https://platform.claude.com/oauth/authorize';
+// Claude Code's PUBLIC OAuth client id (present verbatim in the binary;
+// public by design for PKCE, not a secret).
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const REDIRECT_URI = 'https://console.anthropic.com/oauth/code/callback';
-// The authorize server for this client_id requires the CANONICAL accepted
-// scope set - a profile-only request is rejected post-approve with
-// "Invalid request format" (proven live 2026-06-11, Adam mid-flow). This is
-// the same set the Claude Code login / setup-token flow requests with this
-// client_id + redirect_uri. Our code uses the resulting token ONLY for the
-// read-only usage API; the user:inference scope (spend-capable) comes with
-// the canonical set but is never exercised. Stored at rest in accounts.json
-// (0600). Security-reviewed scope expansion (task_1781149656020).
-const DEFAULT_SCOPES = 'org:create_api_key user:profile user:inference';
+// The ONLY /oauth/code/callback literal in the binary (console.anthropic.com
+// appears nowhere) - this is the client's registered redirect.
+const REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback';
+// The Claude Code LOGIN scope family (matches the seat keychain token that
+// already works against the usage API: user:profile/inference/sessions/
+// mcp_servers/file_upload). NOT org:create_api_key - that is the SEPARATE
+// setup-token / API-key-creation flow; mixing it in was the first fix's
+// error. Dropping it also REMOVES the key-mint trust class (security note
+// 2026-06-11): the token is spend-capable (user:inference, same as the seat
+// already at rest) but NOT key-mint-capable.
+const DEFAULT_SCOPES = 'user:profile user:inference user:sessions:claude_code user:mcp_servers';
 
 const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 

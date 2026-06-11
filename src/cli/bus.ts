@@ -2633,7 +2633,7 @@ busCommand
   .command('add-usage-account')
   .description('Begin the PKCE browser-approve flow to add a usage credential for an account (does NOT touch machine login)')
   .argument('<account>', 'Account name (e.g. icloud-max-20x)')
-  .option('--scopes <scopes>', 'Space-separated scope set (default: the canonical "org:create_api_key user:profile user:inference" the authorize server requires; narrow it only if a smaller set is proven accepted)')
+  .option('--scopes <scopes>', 'Space-separated scope set (default: the Claude Code login set from the live binary; never include org:create_api_key - that is the separate setup-token flow)')
   .action((account: string, opts: { scopes?: string }) => {
     const env = resolveEnv();
     try {
