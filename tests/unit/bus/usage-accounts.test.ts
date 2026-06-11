@@ -291,9 +291,19 @@ describe('usage-accounts', () => {
       expect(r.url).not.toContain(pending.verifier);
     });
 
-    it('honors a custom scope set', () => {
+    it('honors a custom scope set with URLSearchParams (+) encoding', () => {
       const r = beginUsageAuth(ctxRoot, 'x', 'org:create_api_key user:profile user:inference');
-      expect(r.url).toContain(encodeURIComponent('org:create_api_key user:profile user:inference'));
+      // URLSearchParams serializes spaces as + (matches the real client), not %20.
+      expect(r.url).toContain('scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference');
+    });
+
+    it('emits scope spaces as + and a 43-char state (byte-match the real client)', () => {
+      const r = beginUsageAuth(ctxRoot, 'me-com-max');
+      const u = new URL(r.url);
+      expect(u.searchParams.get('state')!.length).toBe(43);
+      // The raw query keeps + for the scope separators (not %20).
+      expect(r.url).toMatch(/scope=[^&]*\+[^&]*\+/);
+      expect(r.url).not.toContain('%20');
     });
   });
 });

@@ -292,10 +292,21 @@ export function beginUsageAuth(
   }, null, 2));
   try { chmodSync(path, 0o600); } catch { /* ignore */ }
 
-  const url = `${AUTHORIZE_URL}?code=true&client_id=${CLIENT_ID}&response_type=code` +
-    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
-    `&scope=${encodeURIComponent(scopes)}` +
-    `&code_challenge=${challenge}&code_challenge_method=S256&state=${state}`;
+  // Build via URL + searchParams to byte-match the real client's G86 builder
+  // (new URL(...).searchParams.append(...)). URLSearchParams serializes a
+  // SPACE as "+" (not "%20"), so the multi-scope value matches the client
+  // exactly; append order matches G86: code, client_id, response_type,
+  // redirect_uri, scope, code_challenge, code_challenge_method, state.
+  const u = new URL(AUTHORIZE_URL);
+  u.searchParams.append('code', 'true');
+  u.searchParams.append('client_id', CLIENT_ID);
+  u.searchParams.append('response_type', 'code');
+  u.searchParams.append('redirect_uri', REDIRECT_URI);
+  u.searchParams.append('scope', scopes);
+  u.searchParams.append('code_challenge', challenge);
+  u.searchParams.append('code_challenge_method', 'S256');
+  u.searchParams.append('state', state);
+  const url = u.toString();
   return {
     account: accountName,
     url,
