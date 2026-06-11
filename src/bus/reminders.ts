@@ -2,7 +2,7 @@
  * Persistent reminder queue (pending-reminders.json).
  *
  * Solves the cron-loss-on-hard-restart problem (#69).
- * Claude Code CronCreate records are in-memory only — they evaporate on hard-restart.
+ * Claude Code CronCreate records are in-memory only - they evaporate on hard-restart.
  * This module provides a file-backed queue in state/{agent}/pending-reminders.json
  * that survives any restart type and is injected into the agent boot prompt.
  *
@@ -24,7 +24,7 @@ import type { BusPaths } from '../types/index.js';
 export interface Reminder {
   id: string;
   created_at: string;
-  fire_at: string;      // ISO 8601 UTC — when the reminder should fire
+  fire_at: string;      // ISO 8601 UTC - when the reminder should fire
   prompt: string;       // The text to inject when due (live poll or boot prompt)
   status: 'pending' | 'delivered' | 'acked';
   delivered_at?: string; // last live injection into a running session
@@ -151,7 +151,7 @@ export function markReminderDelivered(paths: BusPaths, id: string): void {
 }
 
 /**
- * Acknowledge a reminder by ID — marks it as handled.
+ * Acknowledge a reminder by ID - marks it as handled.
  */
 export function ackReminder(paths: BusPaths, id: string): void {
   const reminders = readReminders(paths);
