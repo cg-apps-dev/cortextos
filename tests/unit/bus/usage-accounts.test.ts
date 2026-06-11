@@ -168,6 +168,20 @@ describe('usage-accounts', () => {
       expect(recovered.alerts.some(a => a.startsWith('RECOVERED') && a.includes('fetch restored'))).toBe(true);
     });
 
+    it('suppresses 5h/7d threshold edges for a BENCHED account (data-driven) but keeps extra-usage + fetch-fail', () => {
+      // Benched account over both thresholds AND extra-usage enabled + fetch ok.
+      const benchedOver = { ...base, account: 'me-com-max', benched: true, five_hour_pct: 90, seven_day_pct: 95, extra_usage: { is_enabled: true, used_credits: 100 } };
+      const { alerts } = evaluateAlerts([benchedOver], {}, NOW);
+      // No 5H/7D threshold lines...
+      expect(alerts.some(a => a.startsWith('5H'))).toBe(false);
+      expect(alerts.some(a => a.startsWith('7D'))).toBe(false);
+      // ...but extra-usage ENABLE still alerts (decision-relevant even benched).
+      expect(alerts.some(a => a.includes('EXTRA-USAGE') && a.includes('ENABLED'))).toBe(true);
+      // fetch-fail still alerts for a benched account too.
+      const benchedFail = { account: 'me-com-max', ok: false, error: 'HTTP 403', benched: true, fetched_at: NOW };
+      expect(evaluateAlerts([benchedFail], {}, NOW).alerts.some(a => a.includes('USAGE-FETCH-FAIL'))).toBe(true);
+    });
+
     it('a failing fetch does NOT reset the 5h/7d/extra edges (carried forward)', () => {
       const prev = st({ seven_d_over: true, extra_enabled: true, extra_credits: 100 });
       const { nextState } = evaluateAlerts([{ account: 'a', ok: false, error: 'HTTP 500', fetched_at: NOW }], prev, NOW);

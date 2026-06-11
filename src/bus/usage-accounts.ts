@@ -58,6 +58,9 @@ export interface AccountUsage {
   five_hour_resets?: string;
   seven_day_resets?: string;
   extra_usage?: ExtraUsage;
+  /** Benched/inactive (from the accounts.json `benched` flag): 5h/7d
+   *  threshold edges are suppressed for these in the human alert stream. */
+  benched?: boolean;
   fetched_at: string;
 }
 
@@ -70,6 +73,7 @@ export interface AllUsageResult {
 // extra_usage.is_enabled with rising used_credits.
 export const USAGE_ALERT_5H_PCT = 80;
 export const USAGE_ALERT_7D_PCT = 60;
+
 
 // All OAuth constants are taken VERBATIM from the live Claude Code 2.1.173
 // binary (string-extracted from its G86 authorize-URL builder), NOT
@@ -643,21 +647,34 @@ export function evaluateAlerts(
     }
     next.fetch_failing = false;
 
+    // Threshold edges are suppressed for benched accounts (not decision-
+    // relevant - nothing to act on). State is still tracked so an un-benched
+    // account resumes clean edge behavior. Extra-usage + fetch-fail below are
+    // NOT suppressed (those stay decision-relevant regardless of bench).
+    // Benched is DATA (accounts.json benched flag, surfaced onto AccountUsage),
+    // not a code const - so the Sunday un-bench is a config flip, never a
+    // silent blind spot from a stale hardcode under fresh load.
+    const benched = u.benched === true;
+
     // 5h threshold - edge up + recovery down.
     const fiveOver = u.five_hour_pct !== undefined && u.five_hour_pct > USAGE_ALERT_5H_PCT;
-    if (fiveOver && !prev.five_h_over) {
-      alerts.push(`5H ${u.account}: ${u.five_hour_pct}% (>${USAGE_ALERT_5H_PCT}%)${u.five_hour_resets ? ` resets ${ptTime(u.five_hour_resets)}` : ''}`);
-    } else if (!fiveOver && prev.five_h_over) {
-      alerts.push(`RECOVERED ${u.account}: 5h back under ${USAGE_ALERT_5H_PCT}% (now ${u.five_hour_pct ?? '?'}%)`);
+    if (!benched) {
+      if (fiveOver && !prev.five_h_over) {
+        alerts.push(`5H ${u.account}: ${u.five_hour_pct}% (>${USAGE_ALERT_5H_PCT}%)${u.five_hour_resets ? ` resets ${ptTime(u.five_hour_resets)}` : ''}`);
+      } else if (!fiveOver && prev.five_h_over) {
+        alerts.push(`RECOVERED ${u.account}: 5h back under ${USAGE_ALERT_5H_PCT}% (now ${u.five_hour_pct ?? '?'}%)`);
+      }
     }
     next.five_h_over = fiveOver;
 
     // 7d threshold - edge up + recovery down (the Sunday reset clears 95%).
     const sevenOver = u.seven_day_pct !== undefined && u.seven_day_pct > USAGE_ALERT_7D_PCT;
-    if (sevenOver && !prev.seven_d_over) {
-      alerts.push(`7D ${u.account}: ${u.seven_day_pct}% (>${USAGE_ALERT_7D_PCT}%)${u.seven_day_resets ? ` resets ${ptTime(u.seven_day_resets)}` : ''}`);
-    } else if (!sevenOver && prev.seven_d_over) {
-      alerts.push(`RECOVERED ${u.account}: 7d back under ${USAGE_ALERT_7D_PCT}% (now ${u.seven_day_pct ?? '?'}%)`);
+    if (!benched) {
+      if (sevenOver && !prev.seven_d_over) {
+        alerts.push(`7D ${u.account}: ${u.seven_day_pct}% (>${USAGE_ALERT_7D_PCT}%)${u.seven_day_resets ? ` resets ${ptTime(u.seven_day_resets)}` : ''}`);
+      } else if (!sevenOver && prev.seven_d_over) {
+        alerts.push(`RECOVERED ${u.account}: 7d back under ${USAGE_ALERT_7D_PCT}% (now ${u.seven_day_pct ?? '?'}%)`);
+      }
     }
     next.seven_d_over = sevenOver;
 
@@ -685,6 +702,21 @@ export function evaluateAlerts(
 }
 
 /**
+ * Set/clear an account's benched flag (config, not code). Benched accounts
+ * have their 5h/7d threshold alerts suppressed; un-benching (the Sunday
+ * re-enlist runbook) restores them with one command and no code edit. Throws
+ * if the account is absent so a typo cannot silently no-op.
+ */
+export function setAccountBenched(ctxRoot: string, accountName: string, benched: boolean): void {
+  const store = requireStore(ctxRoot);
+  if (!store.accounts[accountName]) {
+    throw new Error(`Account "${accountName}" not found in accounts.json`);
+  }
+  store.accounts[accountName].benched = benched;
+  saveAccounts(ctxRoot, store);
+}
+
+/**
  * Fetch usage for EVERY account that has a usage_credential, evaluate alerts,
  * persist extra-usage state. Accounts without a credential are reported
  * (visible gap) rather than silently skipped.
@@ -695,11 +727,13 @@ export async function checkAllUsage(ctxRoot: string): Promise<AllUsageResult> {
   const names = Object.keys(store.accounts);
   const usages: AccountUsage[] = [];
   for (const name of names) {
-    if (store.accounts[name].usage_credential) {
-      usages.push(await fetchAccountUsage(ctxRoot, name));
-    } else {
-      usages.push({ account: name, ok: false, error: 'no usage_credential', fetched_at: now });
-    }
+    const usage = store.accounts[name].usage_credential
+      ? await fetchAccountUsage(ctxRoot, name)
+      : { account: name, ok: false, error: 'no usage_credential', fetched_at: now };
+    // Surface the account's benched flag onto the usage so the (pure) alert
+    // evaluator can suppress threshold edges by DATA, not a code const.
+    usage.benched = store.accounts[name].benched === true;
+    usages.push(usage);
   }
 
   // Edge-triggered alert dedup: load the per-account last-alerted state so a

@@ -31,6 +31,10 @@ export interface OAuthAccount {
   /** Per-account usage-API credential (login-class, user:profile scope).
    *  Managed by usage-accounts.ts; NEVER written to agent .envs. */
   usage_credential?: import('./usage-accounts.js').UsageCredential;
+  /** Benched/inactive: suppress this account's 5h/7d threshold alerts (not
+   *  decision-relevant while benched). Flip via `bus set-account-benched`.
+   *  Extra-usage + fetch-fail alerts are NOT suppressed. */
+  benched?: boolean;
 }
 
 export interface AccountsStore {

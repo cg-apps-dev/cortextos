@@ -19,7 +19,7 @@ import { addCron, removeCron, readCrons, updateCron as updateCronDef, getCronByN
 import { nextFireFromCron } from '../daemon/cron-scheduler.js';
 import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/knowledge-base.js';
 import { checkUsageApi, refreshUsage, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D } from '../bus/oauth.js';
-import { captureKeychainUsageCredential, beginUsageAuth, completeUsageAuth, checkAllUsage, fingerprint as ucFingerprint } from '../bus/usage-accounts.js';
+import { captureKeychainUsageCredential, beginUsageAuth, completeUsageAuth, checkAllUsage, setAccountBenched, fingerprint as ucFingerprint } from '../bus/usage-accounts.js';
 import { resolvePaths } from '../utils/paths.js';
 import { resolveEnv } from '../utils/env.js';
 import { IPCClient } from '../daemon/ipc-server.js';
@@ -2693,6 +2693,27 @@ busCommand
         for (const a of result.alerts) console.log(`ALERT: ${a}`);
       }
       if (opts.alertsOnly && result.alerts.length > 0) process.exit(1);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
+  });
+
+busCommand
+  .command('set-account-benched')
+  .description('Mark an account benched (true) or active (false) - benched accounts suppress 5h/7d threshold alerts (not extra-usage/fetch-fail)')
+  .argument('<account>', 'Account name in accounts.json')
+  .argument('<benched>', 'true | false')
+  .action((account: string, benched: string) => {
+    const env = resolveEnv();
+    const val = benched.toLowerCase();
+    if (val !== 'true' && val !== 'false') {
+      console.error('benched must be "true" or "false"');
+      process.exit(1);
+    }
+    try {
+      setAccountBenched(env.ctxRoot, account, val === 'true');
+      console.log(`Account ${account} benched=${val === 'true'} (threshold alerts ${val === 'true' ? 'SUPPRESSED' : 'active'}).`);
     } catch (err) {
       console.error(`Error: ${err instanceof Error ? err.message : err}`);
       process.exit(1);
