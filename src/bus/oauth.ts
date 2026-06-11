@@ -28,6 +28,9 @@ export interface OAuthAccount {
   last_refreshed: string; // ISO 8601
   five_hour_utilization: number; // 0.0–1.0
   seven_day_utilization: number; // 0.0–1.0
+  /** Per-account usage-API credential (login-class, user:profile scope).
+   *  Managed by usage-accounts.ts; NEVER written to agent .envs. */
+  usage_credential?: import('./usage-accounts.js').UsageCredential;
 }
 
 export interface AccountsStore {
@@ -138,7 +141,7 @@ export function loadAccounts(ctxRoot: string): AccountsStore | null {
   }
 }
 
-function saveAccounts(ctxRoot: string, store: AccountsStore): void {
+export function saveAccounts(ctxRoot: string, store: AccountsStore): void {
   ensureDir(oauthDir(ctxRoot));
   const path = accountsPath(ctxRoot);
   atomicWriteSync(path, JSON.stringify(store, null, 2));

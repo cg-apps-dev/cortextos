@@ -19,6 +19,7 @@ import { addCron, removeCron, readCrons, updateCron as updateCronDef, getCronByN
 import { nextFireFromCron } from '../daemon/cron-scheduler.js';
 import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/knowledge-base.js';
 import { checkUsageApi, refreshUsage, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D } from '../bus/oauth.js';
+import { captureKeychainUsageCredential, beginUsageAuth, completeUsageAuth, checkAllUsage, fingerprint as ucFingerprint } from '../bus/usage-accounts.js';
 import { resolvePaths } from '../utils/paths.js';
 import { resolveEnv } from '../utils/env.js';
 import { IPCClient } from '../daemon/ipc-server.js';
@@ -2601,6 +2602,100 @@ busCommand
       const warn7d = acct.seven_day_utilization >= ALERT_7D ? ' ⚠️' : '';
       console.log(`${name}${active}`);
       console.log(`  5h: ${pct(acct.five_hour_utilization)}${warn5h}  7d: ${pct(acct.seven_day_utilization)}${warn7d}  expires: ${expiry}`);
+      if (acct.usage_credential) {
+        const uc = acct.usage_credential;
+        const ucExp = uc.expires_at ? new Date(uc.expires_at).toISOString() : 'unknown';
+        console.log(`  usage-cred: ${ucFingerprint(uc.access_token)} (${uc.source}) expires: ${ucExp}`);
+      } else {
+        console.log('  usage-cred: NONE (account invisible to multi-account usage monitoring)');
+      }
+    }
+  });
+
+busCommand
+  .command('capture-usage-credential')
+  .description('Capture this machine\'s Claude Code keychain login credential as <account>\'s usage_credential')
+  .argument('<account>', 'Account name in accounts.json (created as a usage-only stub if absent)')
+  .action((account: string) => {
+    const env = resolveEnv();
+    try {
+      const r = captureKeychainUsageCredential(env.ctxRoot, account);
+      console.log(`Captured usage credential for ${r.account}: ${r.fingerprint}`);
+      console.log(`  scopes: ${r.scopes.join(', ')}`);
+      console.log(`  expires: ${r.expires_at}`);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
+  });
+
+busCommand
+  .command('add-usage-account')
+  .description('Begin the PKCE browser-approve flow to add a usage credential for an account (does NOT touch machine login)')
+  .argument('<account>', 'Account name (e.g. icloud-max-20x)')
+  .option('--scopes <scopes>', 'Space-separated scope set (default: user:profile; fallback: "org:create_api_key user:profile user:inference")')
+  .action((account: string, opts: { scopes?: string }) => {
+    const env = resolveEnv();
+    try {
+      const r = beginUsageAuth(env.ctxRoot, account, opts.scopes);
+      console.log(`PKCE flow started for ${r.account}.`);
+      console.log('1. Open this URL in a browser logged into the TARGET account:');
+      console.log(`   ${r.url}`);
+      console.log('2. Approve, copy the code from the callback page, then run:');
+      console.log(`   cortextos bus complete-usage-auth ${r.account} "<code>"`);
+      console.log(`(${r.expires_note})`);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
+  });
+
+busCommand
+  .command('complete-usage-auth')
+  .description('Complete the PKCE flow with the pasted code; stores the usage credential')
+  .argument('<account>', 'Account name used in add-usage-account')
+  .argument('<code>', 'The code from the callback page ("<code>" or "<code>#<state>")')
+  .action(async (account: string, code: string) => {
+    const env = resolveEnv();
+    try {
+      const r = await completeUsageAuth(env.ctxRoot, account, code);
+      console.log(`Usage credential stored for ${r.account}: ${r.fingerprint} (expires ${r.expires_at})`);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
+  });
+
+busCommand
+  .command('check-all-usage')
+  .description('Fetch 5h/7d/extra-usage for EVERY account with a usage credential; prints alerts')
+  .option('--json', 'Output the full result as JSON')
+  .option('--alerts-only', 'Print only alert lines (exit 1 if any alert) - cron-friendly')
+  .action(async (opts: { json?: boolean; alertsOnly?: boolean }) => {
+    const env = resolveEnv();
+    try {
+      const result = await checkAllUsage(env.ctxRoot);
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (opts.alertsOnly) {
+        for (const a of result.alerts) console.log(a);
+      } else {
+        for (const u of result.accounts) {
+          if (!u.ok) {
+            console.log(`${u.account}: UNAVAILABLE (${u.error})`);
+            continue;
+          }
+          const extra = u.extra_usage
+            ? ` extra-usage: ${u.extra_usage.is_enabled ? `ENABLED used=${u.extra_usage.used_credits ?? 0}` : 'off'}`
+            : '';
+          console.log(`${u.account}: 5h ${u.five_hour_pct ?? '?'}%  7d ${u.seven_day_pct ?? '?'}%${extra}`);
+        }
+        for (const a of result.alerts) console.log(`ALERT: ${a}`);
+      }
+      if (opts.alertsOnly && result.alerts.length > 0) process.exit(1);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
     }
   });
 
