@@ -586,8 +586,10 @@ export async function fetchAccountUsage(
  * recurs.
  */
 interface AccountAlertState {
-  five_h_over: boolean;     // last-alerted: 5h was over threshold
-  seven_d_over: boolean;    // last-alerted: 7d was over threshold
+  five_h_over: boolean;     // CONFIRMED alerting: 5h over for >=2 consecutive reads
+  seven_d_over: boolean;    // CONFIRMED alerting: 7d over for >=2 consecutive reads
+  five_h_pending: boolean;  // saw ONE over-read; awaiting a 2nd consecutive to confirm
+  seven_d_pending: boolean; // saw ONE over-read; awaiting a 2nd consecutive to confirm
   extra_enabled: boolean;   // last-seen: extra-usage meter enabled
   extra_credits: number;    // last-seen: credits (for rise detection)
   fetch_failing: boolean;   // last-seen: fetch failing (monitoring blind)
@@ -596,6 +598,31 @@ interface AccountAlertState {
 
 interface AlertState {
   [account: string]: AccountAlertState;
+}
+
+/**
+ * One step of the 2-consecutive-read threshold confirmation, per account per
+ * bucket. A single over-read is a CANDIDATE (pending), not an alert; the alert
+ * fires only on a 2nd consecutive over-read; a single over-read followed by an
+ * under-read is absorbed (transient/anomalous spike). Recovery fires when a
+ * CONFIRMED-over state clears. Benched accounts compute the same state but
+ * suppress the alert string (state stays correct for un-bench). Pure.
+ */
+function stepThreshold(
+  over: boolean,
+  prevOver: boolean,
+  prevPending: boolean,
+  benched: boolean,
+  fireMsg: string,
+  recoverMsg: string,
+): { alert: string | null; over: boolean; pending: boolean } {
+  if (over) {
+    if (prevOver) return { alert: null, over: true, pending: false };        // already alerting -> quiet
+    if (prevPending) return { alert: benched ? null : fireMsg, over: true, pending: false }; // 2nd consecutive -> CONFIRM
+    return { alert: null, over: false, pending: true };                      // 1st over-read -> candidate, suppress
+  }
+  if (prevOver) return { alert: benched ? null : recoverMsg, over: false, pending: false };  // confirmed-over cleared -> recovery
+  return { alert: null, over: false, pending: false };                       // under (and a lone prior candidate, if any, absorbed)
 }
 
 /** Render an ISO timestamp in Pacific time for human-facing alert text
@@ -628,6 +655,7 @@ export function evaluateAlerts(
   for (const u of usages) {
     const prev: AccountAlertState = prevState[u.account] ?? {
       five_h_over: false, seven_d_over: false,
+      five_h_pending: false, seven_d_pending: false,
       extra_enabled: false, extra_credits: 0, fetch_failing: false, at: now,
     };
     // Start from prev and carry forward; a failing fetch must NOT reset the
@@ -657,27 +685,27 @@ export function evaluateAlerts(
     // silent blind spot from a stale hardcode under fresh load.
     const benched = u.benched === true;
 
-    // 5h threshold - edge up + recovery down.
+    // 5h threshold - 2-consecutive-read confirm + recovery. A single over-read
+    // (a transient/anomalous API spike like the 21->100->2 on 2026-06-11) is
+    // absorbed: it becomes a pending candidate and only CONFIRMS into an alert
+    // on a 2nd consecutive over-read.
     const fiveOver = u.five_hour_pct !== undefined && u.five_hour_pct > USAGE_ALERT_5H_PCT;
-    if (!benched) {
-      if (fiveOver && !prev.five_h_over) {
-        alerts.push(`5H ${u.account}: ${u.five_hour_pct}% (>${USAGE_ALERT_5H_PCT}%)${u.five_hour_resets ? ` resets ${ptTime(u.five_hour_resets)}` : ''}`);
-      } else if (!fiveOver && prev.five_h_over) {
-        alerts.push(`RECOVERED ${u.account}: 5h back under ${USAGE_ALERT_5H_PCT}% (now ${u.five_hour_pct ?? '?'}%)`);
-      }
-    }
-    next.five_h_over = fiveOver;
+    const five = stepThreshold(fiveOver, prev.five_h_over, prev.five_h_pending, benched,
+      `5H ${u.account}: ${u.five_hour_pct}% (>${USAGE_ALERT_5H_PCT}%)${u.five_hour_resets ? ` resets ${ptTime(u.five_hour_resets)}` : ''}`,
+      `RECOVERED ${u.account}: 5h back under ${USAGE_ALERT_5H_PCT}% (now ${u.five_hour_pct ?? '?'}%)`);
+    if (five.alert) alerts.push(five.alert);
+    next.five_h_over = five.over;
+    next.five_h_pending = five.pending;
 
-    // 7d threshold - edge up + recovery down (the Sunday reset clears 95%).
+    // 7d threshold - same 2-consecutive-read confirm + recovery (the Sunday
+    // reset clears 95% -> recovery line once confirmed-over clears).
     const sevenOver = u.seven_day_pct !== undefined && u.seven_day_pct > USAGE_ALERT_7D_PCT;
-    if (!benched) {
-      if (sevenOver && !prev.seven_d_over) {
-        alerts.push(`7D ${u.account}: ${u.seven_day_pct}% (>${USAGE_ALERT_7D_PCT}%)${u.seven_day_resets ? ` resets ${ptTime(u.seven_day_resets)}` : ''}`);
-      } else if (!sevenOver && prev.seven_d_over) {
-        alerts.push(`RECOVERED ${u.account}: 7d back under ${USAGE_ALERT_7D_PCT}% (now ${u.seven_day_pct ?? '?'}%)`);
-      }
-    }
-    next.seven_d_over = sevenOver;
+    const seven = stepThreshold(sevenOver, prev.seven_d_over, prev.seven_d_pending, benched,
+      `7D ${u.account}: ${u.seven_day_pct}% (>${USAGE_ALERT_7D_PCT}%)${u.seven_day_resets ? ` resets ${ptTime(u.seven_day_resets)}` : ''}`,
+      `RECOVERED ${u.account}: 7d back under ${USAGE_ALERT_7D_PCT}% (now ${u.seven_day_pct ?? '?'}%)`);
+    if (seven.alert) alerts.push(seven.alert);
+    next.seven_d_over = seven.over;
+    next.seven_d_pending = seven.pending;
 
     // Extra-usage - enable / disable / rise edges; quiet on flat-enabled.
     const enabled = u.extra_usage?.is_enabled === true;
