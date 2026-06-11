@@ -8,6 +8,7 @@ import {
   parseUsageResponse,
   evaluateAlerts,
   captureKeychainUsageCredential,
+  resolveUsageToken,
   beginUsageAuth,
   USAGE_ALERT_5H_PCT,
   USAGE_ALERT_7D_PCT,
@@ -201,6 +202,52 @@ describe('usage-accounts', () => {
       captureKeychainUsageCredential(ctxRoot, 'cg-team-seat', goodBlob);
       const mode = statSync(join(ctxRoot, 'state', 'oauth', 'accounts.json')).mode & 0o777;
       expect(mode).toBe(0o600);
+    });
+  });
+
+  describe('resolveUsageToken (source-branched: F - seat live keychain read)', () => {
+    function seedCred(source: 'keychain-capture' | 'pkce-authorize', access: string, expiresAt: number) {
+      const store = JSON.parse(readFileSync(join(ctxRoot, 'state', 'oauth', 'accounts.json'), 'utf-8'));
+      store.accounts['cg-team-seat'].usage_credential = {
+        access_token: access, refresh_token: 'rt-stored', expires_at: expiresAt,
+        scopes: ['user:profile'], source, captured_at: NOW,
+      };
+      atomicWriteSync(join(ctxRoot, 'state', 'oauth', 'accounts.json'), JSON.stringify(store, null, 2));
+    }
+
+    it('keychain-capture: returns the LIVE keychain token even when the stored copy is expired (the 09:00Z rotation case)', async () => {
+      seedCred('keychain-capture', 'sk-ant-oat01-STALEDEADTOKENwQAA', Date.now() - 3600_000);
+      const liveBlob = () => ({
+        accessToken: 'sk-ant-oat01-FRESHLIVEKEYwNEW', refreshToken: 'rt-fresh',
+        expiresAt: Date.now() + 8 * 3600_000, scopes: ['user:profile', 'user:inference'],
+      });
+      const token = await resolveUsageToken(ctxRoot, 'cg-team-seat', liveBlob);
+      expect(token).toBe('sk-ant-oat01-FRESHLIVEKEYwNEW');
+    });
+
+    it('keychain-capture: refreshes the stored metadata pointer to the live token (no manual re-capture)', async () => {
+      seedCred('keychain-capture', 'sk-ant-oat01-STALEwQAA', Date.now() - 3600_000);
+      const newExp = Date.now() + 8 * 3600_000;
+      await resolveUsageToken(ctxRoot, 'cg-team-seat', () => ({
+        accessToken: 'sk-ant-oat01-FRESHwNEW', refreshToken: 'rt-fresh', expiresAt: newExp, scopes: ['user:profile'],
+      }));
+      const store = JSON.parse(readFileSync(join(ctxRoot, 'state', 'oauth', 'accounts.json'), 'utf-8'));
+      expect(store.accounts['cg-team-seat'].usage_credential.access_token).toBe('sk-ant-oat01-FRESHwNEW');
+      expect(store.accounts['cg-team-seat'].usage_credential.expires_at).toBe(newExp);
+    });
+
+    it('keychain-capture: throws (not silently uses stale) when the machine is logged out', async () => {
+      seedCred('keychain-capture', 'sk-ant-oat01-STALEwQAA', Date.now() - 3600_000);
+      await expect(resolveUsageToken(ctxRoot, 'cg-team-seat', () => null))
+        .rejects.toThrow(/keychain credential unavailable/);
+    });
+
+    it('pkce-authorize: uses the STORED token (does NOT read the keychain)', async () => {
+      seedCred('pkce-authorize', 'sk-ant-oat01-PKCESTOREDwTOK', Date.now() + 3600_000);
+      let keychainRead = false;
+      const token = await resolveUsageToken(ctxRoot, 'cg-team-seat', () => { keychainRead = true; return null; });
+      expect(token).toBe('sk-ant-oat01-PKCESTOREDwTOK');
+      expect(keychainRead).toBe(false);
     });
   });
 

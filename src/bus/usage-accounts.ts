@@ -388,29 +388,93 @@ export function parseUsageResponse(account: string, data: unknown, now: string):
 }
 
 /**
- * Fetch usage for one account via its usage_credential, auto-refreshing an
- * expired/rejected token once. Errors are captured per account (never thrown
- * to the caller) so one bad account cannot blind the others - the same
- * isolation lesson as resolve_cards/reminders.
+ * Resolve a usable access token for an account, branching on credential
+ * SOURCE:
+ *
+ * - keychain-capture: the SEAT account whose credential lives in the macOS
+ *   Keychain, OWNED by the live Claude Code app. That app rotates its
+ *   one-time refresh token on its own ~8h cycle, which invalidates any copy
+ *   we captured (HTTP 400 on our refresh, proven live 2026-06-11 at the 09:00Z
+ *   rotation). So for this source we RE-READ the keychain live on every use
+ *   (it is always fresh there) and never store/refresh the token ourselves.
+ *   The stored usage_credential is kept only as a metadata pointer (source +
+ *   scopes + a refreshed expiry/captured_at for visibility), never the
+ *   authority. Self-healing: no manual re-capture needed across rotations.
+ *
+ * - pkce-authorize: the Max accounts whose tokens NOTHING else owns - we are
+ *   the sole holder, so store + proactive/reactive refresh is correct and
+ *   stays as-is.
+ *
+ * Returns the token in-memory only (never logged/persisted in cleartext).
  */
-export async function fetchAccountUsage(ctxRoot: string, accountName: string): Promise<AccountUsage> {
+export async function resolveUsageToken(
+  ctxRoot: string,
+  accountName: string,
+  blobReader: () => KeychainBlob | null = readKeychainBlob,
+): Promise<string> {
+  const store = requireStore(ctxRoot);
+  const cred = store.accounts[accountName]?.usage_credential;
+  if (!cred) throw new Error('no usage_credential');
+
+  if (cred.source === 'keychain-capture') {
+    const blob = blobReader();
+    if (!blob?.accessToken) {
+      throw new Error('keychain credential unavailable (machine logged out?)');
+    }
+    if (blob.scopes && !blob.scopes.includes('user:profile')) {
+      throw new Error('keychain credential lost user:profile scope');
+    }
+    // Refresh the stored metadata pointer for dashboard/list visibility,
+    // but the token authority is always the live keychain read.
+    if (blob.accessToken !== cred.access_token || (blob.expiresAt ?? 0) !== cred.expires_at) {
+      const reloaded = requireStore(ctxRoot);
+      const c = reloaded.accounts[accountName]?.usage_credential;
+      if (c) {
+        c.access_token = blob.accessToken;
+        c.refresh_token = blob.refreshToken ?? c.refresh_token;
+        c.expires_at = blob.expiresAt ?? c.expires_at;
+        c.scopes = blob.scopes ?? c.scopes;
+        saveAccounts(ctxRoot, reloaded);
+      }
+    }
+    return blob.accessToken;
+  }
+
+  // pkce-authorize: stored token, proactive refresh when expiring soon.
+  if (!cred.access_token) throw new Error('no usage_credential access token');
+  if (cred.expires_at && cred.expires_at - Date.now() < 5 * 60 * 1000) {
+    return refreshUsageCredential(ctxRoot, accountName);
+  }
+  return cred.access_token;
+}
+
+/**
+ * Fetch usage for one account, resolving its token by SOURCE (live keychain
+ * read for the seat, stored+refresh for PKCE - see resolveUsageToken).
+ * Errors are captured per account (never thrown to the caller) so one bad
+ * account cannot blind the others - the same isolation lesson as
+ * resolve_cards/reminders.
+ */
+export async function fetchAccountUsage(
+  ctxRoot: string,
+  accountName: string,
+  blobReader: () => KeychainBlob | null = readKeychainBlob,
+): Promise<AccountUsage> {
   const now = new Date().toISOString();
   const store = requireStore(ctxRoot);
   const cred = store.accounts[accountName]?.usage_credential;
-  if (!cred?.access_token) {
+  if (!cred) {
     return { account: accountName, ok: false, error: 'no usage_credential', fetched_at: now };
   }
+  const isKeychain = cred.source === 'keychain-capture';
   try {
-    let token = cred.access_token;
-    // Proactive refresh when expiring within 5 minutes.
-    if (cred.expires_at && cred.expires_at - Date.now() < 5 * 60 * 1000) {
-      token = await refreshUsageCredential(ctxRoot, accountName);
-    }
+    let token = await resolveUsageToken(ctxRoot, accountName, blobReader);
     let response = await fetch(USAGE_API, {
       headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' },
     });
-    if (response.status === 401) {
-      // One reactive refresh+retry.
+    if (response.status === 401 && !isKeychain) {
+      // Reactive refresh+retry only for PKCE (a fresh keychain read already
+      // gave the newest token; a 401 there is not fixable by re-reading).
       token = await refreshUsageCredential(ctxRoot, accountName);
       response = await fetch(USAGE_API, {
         headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' },
