@@ -4,6 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   fingerprint,
+  ptTime,
   parseUsageResponse,
   evaluateAlerts,
   captureKeychainUsageCredential,
@@ -48,6 +49,20 @@ describe('usage-accounts', () => {
     it('handles short/empty safely', () => {
       expect(fingerprint('')).toBe('(empty)');
       expect(fingerprint('short')).toBe('shor...');
+    });
+  });
+
+  describe('ptTime', () => {
+    it('renders ISO timestamps in Pacific time for humans', () => {
+      // 2026-06-11T05:09:59Z = 10:09 PM PT (PDT, UTC-7) on Jun 10
+      const s = ptTime('2026-06-11T05:09:59Z');
+      expect(s).toContain('PT');
+      expect(s).toContain('Jun 10');
+      expect(s).toContain('10:09');
+    });
+    it('passes through garbage unchanged and empties safely', () => {
+      expect(ptTime(undefined)).toBe('');
+      expect(ptTime('not-a-date')).toBe('not-a-date');
     });
   });
 
@@ -116,12 +131,24 @@ describe('usage-accounts', () => {
       expect(alerts.some(a => a.includes('watch'))).toBe(true);
     });
 
-    it('flat credits stay quiet on subsequent checks', () => {
+    it('flat credits stay VISIBLE as an explicit FLAT watch line (never overstated, never silent)', () => {
       const { alerts } = evaluateAlerts(
         [{ ...base, extra_usage: { is_enabled: true, used_credits: 5 } }],
         { a: { used_credits: 5, at: NOW } }, NOW,
       );
-      expect(alerts).toEqual([]);
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]).toContain('meter FLAT at 5');
+      expect(alerts[0]).toContain('delta +0');
+    });
+
+    it('rising credits carry the burn-rate delta + last-read PT time', () => {
+      const { alerts } = evaluateAlerts(
+        [{ ...base, extra_usage: { is_enabled: true, used_credits: 12 } }],
+        { a: { used_credits: 7, at: '2026-06-11T02:00:00.000Z' } }, NOW,
+      );
+      expect(alerts[0]).toContain('RISING 7 -> 12');
+      expect(alerts[0]).toContain('delta +5 since');
+      expect(alerts[0]).toContain('PT');
     });
 
     it('a failed account fetch is an ALERT, never silent (monitoring-blind detector)', () => {

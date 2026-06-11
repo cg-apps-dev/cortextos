@@ -432,6 +432,18 @@ interface ExtraUsageState {
   [account: string]: { used_credits: number; at: string };
 }
 
+/** Render an ISO timestamp in Pacific time for human-facing alert text
+ *  (fleet rule 2026-06-11: humans see PT, internals stay UTC). */
+export function ptTime(iso: string | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString('en-US', {
+    timeZone: 'America/Los_Angeles',
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
+  }) + ' PT';
+}
+
 /**
  * Evaluate alerts for a set of account usages. Pure given the previous
  * extra-usage state - unit-testable. Returns alert strings + the next state.
@@ -449,18 +461,28 @@ export function evaluateAlerts(
       continue;
     }
     if (u.five_hour_pct !== undefined && u.five_hour_pct > USAGE_ALERT_5H_PCT) {
-      alerts.push(`5H ${u.account}: ${u.five_hour_pct}% (>${USAGE_ALERT_5H_PCT}%)${u.five_hour_resets ? ` resets ${u.five_hour_resets}` : ''}`);
+      alerts.push(`5H ${u.account}: ${u.five_hour_pct}% (>${USAGE_ALERT_5H_PCT}%)${u.five_hour_resets ? ` resets ${ptTime(u.five_hour_resets)}` : ''}`);
     }
     if (u.seven_day_pct !== undefined && u.seven_day_pct > USAGE_ALERT_7D_PCT) {
-      alerts.push(`7D ${u.account}: ${u.seven_day_pct}% (>${USAGE_ALERT_7D_PCT}%)${u.seven_day_resets ? ` resets ${u.seven_day_resets}` : ''}`);
+      alerts.push(`7D ${u.account}: ${u.seven_day_pct}% (>${USAGE_ALERT_7D_PCT}%)${u.seven_day_resets ? ` resets ${ptTime(u.seven_day_resets)}` : ''}`);
     }
     if (u.extra_usage?.is_enabled) {
       const used = u.extra_usage.used_credits ?? 0;
-      const prev = prevExtra[u.account]?.used_credits;
+      const prevEntry = prevExtra[u.account];
+      const prev = prevEntry?.used_credits;
+      // Burn rate matters for the human decision (flat-meter vs active burn):
+      // always carry the delta + window since the last read in the payload.
+      const sincePrev = prevEntry
+        ? ` (delta +${used - prev!} since ${ptTime(prevEntry.at)})`
+        : '';
       if (prev === undefined && used > 0) {
-        alerts.push(`EXTRA-USAGE ${u.account}: enabled with ${used} credits already used (silent billing - first sighting)`);
+        alerts.push(`EXTRA-USAGE ${u.account}: enabled with ${used} credits already used (silent billing - first sighting, burn rate unknown until next read)`);
       } else if (prev !== undefined && used > prev) {
-        alerts.push(`EXTRA-USAGE ${u.account}: credits RISING ${prev} -> ${used} (silent billing active)`);
+        alerts.push(`EXTRA-USAGE ${u.account}: credits RISING ${prev} -> ${used}${sincePrev} (silent billing ACTIVE)`);
+      } else if (prev !== undefined && used === prev) {
+        // Enabled + past-window but FLAT meter: stays visible as a watch line,
+        // explicitly labeled flat so nobody overstates it to a human.
+        alerts.push(`EXTRA-USAGE ${u.account}: enabled, meter FLAT at ${used}${sincePrev}`);
       } else if (prev === undefined) {
         alerts.push(`EXTRA-USAGE ${u.account}: is_enabled=true (no credits used yet - watch)`);
       }
