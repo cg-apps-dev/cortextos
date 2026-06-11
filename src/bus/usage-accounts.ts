@@ -155,8 +155,8 @@ function pendingAuthPath(ctxRoot: string): string {
   return join(ctxRoot, 'state', 'oauth', 'pending-usage-auth.json');
 }
 
-function extraUsageStatePath(ctxRoot: string): string {
-  return join(ctxRoot, 'state', 'usage', 'extra-usage.json');
+function alertStatePath(ctxRoot: string): string {
+  return join(ctxRoot, 'state', 'usage', 'alert-state.json');
 }
 
 function requireStore(ctxRoot: string): AccountsStore {
@@ -572,8 +572,25 @@ export async function fetchAccountUsage(
 
 // --- All-accounts check + alerts ---
 
-interface ExtraUsageState {
-  [account: string]: { used_credits: number; at: string };
+/**
+ * Per-account last-ALERTED signature for edge-triggered dedup. The monitor
+ * runs every 15 min; alerting on LEVEL (re-firing every cycle a signal is
+ * over threshold or a meter is enabled) = ~96 pings/day of noise. We alert on
+ * the EDGE instead - when a signal turns on, escalates, or transitions - and
+ * stay quiet while it persists unchanged, re-alerting only if it clears then
+ * recurs.
+ */
+interface AccountAlertState {
+  five_h_over: boolean;     // last-alerted: 5h was over threshold
+  seven_d_over: boolean;    // last-alerted: 7d was over threshold
+  extra_enabled: boolean;   // last-seen: extra-usage meter enabled
+  extra_credits: number;    // last-seen: credits (for rise detection)
+  fetch_failing: boolean;   // last-seen: fetch failing (monitoring blind)
+  at: string;
+}
+
+interface AlertState {
+  [account: string]: AccountAlertState;
 }
 
 /** Render an ISO timestamp in Pacific time for human-facing alert text
@@ -589,51 +606,82 @@ export function ptTime(iso: string | undefined): string {
 }
 
 /**
- * Evaluate alerts for a set of account usages. Pure given the previous
- * extra-usage state - unit-testable. Returns alert strings + the next state.
+ * Evaluate alerts for a set of account usages with EDGE-TRIGGERED dedup. Pure
+ * given the previous alert state - unit-testable. Alerts fire on a state
+ * CHANGE (turn-on, escalation, recovery/clear, transition) and stay quiet
+ * while a state persists unchanged, so a 15-min cadence does not spam (~96
+ * pings/day) on a persistent condition (e.g. me-com at 7d 95% until its
+ * Sunday reset). Returns alert strings + the next state to persist.
  */
 export function evaluateAlerts(
   usages: AccountUsage[],
-  prevExtra: ExtraUsageState,
+  prevState: AlertState,
   now: string,
-): { alerts: string[]; nextExtra: ExtraUsageState } {
+): { alerts: string[]; nextState: AlertState } {
   const alerts: string[] = [];
-  const nextExtra: ExtraUsageState = { ...prevExtra };
+  const nextState: AlertState = { ...prevState };
   for (const u of usages) {
+    const prev: AccountAlertState = prevState[u.account] ?? {
+      five_h_over: false, seven_d_over: false,
+      extra_enabled: false, extra_credits: 0, fetch_failing: false, at: now,
+    };
+    // Start from prev and carry forward; a failing fetch must NOT reset the
+    // 5h/7d/extra edges (we just cannot read them this cycle).
+    const next: AccountAlertState = { ...prev, at: now };
+
     if (!u.ok) {
-      alerts.push(`USAGE-FETCH-FAIL ${u.account}: ${u.error} (monitoring blind for this account)`);
+      if (!prev.fetch_failing) {
+        alerts.push(`USAGE-FETCH-FAIL ${u.account}: ${u.error} (monitoring blind for this account)`);
+      }
+      next.fetch_failing = true;
+      nextState[u.account] = next;
       continue;
     }
-    if (u.five_hour_pct !== undefined && u.five_hour_pct > USAGE_ALERT_5H_PCT) {
+    // Recovery: fetch was failing, now ok.
+    if (prev.fetch_failing) {
+      alerts.push(`RECOVERED ${u.account}: usage fetch restored (monitoring back online)`);
+    }
+    next.fetch_failing = false;
+
+    // 5h threshold - edge up + recovery down.
+    const fiveOver = u.five_hour_pct !== undefined && u.five_hour_pct > USAGE_ALERT_5H_PCT;
+    if (fiveOver && !prev.five_h_over) {
       alerts.push(`5H ${u.account}: ${u.five_hour_pct}% (>${USAGE_ALERT_5H_PCT}%)${u.five_hour_resets ? ` resets ${ptTime(u.five_hour_resets)}` : ''}`);
+    } else if (!fiveOver && prev.five_h_over) {
+      alerts.push(`RECOVERED ${u.account}: 5h back under ${USAGE_ALERT_5H_PCT}% (now ${u.five_hour_pct ?? '?'}%)`);
     }
-    if (u.seven_day_pct !== undefined && u.seven_day_pct > USAGE_ALERT_7D_PCT) {
+    next.five_h_over = fiveOver;
+
+    // 7d threshold - edge up + recovery down (the Sunday reset clears 95%).
+    const sevenOver = u.seven_day_pct !== undefined && u.seven_day_pct > USAGE_ALERT_7D_PCT;
+    if (sevenOver && !prev.seven_d_over) {
       alerts.push(`7D ${u.account}: ${u.seven_day_pct}% (>${USAGE_ALERT_7D_PCT}%)${u.seven_day_resets ? ` resets ${ptTime(u.seven_day_resets)}` : ''}`);
+    } else if (!sevenOver && prev.seven_d_over) {
+      alerts.push(`RECOVERED ${u.account}: 7d back under ${USAGE_ALERT_7D_PCT}% (now ${u.seven_day_pct ?? '?'}%)`);
     }
-    if (u.extra_usage?.is_enabled) {
-      const used = u.extra_usage.used_credits ?? 0;
-      const prevEntry = prevExtra[u.account];
-      const prev = prevEntry?.used_credits;
-      // Burn rate matters for the human decision (flat-meter vs active burn):
-      // always carry the delta + window since the last read in the payload.
-      const sincePrev = prevEntry
-        ? ` (delta +${used - prev!} since ${ptTime(prevEntry.at)})`
-        : '';
-      if (prev === undefined && used > 0) {
-        alerts.push(`EXTRA-USAGE ${u.account}: enabled with ${used} credits already used (silent billing - first sighting, burn rate unknown until next read)`);
-      } else if (prev !== undefined && used > prev) {
-        alerts.push(`EXTRA-USAGE ${u.account}: credits RISING ${prev} -> ${used}${sincePrev} (silent billing ACTIVE)`);
-      } else if (prev !== undefined && used === prev) {
-        // Enabled + past-window but FLAT meter: stays visible as a watch line,
-        // explicitly labeled flat so nobody overstates it to a human.
-        alerts.push(`EXTRA-USAGE ${u.account}: enabled, meter FLAT at ${used}${sincePrev}`);
-      } else if (prev === undefined) {
-        alerts.push(`EXTRA-USAGE ${u.account}: is_enabled=true (no credits used yet - watch)`);
-      }
-      nextExtra[u.account] = { used_credits: used, at: now };
+    next.seven_d_over = sevenOver;
+
+    // Extra-usage - enable / disable / rise edges; quiet on flat-enabled.
+    const enabled = u.extra_usage?.is_enabled === true;
+    const credits = u.extra_usage?.used_credits ?? 0;
+    if (enabled && !prev.extra_enabled) {
+      alerts.push(
+        credits > 0
+          ? `EXTRA-USAGE ${u.account}: ENABLED with ${credits} credits already used (silent billing - first sighting)`
+          : `EXTRA-USAGE ${u.account}: ENABLED (no credits used yet - watch)`,
+      );
+    } else if (!enabled && prev.extra_enabled) {
+      alerts.push(`EXTRA-USAGE ${u.account}: DISABLED (was at ${prev.extra_credits} credits) - meter walled off`);
+    } else if (enabled && prev.extra_enabled && credits > prev.extra_credits) {
+      alerts.push(`EXTRA-USAGE ${u.account}: credits RISING ${prev.extra_credits} -> ${credits} (delta +${credits - prev.extra_credits} since ${ptTime(prev.at)}) (silent billing ACTIVE)`);
     }
+    // enabled + flat, or persistently disabled -> quiet.
+    next.extra_enabled = enabled;
+    next.extra_credits = enabled ? credits : prev.extra_credits;
+
+    nextState[u.account] = next;
   }
-  return { alerts, nextExtra };
+  return { alerts, nextState };
 }
 
 /**
@@ -654,20 +702,22 @@ export async function checkAllUsage(ctxRoot: string): Promise<AllUsageResult> {
     }
   }
 
-  let prevExtra: ExtraUsageState = {};
-  const statePath = extraUsageStatePath(ctxRoot);
+  // Edge-triggered alert dedup: load the per-account last-alerted state so a
+  // persistent condition does not re-fire every (now 15-min) cycle.
+  let prevState: AlertState = {};
+  const statePath = alertStatePath(ctxRoot);
   if (existsSync(statePath)) {
-    try { prevExtra = JSON.parse(readFileSync(statePath, 'utf-8')) as ExtraUsageState; } catch { /* fresh */ }
+    try { prevState = JSON.parse(readFileSync(statePath, 'utf-8')) as AlertState; } catch { /* fresh */ }
   }
-  const { alerts, nextExtra } = evaluateAlerts(usages, prevExtra, now);
+  const { alerts, nextState } = evaluateAlerts(usages, prevState, now);
   ensureDir(join(ctxRoot, 'state', 'usage'));
-  atomicWriteSync(statePath, JSON.stringify(nextExtra, null, 2));
+  atomicWriteSync(statePath, JSON.stringify(nextState, null, 2));
 
   // Persist a consolidated all-accounts snapshot for the dashboard's
   // 3-account panel. One file (not the per-account latest-*.json the
   // single-account refreshUsage path owns) so the dashboard does one read and
-  // there is no shape conflict. The 2h launchd check-all-usage run refreshes
-  // it. Usage numbers + reset times + extra-usage state only - never a token.
+  // there is no shape conflict. The 15-min launchd check-all-usage run
+  // refreshes it. Usage numbers + reset times + extra-usage state only - never a token.
   atomicWriteSync(
     join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'),
     JSON.stringify({ generated_at: now, accounts: usages }, null, 2),

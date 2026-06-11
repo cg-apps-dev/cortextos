@@ -92,72 +92,89 @@ describe('usage-accounts', () => {
     });
   });
 
-  describe('evaluateAlerts', () => {
+  describe('evaluateAlerts (edge-triggered dedup)', () => {
     const base: AccountUsage = { account: 'a', ok: true, fetched_at: NOW };
+    // Build a prev alert-state for account 'a'.
+    const st = (o: Partial<{ five_h_over: boolean; seven_d_over: boolean; extra_enabled: boolean; extra_credits: number; fetch_failing: boolean }>) => ({
+      a: { five_h_over: false, seven_d_over: false, extra_enabled: false, extra_credits: 0, fetch_failing: false, at: '2026-06-11T02:00:00.000Z', ...o },
+    });
 
-    it('fires 5h and 7d threshold alerts strictly above the thresholds', () => {
-      const { alerts } = evaluateAlerts([
+    it('fires 5h + 7d on the CROSS-UP edge from empty state', () => {
+      const { alerts, nextState } = evaluateAlerts([
         { ...base, five_hour_pct: USAGE_ALERT_5H_PCT + 1, seven_day_pct: USAGE_ALERT_7D_PCT + 1 },
       ], {}, NOW);
       expect(alerts.some(a => a.startsWith('5H'))).toBe(true);
       expect(alerts.some(a => a.startsWith('7D'))).toBe(true);
+      expect(nextState.a.five_h_over).toBe(true);
+      expect(nextState.a.seven_d_over).toBe(true);
     });
 
-    it('stays quiet at exactly the thresholds', () => {
+    it('QUIETS a persistent over-threshold (the 15-min no-spam case)', () => {
+      const usage = { ...base, five_hour_pct: 90, seven_day_pct: 95 };
+      const { alerts } = evaluateAlerts([usage], st({ five_h_over: true, seven_d_over: true }), NOW);
+      expect(alerts).toEqual([]);
+    });
+
+    it('fires a RECOVERY when 7d drops back under threshold (Sunday reset clears 95%)', () => {
+      const { alerts, nextState } = evaluateAlerts(
+        [{ ...base, seven_day_pct: 10 }], st({ seven_d_over: true }), NOW,
+      );
+      expect(alerts.some(a => a.startsWith('RECOVERED') && a.includes('7d'))).toBe(true);
+      expect(nextState.a.seven_d_over).toBe(false);
+    });
+
+    it('stays quiet at exactly the thresholds (strictly-above)', () => {
       const { alerts } = evaluateAlerts([
         { ...base, five_hour_pct: USAGE_ALERT_5H_PCT, seven_day_pct: USAGE_ALERT_7D_PCT },
       ], {}, NOW);
       expect(alerts).toEqual([]);
     });
 
-    it('detects RISING extra-usage credits (the silent-billing detector)', () => {
-      const usage: AccountUsage = { ...base, extra_usage: { is_enabled: true, used_credits: 7 } };
-      const { alerts, nextExtra } = evaluateAlerts(
-        [usage], { a: { used_credits: 3, at: NOW } }, NOW,
-      );
-      expect(alerts.some(a => a.includes('RISING 3 -> 7'))).toBe(true);
-      expect(nextExtra.a.used_credits).toBe(7);
+    it('extra-usage: ENABLE edge fires once, then QUIET while flat', () => {
+      const usage = { ...base, extra_usage: { is_enabled: true, used_credits: 5 } };
+      const first = evaluateAlerts([usage], {}, NOW);
+      expect(first.alerts.some(a => a.includes('ENABLED with 5 credits'))).toBe(true);
+      // Same flat reading next cycle -> no alert.
+      const second = evaluateAlerts([usage], first.nextState, NOW);
+      expect(second.alerts).toEqual([]);
     });
 
-    it('first sighting with credits already used alerts immediately', () => {
-      const { alerts } = evaluateAlerts(
-        [{ ...base, extra_usage: { is_enabled: true, used_credits: 5 } }], {}, NOW,
-      );
-      expect(alerts.some(a => a.includes('first sighting'))).toBe(true);
-    });
-
-    it('enabled-but-zero-credits gets a watch alert, not silence', () => {
-      const { alerts } = evaluateAlerts(
-        [{ ...base, extra_usage: { is_enabled: true, used_credits: 0 } }], {}, NOW,
-      );
-      expect(alerts.some(a => a.includes('watch'))).toBe(true);
-    });
-
-    it('flat credits stay VISIBLE as an explicit FLAT watch line (never overstated, never silent)', () => {
-      const { alerts } = evaluateAlerts(
-        [{ ...base, extra_usage: { is_enabled: true, used_credits: 5 } }],
-        { a: { used_credits: 5, at: NOW } }, NOW,
-      );
-      expect(alerts).toHaveLength(1);
-      expect(alerts[0]).toContain('meter FLAT at 5');
-      expect(alerts[0]).toContain('delta +0');
-    });
-
-    it('rising credits carry the burn-rate delta + last-read PT time', () => {
+    it('extra-usage: RISE edge fires with burn-rate delta + PT time', () => {
       const { alerts } = evaluateAlerts(
         [{ ...base, extra_usage: { is_enabled: true, used_credits: 12 } }],
-        { a: { used_credits: 7, at: '2026-06-11T02:00:00.000Z' } }, NOW,
+        st({ extra_enabled: true, extra_credits: 7 }), NOW,
       );
       expect(alerts[0]).toContain('RISING 7 -> 12');
       expect(alerts[0]).toContain('delta +5 since');
       expect(alerts[0]).toContain('PT');
     });
 
-    it('a failed account fetch is an ALERT, never silent (monitoring-blind detector)', () => {
-      const { alerts } = evaluateAlerts(
-        [{ account: 'b', ok: false, error: 'HTTP 403', fetched_at: NOW }], {}, NOW,
+    it('extra-usage: DISABLE edge fires once (meter walled off)', () => {
+      const { alerts, nextState } = evaluateAlerts(
+        [{ ...base, extra_usage: { is_enabled: false, used_credits: 0 } }],
+        st({ extra_enabled: true, extra_credits: 537155 }), NOW,
       );
-      expect(alerts.some(a => a.includes('USAGE-FETCH-FAIL b'))).toBe(true);
+      expect(alerts.some(a => a.includes('DISABLED') && a.includes('537155'))).toBe(true);
+      expect(nextState.a.extra_enabled).toBe(false);
+    });
+
+    it('fetch-fail fires on the failure EDGE then QUIETS while persistent, RECOVERS on restore', () => {
+      const failing = { account: 'b', ok: false, error: 'HTTP 403', fetched_at: NOW };
+      const first = evaluateAlerts([failing], {}, NOW);
+      expect(first.alerts.some(a => a.includes('USAGE-FETCH-FAIL b'))).toBe(true);
+      const second = evaluateAlerts([failing], first.nextState, NOW);
+      expect(second.alerts).toEqual([]); // persistent failure -> quiet
+      const recovered = evaluateAlerts([{ account: 'b', ok: true, fetched_at: NOW }], second.nextState, NOW);
+      expect(recovered.alerts.some(a => a.startsWith('RECOVERED') && a.includes('fetch restored'))).toBe(true);
+    });
+
+    it('a failing fetch does NOT reset the 5h/7d/extra edges (carried forward)', () => {
+      const prev = st({ seven_d_over: true, extra_enabled: true, extra_credits: 100 });
+      const { nextState } = evaluateAlerts([{ account: 'a', ok: false, error: 'HTTP 500', fetched_at: NOW }], prev, NOW);
+      expect(nextState.a.seven_d_over).toBe(true);
+      expect(nextState.a.extra_enabled).toBe(true);
+      expect(nextState.a.extra_credits).toBe(100);
+      expect(nextState.a.fetch_failing).toBe(true);
     });
   });
 
