@@ -78,9 +78,15 @@ const AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
 // `claude` login uses - public by design for PKCE; not a secret).
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const REDIRECT_URI = 'https://console.anthropic.com/oauth/code/callback';
-// Minimum scope set that includes user:profile (the usage API requirement).
-// If claude.ai rejects the narrow request, retry with --scopes "org:create_api_key user:profile user:inference".
-const DEFAULT_SCOPES = 'user:profile';
+// The authorize server for this client_id requires the CANONICAL accepted
+// scope set - a profile-only request is rejected post-approve with
+// "Invalid request format" (proven live 2026-06-11, Adam mid-flow). This is
+// the same set the Claude Code login / setup-token flow requests with this
+// client_id + redirect_uri. Our code uses the resulting token ONLY for the
+// read-only usage API; the user:inference scope (spend-capable) comes with
+// the canonical set but is never exercised. Stored at rest in accounts.json
+// (0600). Security-reviewed scope expansion (task_1781149656020).
+const DEFAULT_SCOPES = 'org:create_api_key user:profile user:inference';
 
 const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 
