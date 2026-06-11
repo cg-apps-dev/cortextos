@@ -298,6 +298,109 @@ export function getPlanUsage(): PlanUsage | null {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-account Claude subscription usage (3-account panel)
+// ---------------------------------------------------------------------------
+
+/**
+ * Account-key -> display label + plan name. Adam-specified labels; the keys
+ * are the accounts.json identifiers the usage monitor writes. New accounts
+ * fall back to the raw key so they still render (visible, not dropped).
+ */
+const ACCOUNT_LABELS: Record<string, { email: string; plan: string }> = {
+  'me-com-max': { email: 'afolker@me.com', plan: 'Personal Claude MAX Plan' },
+  'cg-team-seat': { email: 'adam@cleangreen.com', plan: 'Teams Premium Seat Plan' },
+  'icloud-max-20x': { email: 'afolker@icloud.com', plan: 'Personal Claude MAX Plan' },
+};
+
+// Display order: cleangreen seat first (primary), then the two personal MAX.
+const ACCOUNT_ORDER = ['cg-team-seat', 'me-com-max', 'icloud-max-20x'];
+
+// Anthropic extra-usage billing: 100 credits = $1.00; me.com is capped at $10k.
+const CREDITS_PER_USD = 100;
+const EXTRA_USAGE_CAP_USD: Record<string, number> = { 'me-com-max': 10000 };
+
+export interface AccountUsagePanelEntry {
+  account: string;
+  email: string;
+  plan: string;
+  ok: boolean;
+  error?: string;
+  five_hour_pct?: number;
+  seven_day_pct?: number;
+  five_hour_resets?: string;
+  seven_day_resets?: string;
+  extra_usage?: {
+    is_enabled: boolean;
+    used_credits: number;
+    used_usd: number;
+    cap_usd?: number;
+  };
+  fetched_at?: string;
+}
+
+interface RawAccountUsage {
+  account: string;
+  ok: boolean;
+  error?: string;
+  five_hour_pct?: number;
+  seven_day_pct?: number;
+  five_hour_resets?: string;
+  seven_day_resets?: string;
+  extra_usage?: { is_enabled: boolean; used_credits?: number };
+  fetched_at?: string;
+}
+
+/**
+ * Read the consolidated all-accounts usage snapshot (written by
+ * `cortextos bus check-all-usage`, refreshed every 2h by launchd). Maps each
+ * account to its email/plan label and enriches extra-usage with USD + cap.
+ * Returns null if the snapshot has not been written yet.
+ */
+export function getMultiAccountUsage(): { generatedAt: string; accounts: AccountUsagePanelEntry[] } | null {
+  const file = path.join(CTX_ROOT, 'state', 'usage', 'multi-account-usage.json');
+  if (!fs.existsSync(file)) return null;
+  let raw: { generated_at: string; accounts: RawAccountUsage[] };
+  try {
+    raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
+  } catch {
+    return null;
+  }
+  const byKey = new Map(raw.accounts.map((a) => [a.account, a]));
+  // Preferred order first, then any unknown accounts appended.
+  const keys = [
+    ...ACCOUNT_ORDER.filter((k) => byKey.has(k)),
+    ...raw.accounts.map((a) => a.account).filter((k) => !ACCOUNT_ORDER.includes(k)),
+  ];
+  const accounts: AccountUsagePanelEntry[] = keys.map((key) => {
+    const a = byKey.get(key)!;
+    const label = ACCOUNT_LABELS[key] ?? { email: key, plan: 'Claude Plan' };
+    const entry: AccountUsagePanelEntry = {
+      account: key,
+      email: label.email,
+      plan: label.plan,
+      ok: a.ok,
+      error: a.error,
+      five_hour_pct: a.five_hour_pct,
+      seven_day_pct: a.seven_day_pct,
+      five_hour_resets: a.five_hour_resets,
+      seven_day_resets: a.seven_day_resets,
+      fetched_at: a.fetched_at,
+    };
+    if (a.extra_usage) {
+      const credits = a.extra_usage.used_credits ?? 0;
+      entry.extra_usage = {
+        is_enabled: a.extra_usage.is_enabled,
+        used_credits: credits,
+        used_usd: credits / CREDITS_PER_USD,
+        cap_usd: EXTRA_USAGE_CAP_USD[key],
+      };
+    }
+    return entry;
+  });
+  return { generatedAt: raw.generated_at, accounts };
+}
+
+// ---------------------------------------------------------------------------
 // Historical Plan Usage (time series from JSONL logs)
 // ---------------------------------------------------------------------------
 

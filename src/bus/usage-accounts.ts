@@ -662,5 +662,15 @@ export async function checkAllUsage(ctxRoot: string): Promise<AllUsageResult> {
   const { alerts, nextExtra } = evaluateAlerts(usages, prevExtra, now);
   ensureDir(join(ctxRoot, 'state', 'usage'));
   atomicWriteSync(statePath, JSON.stringify(nextExtra, null, 2));
+
+  // Persist a consolidated all-accounts snapshot for the dashboard's
+  // 3-account panel. One file (not the per-account latest-*.json the
+  // single-account refreshUsage path owns) so the dashboard does one read and
+  // there is no shape conflict. The 2h launchd check-all-usage run refreshes
+  // it. Usage numbers + reset times + extra-usage state only - never a token.
+  atomicWriteSync(
+    join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'),
+    JSON.stringify({ generated_at: now, accounts: usages }, null, 2),
+  );
   return { accounts: usages, alerts };
 }

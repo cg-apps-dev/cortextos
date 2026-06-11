@@ -74,3 +74,61 @@ describe('getUsageHistory (5h/7d series)', () => {
     expect(history[0].session_pct).toBe(0);
   });
 });
+
+describe('getMultiAccountUsage (3-account subscription panel)', () => {
+  function writeSnapshot(accounts: unknown[]) {
+    fs.writeFileSync(path.join(usageDir, 'multi-account-usage.json'), JSON.stringify({
+      generated_at: '2026-06-11T18:00:00.000Z', accounts,
+    }));
+  }
+
+  it('returns null when the snapshot is absent', () => {
+    expect(reports.getMultiAccountUsage()).toBeNull();
+  });
+
+  it('maps account keys to Adam-specified email + plan labels in primary-first order', () => {
+    writeSnapshot([
+      { account: 'icloud-max-20x', ok: true, five_hour_pct: 7, seven_day_pct: 4, extra_usage: { is_enabled: true, used_credits: 0 } },
+      { account: 'me-com-max', ok: true, five_hour_pct: 8, seven_day_pct: 95, extra_usage: { is_enabled: true, used_credits: 537155 } },
+      { account: 'cg-team-seat', ok: true, five_hour_pct: 22, seven_day_pct: 25, extra_usage: { is_enabled: true, used_credits: 24648 } },
+    ]);
+    const r = reports.getMultiAccountUsage()!;
+    // Order: cg-team-seat (primary), me-com, icloud.
+    expect(r.accounts.map((a) => a.account)).toEqual(['cg-team-seat', 'me-com-max', 'icloud-max-20x']);
+    expect(r.accounts[0].email).toBe('adam@cleangreen.com');
+    expect(r.accounts[0].plan).toBe('Teams Premium Seat Plan');
+    expect(r.accounts[1].email).toBe('afolker@me.com');
+    expect(r.accounts[1].plan).toBe('Personal Claude MAX Plan');
+    expect(r.accounts[2].email).toBe('afolker@icloud.com');
+  });
+
+  it('enriches extra-usage with USD (100 credits = $1) and the me.com $10k cap', () => {
+    writeSnapshot([
+      { account: 'me-com-max', ok: true, extra_usage: { is_enabled: true, used_credits: 537155 } },
+    ]);
+    const me = reports.getMultiAccountUsage()!.accounts[0];
+    expect(me.extra_usage!.used_usd).toBeCloseTo(5371.55, 2);
+    expect(me.extra_usage!.cap_usd).toBe(10000);
+  });
+
+  it('handles a disabled meter (used_credits null -> 0) and a failed fetch', () => {
+    writeSnapshot([
+      { account: 'me-com-max', ok: true, extra_usage: { is_enabled: false, used_credits: null } },
+      { account: 'icloud-max-20x', ok: false, error: 'HTTP 403' },
+    ]);
+    const r = reports.getMultiAccountUsage()!;
+    const me = r.accounts.find((a) => a.account === 'me-com-max')!;
+    expect(me.extra_usage!.is_enabled).toBe(false);
+    expect(me.extra_usage!.used_credits).toBe(0);
+    const ic = r.accounts.find((a) => a.account === 'icloud-max-20x')!;
+    expect(ic.ok).toBe(false);
+    expect(ic.error).toBe('HTTP 403');
+  });
+
+  it('renders an unknown account with a fallback label instead of dropping it', () => {
+    writeSnapshot([{ account: 'future-acct', ok: true, five_hour_pct: 1 }]);
+    const r = reports.getMultiAccountUsage()!;
+    expect(r.accounts[0].email).toBe('future-acct');
+    expect(r.accounts[0].plan).toBe('Claude Plan');
+  });
+});
