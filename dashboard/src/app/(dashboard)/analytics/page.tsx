@@ -66,6 +66,9 @@ export default async function AnalyticsPage({
         </p>
       </div>
 
+      {/* Subscription usage (3 Claude accounts + Codex) - top of page per Adam 2026-06-11 */}
+      <SubscriptionUsage data={multiAccountUsage} codex={codexUsage} />
+
       {/* Fleet Health */}
       <FleetHealth data={fleetHealth} />
 
@@ -87,9 +90,6 @@ export default async function AnalyticsPage({
         usageHistory={usageHistory}
         costByAgent={costByAgent}
       />
-
-      {/* Claude subscription usage - 3 accounts */}
-      <SubscriptionUsage data={multiAccountUsage} codex={codexUsage} />
 
       {/* Claude vs Codex usage comparison */}
       <ModelComparison data={modelUsage} />
