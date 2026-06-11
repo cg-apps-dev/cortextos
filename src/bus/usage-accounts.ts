@@ -272,10 +272,14 @@ export function beginUsageAuth(
   accountName: string,
   scopes: string = DEFAULT_SCOPES,
 ): { account: string; url: string; expires_note: string } {
-  // Verifier: 43-128 chars; 32 random bytes b64url = 43 chars.
+  // Verifier + state both = 32 random bytes b64url (43 chars), byte-matching
+  // the real Claude Code client (binary: verifier=EAK()=b64url(randomBytes(32)),
+  // state=CAK()=b64url(randomBytes(32)) - separate randoms, both 32 bytes). A
+  // 16-byte (22-char) state was the last deviation from the client and the
+  // suspected cause of the approve-POST "invalid request format".
   const verifier = b64url(randomBytes(32));
   const challenge = b64url(createHash('sha256').update(verifier).digest());
-  const state = b64url(randomBytes(16));
+  const state = b64url(randomBytes(32));
 
   ensureDir(join(ctxRoot, 'state', 'oauth'));
   const path = pendingAuthPath(ctxRoot);
