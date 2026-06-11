@@ -24,7 +24,7 @@ WORD_HARD=[
 NUM_HARD=[
  ("M-2 4/20", re.compile(r'\b4\s*[:/]\s*20\b|\b420\b')),
  ("M-2 delivery-time-guarantee", re.compile(r'deliver\w*\s+in\s+\d+\s*(hours?|days?)|\d+[- ]?(hour|day)[- ]?(delivery|shipping)|\b(24|48|72)[- ]?hours?\b')),
- ("M-16 outcome-timing", re.compile(r'\b8\s*hours?\b|asleep in \d+\s*min|knocked? (you |me )?out in \d|results? in \d+\s*days?')),
+ ("M-16 outcome-timing", re.compile(r'\b8\s*hours?\b|asleep in \d+\s*min|knocked? (you |me )?out in \d|results? in \d+\s*days?|out by \d+|asleep by \d+')),
 ]
 NUM_REVIEW=[
  ("M-6 social#", re.compile(r'(?<![\$])\b\d[\d,]*[ ]*\+?[ ]*(?:\w+[ ]+)?(customers?|reviews?|people|orders?|families|sleepers?|users?|five[- ]star)\b')),
@@ -63,6 +63,12 @@ if __name__=="__main__":
     hf=[]; rf=[]; clean=[]
     for row,r in write.items():
         h,rev=scan(r['headlines']+r['bodies'])
+        for b in r['bodies']:
+            if '\n' in b and '\n\n' not in b:
+                rev.append("FORMAT paragraph-spacing:'body has single newlines only - needs blank lines between paragraphs'"); break
+        for hl in r['headlines']:
+            if '\n' in hl:
+                rev.append("FORMAT headline-newline:'headline contains a newline'"); break
         if h: hf.append((int(row),r['product'],h))
         elif rev: rf.append((int(row),r['product'],rev))
         else: clean.append(int(row))
