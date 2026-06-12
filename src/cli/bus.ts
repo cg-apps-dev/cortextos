@@ -12,6 +12,7 @@ import { selfRestart, hardRestart, autoCommit, checkGoalStaleness, postActivity 
 import { createExperiment, runExperiment, evaluateExperiment, updateExperiment, listExperiments, gatherContext, manageCycle, loadExperimentConfig } from '../bus/experiment.js';
 import { browseCatalog, installCommunityItem, prepareSubmission, submitCommunityItem } from '../bus/catalog.js';
 import { collectMetrics, parseUsageOutput, storeUsageData, checkUpstream, collectTelegramCommands, registerTelegramCommands } from '../bus/metrics.js';
+import { writeAgentAccountsSnapshot } from '../bus/agent-accounts-snapshot.js';
 import { createApproval, updateApproval } from '../bus/approval.js';
 import { createReminder, listReminders, ackReminder, pruneReminders } from '../bus/reminders.js';
 import { updateCronFire, parseDurationMs, readCronState } from '../bus/cron-state.js';
@@ -2798,6 +2799,7 @@ busCommand
     const env = resolveEnv();
     try {
       const result = await checkAllUsage(env.ctxRoot);
+      try { writeAgentAccountsSnapshot(env.ctxRoot, env.frameworkRoot); } catch { /* fail-soft */ }
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
       } else if (opts.alertsOnly) {

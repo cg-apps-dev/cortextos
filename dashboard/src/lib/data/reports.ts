@@ -401,6 +401,47 @@ export function getMultiAccountUsage(): { generatedAt: string; accounts: Account
   return { generatedAt: raw.generated_at, accounts };
 }
 
+export interface AgentAccounts {
+  byAccount: Record<string, string[]>;
+  unassigned: string[];
+}
+
+export function shortAgentName(name: string): string {
+  let short = name;
+  if (short.endsWith('-agent')) short = short.slice(0, -'-agent'.length);
+  if (short.startsWith('the-')) short = short.slice('the-'.length);
+  return short;
+}
+
+export function getAgentAccounts(): AgentAccounts | null {
+  const file = path.join(CTX_ROOT, 'state', 'usage', 'agent-accounts.json');
+  if (!fs.existsSync(file)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
+      agents?: Array<{ agent?: unknown; account?: unknown }>;
+    };
+    if (!Array.isArray(raw.agents)) return null;
+
+    const byAccount: Record<string, string[]> = {};
+    const unassigned: string[] = [];
+    for (const entry of raw.agents) {
+      if (typeof entry.agent !== 'string') continue;
+      const name = shortAgentName(entry.agent);
+      if (typeof entry.account === 'string' && entry.account.length > 0) {
+        if (!byAccount[entry.account]) byAccount[entry.account] = [];
+        byAccount[entry.account].push(name);
+      } else {
+        unassigned.push(name);
+      }
+    }
+    for (const names of Object.values(byAccount)) names.sort();
+    unassigned.sort();
+    return { byAccount, unassigned };
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Codex (OpenAI ChatGPT plan) usage - read-only, zero-token
 // ---------------------------------------------------------------------------
