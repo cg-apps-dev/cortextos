@@ -6,6 +6,7 @@ import {
   createExperiment,
   runExperiment,
   evaluateExperiment,
+  updateExperiment,
   listExperiments,
   gatherContext,
   manageCycle,
@@ -24,6 +25,73 @@ describe('Sprint 3: Experiment Framework', () => {
     } catch {
       /* ignore */
     }
+  });
+
+  describe('updateExperiment + active.json sync (stale-window divergence fix)', () => {
+    function readHistory(id: string) {
+      return JSON.parse(readFileSync(join(testDir, 'experiments', 'history', `${id}.json`), 'utf-8').trim());
+    }
+    function readActive() {
+      return JSON.parse(readFileSync(join(testDir, 'experiments', 'active.json'), 'utf-8').trim());
+    }
+
+    it('updates window in BOTH history and active.json for a running experiment', () => {
+      const id = createExperiment(testDir, 'testbot', 'm', 'h', { window: '24h' });
+      runExperiment(testDir, id);
+      const updated = updateExperiment(testDir, id, { window: '7d' });
+      expect(updated.window).toBe('7d');
+      expect(readHistory(id).window).toBe('7d');
+      expect(readActive().window).toBe('7d');
+      // list-experiments (history-backed) now agrees with active.json
+      const listed = listExperiments(testDir).find(e => e.id === id);
+      expect(listed?.window).toBe('7d');
+    });
+
+    it('updates a proposed experiment (no active.json yet) without creating one', () => {
+      const id = createExperiment(testDir, 'testbot', 'm', 'h');
+      const updated = updateExperiment(testDir, id, { window: '48h', hypothesis: 'h2' });
+      expect(updated.window).toBe('48h');
+      expect(readHistory(id).hypothesis).toBe('h2');
+      expect(existsSync(join(testDir, 'experiments', 'active.json'))).toBe(false);
+    });
+
+    it('refuses to update a completed experiment', () => {
+      const id = createExperiment(testDir, 'testbot', 'm', 'h');
+      runExperiment(testDir, id);
+      evaluateExperiment(testDir, id, 5);
+      expect(() => updateExperiment(testDir, id, { window: '7d' })).toThrow(/immutable/);
+    });
+
+    it('throws for an unknown experiment id', () => {
+      expect(() => updateExperiment(testDir, 'exp_0_zzzzz', { window: '7d' })).toThrow(/not found/);
+    });
+
+    it('does not touch active.json when it belongs to a DIFFERENT experiment', () => {
+      const running = createExperiment(testDir, 'testbot', 'm1', 'h1');
+      runExperiment(testDir, running); // active.json = running
+      const other = createExperiment(testDir, 'testbot', 'm2', 'h2');
+      updateExperiment(testDir, other, { window: '7d' });
+      expect(readActive().id).toBe(running);
+      expect(readActive().window).not.toBe('7d');
+    });
+
+    it('state transitions also sync active.json (evaluate writes completed through saveExperiment, then unlinks)', () => {
+      const id = createExperiment(testDir, 'testbot', 'm', 'h');
+      runExperiment(testDir, id);
+      evaluateExperiment(testDir, id, 5);
+      // evaluate removes active.json after completing
+      expect(existsSync(join(testDir, 'experiments', 'active.json'))).toBe(false);
+      expect(readHistory(id).status).toBe('completed');
+    });
+
+    it('a corrupt active.json never blocks the canonical history write', () => {
+      const id = createExperiment(testDir, 'testbot', 'm', 'h');
+      runExperiment(testDir, id);
+      writeFileSync(join(testDir, 'experiments', 'active.json'), '{ corrupt', 'utf-8');
+      const updated = updateExperiment(testDir, id, { window: '7d' });
+      expect(updated.window).toBe('7d');
+      expect(readHistory(id).window).toBe('7d');
+    });
   });
 
   describe('createExperiment', () => {

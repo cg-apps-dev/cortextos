@@ -115,6 +115,30 @@ function saveExperiment(agentDir: string, experiment: Experiment): void {
   const dir = historyDir(agentDir);
   ensureDir(dir);
   atomicWriteSync(join(dir, `${experiment.id}.json`), JSON.stringify(experiment, null, 2));
+  syncActiveCopy(agentDir, experiment);
+}
+
+/**
+ * Keep experiments/active.json in step with the canonical history record.
+ *
+ * history/<id>.json is the single source of truth (every state transition
+ * writes it); active.json is a convenience copy of the currently running
+ * experiment. Before this sync, a field change that reached only one store
+ * silently diverged the two - list-experiments (history) then contradicted
+ * active.json until the experiment completed (seen live: window hand-edited
+ * to 7d in active.json, history still 24h). Best-effort: a failed sync never
+ * blocks the canonical write.
+ */
+function syncActiveCopy(agentDir: string, experiment: Experiment): void {
+  const activePath = join(agentDir, 'experiments', 'active.json');
+  try {
+    if (!existsSync(activePath)) return;
+    const active = JSON.parse(readFileSync(activePath, 'utf-8').trim()) as Experiment;
+    if (active.id !== experiment.id) return;
+    atomicWriteSync(activePath, JSON.stringify(experiment, null, 2));
+  } catch {
+    // active.json unreadable - leave it; the canonical record is already saved
+  }
 }
 
 export function loadExperimentConfig(agentDir: string): ExperimentConfig {
@@ -243,6 +267,45 @@ export function runExperiment(
   const activeDir = join(agentDir, 'experiments');
   ensureDir(activeDir);
   atomicWriteSync(join(activeDir, 'active.json'), JSON.stringify(experiment, null, 2));
+
+  return experiment;
+}
+
+export interface ExperimentUpdateOptions {
+  window?: string;
+  measurement?: string;
+  surface?: string;
+  direction?: 'higher' | 'lower';
+  hypothesis?: string;
+}
+
+/**
+ * Update mutable fields of a proposed or running experiment.
+ *
+ * This is the supported way to change an experiment mid-flight (e.g. extend
+ * the measurement window). It writes through saveExperiment, so the canonical
+ * history record AND the active.json copy stay in step - hand-editing
+ * active.json updates neither the record list-experiments reads nor the one
+ * evaluateExperiment loads. Completed experiments are immutable.
+ */
+export function updateExperiment(
+  agentDir: string,
+  experimentId: string,
+  updates: ExperimentUpdateOptions,
+): Experiment {
+  const experiment = loadExperiment(agentDir, experimentId);
+
+  if (experiment.status === 'completed') {
+    throw new Error(`Experiment ${experimentId} is completed and immutable`);
+  }
+
+  if (updates.window !== undefined) experiment.window = updates.window;
+  if (updates.measurement !== undefined) experiment.measurement = updates.measurement;
+  if (updates.surface !== undefined) experiment.surface = updates.surface;
+  if (updates.direction !== undefined) experiment.direction = updates.direction;
+  if (updates.hypothesis !== undefined) experiment.hypothesis = updates.hypothesis;
+
+  saveExperiment(agentDir, experiment);
 
   return experiment;
 }
