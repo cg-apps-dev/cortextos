@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { sendMessage, checkInbox, ackInbox } from '../../../src/bus/message';
@@ -92,6 +92,52 @@ describe('Message Bus', () => {
       expect(() =>
         sendMessage(senderPaths, '../bad', 'good', 'normal', 'test')
       ).toThrow();
+    });
+
+    it('appends a message history JSONL line', () => {
+      const msgId = sendMessage(senderPaths, 'sender', 'receiver', 'normal', 'Hello');
+
+      const historyPath = join(senderPaths.logDir, 'message-history.jsonl');
+      const lines = readFileSync(historyPath, 'utf-8').trim().split('\n');
+      expect(lines).toHaveLength(1);
+
+      const entry = JSON.parse(lines[0]);
+      expect(entry.id).toBe(msgId);
+      expect(entry.from).toBe('sender');
+      expect(entry.to).toBe('receiver');
+      expect(entry.text).toBe('Hello');
+    });
+
+    it('appends one history line per message', () => {
+      sendMessage(senderPaths, 'sender', 'receiver', 'normal', 'First');
+      sendMessage(senderPaths, 'sender', 'receiver', 'high', 'Second');
+
+      const historyPath = join(senderPaths.logDir, 'message-history.jsonl');
+      const lines = readFileSync(historyPath, 'utf-8').trim().split('\n');
+      expect(lines).toHaveLength(2);
+      expect(JSON.parse(lines[0]).text).toBe('First');
+      expect(JSON.parse(lines[1]).text).toBe('Second');
+    });
+
+    it('creates the logs dir when appending history', () => {
+      expect(existsSync(senderPaths.logDir)).toBe(false);
+
+      sendMessage(senderPaths, 'sender', 'receiver', 'normal', 'Hello');
+
+      expect(existsSync(senderPaths.logDir)).toBe(true);
+      expect(existsSync(join(senderPaths.logDir, 'message-history.jsonl'))).toBe(true);
+    });
+
+    it('does not break message delivery when history append fails', () => {
+      mkdirSync(join(testDir, 'logs'), { recursive: true });
+      writeFileSync(senderPaths.logDir, 'not a directory');
+
+      const msgId = sendMessage(senderPaths, 'sender', 'receiver', 'normal', 'Hello');
+      expect(msgId).toBeTruthy();
+
+      const receiverInbox = join(testDir, 'inbox', 'receiver');
+      const files = readdirSync(receiverInbox).filter(f => f.endsWith('.json'));
+      expect(files).toHaveLength(1);
     });
   });
 
