@@ -18,7 +18,7 @@ import { updateCronFire, parseDurationMs, readCronState } from '../bus/cron-stat
 import { addCron, removeCron, readCrons, updateCron as updateCronDef, getCronByName, getExecutionLog } from '../bus/crons.js';
 import { nextFireFromCron } from '../daemon/cron-scheduler.js';
 import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/knowledge-base.js';
-import { checkUsageApi, refreshUsage, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D } from '../bus/oauth.js';
+import { refreshUsage, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D } from '../bus/oauth.js';
 import { captureKeychainUsageCredential, beginUsageAuth, completeUsageAuth, checkAllUsage, setAccountBenched, fingerprint as ucFingerprint } from '../bus/usage-accounts.js';
 import { resolveAgentAccount } from '../daemon/cron-capacity-gate.js';
 import { resolvePaths } from '../utils/paths.js';
@@ -1347,6 +1347,21 @@ function runHook(hookName: string): void {
   process.exit(result.status ?? 0);
 }
 
+function validateCheckUsageApiArgs(args: string[]): string | null {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--force') continue;
+    if (arg === '--warn-7day' || arg === '--warn-5h' || arg === '--chat-id') {
+      const value = args[i + 1];
+      if (!value || value.startsWith('-')) return `Option ${arg} requires a value`;
+      i++;
+      continue;
+    }
+    return `Unknown option: ${arg}`;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Telegram utility commands — parity with bash edit-message / answer-callback
 // ---------------------------------------------------------------------------
@@ -2534,29 +2549,32 @@ busCommand
 
 busCommand
   .command('check-usage-api')
-  .description('Fetch Claude OAuth utilization from Anthropic usage API (3-min TTL cache)')
-  .option('--account <name>', 'Check specific account (default: active account)')
-  .option('--force', 'Bypass cache and fetch fresh data')
-  .option('--json', 'Output as JSON')
-  .action(async (opts: { account?: string; force?: boolean; json?: boolean }) => {
+  .description('Fetch Claude and Codex usage via the canonical bash checker')
+  .argument('[args...]', 'Arguments passed through to bus/check-usage-api.sh')
+  .allowUnknownOption(true)
+  .addHelpText('after', `
+
+Options:
+  --warn-7day <n>  Warn if 7-day utilization is at or above n percent
+  --warn-5h <n>    Warn if 5-hour utilization is at or above n percent
+  --chat-id <id>   Telegram chat ID for alerts
+  --force          Bypass the result cache
+`)
+  .action((args: string[]) => {
     const env = resolveEnv();
-    try {
-      const result = await checkUsageApi(env.ctxRoot, { force: opts.force, account: opts.account });
-      if (opts.json) {
-        console.log(JSON.stringify(result, null, 2));
-      } else {
-        const cached = result.cached ? ' (cached)' : '';
-        const warn5h = result.five_hour_utilization >= ALERT_5H ? ' ⚠️' : '';
-        const warn7d = result.seven_day_utilization >= ALERT_7D ? ' ⚠️' : '';
-        console.log(`Account: ${result.account}${cached}`);
-        console.log(`5h utilization:  ${pct(result.five_hour_utilization)}${warn5h}`);
-        console.log(`7d utilization:  ${pct(result.seven_day_utilization)}${warn7d}`);
-        console.log(`Fetched at: ${result.fetched_at}`);
-      }
-    } catch (err) {
-      console.error(`Error: ${err}`);
+    const err = validateCheckUsageApiArgs(args);
+    if (err) {
+      console.error(err);
       process.exit(1);
     }
+    const frameworkRoot = env.frameworkRoot || env.projectRoot || process.cwd();
+    const scriptPath = join(frameworkRoot, 'bus', 'check-usage-api.sh');
+    const result = spawnSync('bash', [scriptPath, ...args], { stdio: 'inherit' });
+    if (result.error) {
+      console.error(`Error: ${result.error.message}`);
+      process.exit(1);
+    }
+    process.exit(result.status ?? 1);
   });
 
 busCommand
