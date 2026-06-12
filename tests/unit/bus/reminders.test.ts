@@ -8,6 +8,9 @@ import {
   ackReminder,
   pruneReminders,
   getOverdueReminders,
+  getDueReminders,
+  markReminderDelivered,
+  REMINDER_REDELIVER_MS,
 } from '../../../src/bus/reminders';
 import type { BusPaths } from '../../../src/types/index';
 
@@ -132,6 +135,99 @@ describe('reminders', () => {
 
     it('throws when reminder ID not found', () => {
       expect(() => ackReminder(paths, 'nonexistent-id')).toThrow();
+    });
+  });
+
+  describe('getDueReminders (live delivery path)', () => {
+    // Regression for the 2026-06-10 silent non-fire: a reminder created
+    // MID-SESSION (after boot) must become due for live injection once
+    // fire_at passes - before this path existed it only fired at restart.
+    it('returns a pending reminder created mid-session once fire_at passes', () => {
+      const past = new Date(Date.now() - 1000).toISOString();
+      const r = createReminder(paths, past, 'resume the fleet');
+      const due = getDueReminders(paths);
+      expect(due).toHaveLength(1);
+      expect(due[0].id).toBe(r.id);
+    });
+
+    it('does not return future reminders', () => {
+      const future = new Date(Date.now() + 3600_000).toISOString();
+      createReminder(paths, future, 'not yet');
+      expect(getDueReminders(paths)).toHaveLength(0);
+    });
+
+    it('does not return a just-delivered reminder (no redeliver spam)', () => {
+      const past = new Date(Date.now() - 1000).toISOString();
+      const r = createReminder(paths, past, 'delivered');
+      markReminderDelivered(paths, r.id);
+      expect(getDueReminders(paths)).toHaveLength(0);
+    });
+
+    it('redelivers a delivered-but-unacked reminder after the redeliver window', () => {
+      const past = new Date(Date.now() - 1000).toISOString();
+      const r = createReminder(paths, past, 'stuck');
+      markReminderDelivered(paths, r.id);
+      // A redeliver window of 0 makes "delivered long ago" immediate.
+      expect(getDueReminders(paths, 0)).toHaveLength(1);
+      // And the default window keeps it quiet.
+      expect(getDueReminders(paths, REMINDER_REDELIVER_MS)).toHaveLength(0);
+    });
+
+    it('never returns acked reminders', () => {
+      const past = new Date(Date.now() - 1000).toISOString();
+      const r = createReminder(paths, past, 'done');
+      markReminderDelivered(paths, r.id);
+      ackReminder(paths, r.id);
+      expect(getDueReminders(paths, 0)).toHaveLength(0);
+    });
+  });
+
+  describe('markReminderDelivered', () => {
+    it('sets delivered status and timestamp', () => {
+      const past = new Date(Date.now() - 1000).toISOString();
+      const r = createReminder(paths, past, 'test');
+      markReminderDelivered(paths, r.id);
+      const all = listReminders(paths, { all: true });
+      expect(all[0].status).toBe('delivered');
+      expect(all[0].delivered_at).toBeTruthy();
+    });
+
+    it('throws when reminder ID not found', () => {
+      expect(() => markReminderDelivered(paths, 'nonexistent-id')).toThrow();
+    });
+
+    it('delivered reminders still ack normally', () => {
+      const past = new Date(Date.now() - 1000).toISOString();
+      const r = createReminder(paths, past, 'test');
+      markReminderDelivered(paths, r.id);
+      ackReminder(paths, r.id);
+      expect(listReminders(paths, { all: true })[0].status).toBe('acked');
+    });
+  });
+
+  describe('boot-path / list interaction with delivered status', () => {
+    it('getOverdueReminders includes delivered-but-unacked (restart survival)', () => {
+      const past = new Date(Date.now() - 1000).toISOString();
+      const r = createReminder(paths, past, 'delivered then session died');
+      markReminderDelivered(paths, r.id);
+      const overdue = getOverdueReminders(paths);
+      expect(overdue).toHaveLength(1);
+      expect(overdue[0].id).toBe(r.id);
+    });
+
+    it('listReminders default includes delivered (still outstanding)', () => {
+      const past = new Date(Date.now() - 1000).toISOString();
+      const r = createReminder(paths, past, 'outstanding');
+      markReminderDelivered(paths, r.id);
+      expect(listReminders(paths)).toHaveLength(1);
+    });
+
+    it('pruneReminders keeps delivered reminders regardless of age', () => {
+      const past = new Date(Date.now() - 10 * 24 * 3600_000).toISOString();
+      const r = createReminder(paths, past, 'old delivered');
+      markReminderDelivered(paths, r.id);
+      pruneReminders(paths, 7);
+      expect(listReminders(paths)).toHaveLength(1);
     });
   });
 
