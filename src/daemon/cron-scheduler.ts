@@ -30,6 +30,8 @@ import { join } from 'path';
 import { parseDurationMs, readCronState } from '../bus/cron-state.js';
 import { readCronsWithStatus, updateCron } from '../bus/crons.js';
 import type { CronDefinition } from '../types/index.js';
+import { GATE_RECHECK_MS } from './cron-capacity-gate.js';
+import type { GateDecision } from './cron-capacity-gate.js';
 import { appendExecutionLog } from './cron-execution-log.js';
 
 // ---------------------------------------------------------------------------
@@ -238,12 +240,14 @@ export interface CronSchedulerOptions {
   agentName: string;
   onFire: (cron: CronDefinition) => Promise<void> | void;
   logger?: (msg: string) => void;
+  gate?: (cron: CronDefinition) => GateDecision;
 }
 
 export class CronScheduler {
   private readonly agentName: string;
   private readonly onFire: (cron: CronDefinition) => Promise<void> | void;
   private readonly logger: (msg: string) => void;
+  private readonly gate?: (cron: CronDefinition) => GateDecision;
 
   /** In-memory schedule, keyed by cron name. */
   private scheduled: Map<string, ScheduledCron> = new Map();
@@ -271,6 +275,7 @@ export class CronScheduler {
     this.agentName = opts.agentName;
     this.onFire    = opts.onFire;
     this.logger    = opts.logger ?? ((msg: string) => process.stdout.write(msg + '\n'));
+    this.gate      = opts.gate;
   }
 
   // -------------------------------------------------------------------------
@@ -464,6 +469,28 @@ export class CronScheduler {
       // in flight (can happen with fake timers or very slow onFire), skip.
       if (sc.firing) {
         continue;
+      }
+
+      if (this.gate) {
+        let decision: GateDecision | undefined;
+        try {
+          decision = this.gate(sc.definition);
+        } catch {
+          decision = undefined;
+        }
+        if (decision?.defer) {
+          this.logger(`[cron-scheduler] capacity-deferred "${name}" - ${decision.reason ?? 'capped'}; recheck in ${GATE_RECHECK_MS / 60000}min`);
+          appendExecutionLog(this.agentName, {
+            ts: new Date().toISOString(),
+            cron: name,
+            status: 'deferred',
+            attempt: 0,
+            duration_ms: 0,
+            error: decision.reason ?? null,
+          });
+          sc.nextFireAt = now + GATE_RECHECK_MS;
+          continue;
+        }
       }
 
       sc.firing = true;

@@ -4,6 +4,7 @@ import type { AgentConfig, AgentStatus, CtxEnv, BusPaths, WorkerStatus, Telegram
 import { AgentProcess } from './agent-process.js';
 import { WorkerProcess } from './worker-process.js';
 import { FastChecker } from './fast-checker.js';
+import { makeCapacityGate } from './cron-capacity-gate.js';
 import { CronScheduler } from './cron-scheduler.js';
 import { migrateCronsForAgent } from './cron-migration.js';
 import type { CronDefinition } from '../types/index.js';
@@ -420,7 +421,7 @@ export class AgentManager {
     // The scheduler reads crons.json, fires crons, and injects prompts into
     // the agent PTY via injectAgent().  This is the Phase 2 daemon-managed
     // external cron system — agents no longer need to call CronCreate on boot.
-    this.startAgentCronScheduler(name);
+    this.startAgentCronScheduler(name, agentDir);
 
     // Start fast checker in background
     checker.start().catch(err => {
@@ -1073,7 +1074,7 @@ export class AgentManager {
    * Iter 7 fix: previously this returned `true` for any registered agent even
    * when no scheduler existed in `cronSchedulers`, silently dropping reload
    * requests during the start-window gap between `this.agents.set(name, ...)`
-   * and `startAgentCronScheduler(name)` (across the `await agentProcess.start()`
+   * and `startAgentCronScheduler(name, agentDir)` (across the `await agentProcess.start()`
    * yield in `startAgent`). Now: for non-Hermes agents that lack a scheduler we
    * lazy-wire one so the just-written crons.json is read immediately.
    */
@@ -1098,7 +1099,7 @@ export class AgentManager {
     // Non-Hermes agent registered but no scheduler: this is the start-window
     // gap. Lazy-wire the scheduler now; its start() reads crons.json which
     // already contains the new entry the caller just wrote.
-    this.startAgentCronScheduler(agentName);
+    this.startAgentCronScheduler(agentName, entry.process.getAgentDir());
     console.log(`[agent-manager] Cron scheduler lazy-created for ${agentName} (start-window reload)`);
     return this.cronSchedulers.has(agentName);
   }
@@ -1116,7 +1117,7 @@ export class AgentManager {
    * If crons.json is absent or empty the scheduler starts but has nothing to do;
    * it will pick up new entries on the next `reloadCrons()` call.
    */
-  private startAgentCronScheduler(agentName: string): void {
+  private startAgentCronScheduler(agentName: string, agentDir: string): void {
     // Skip if already running (idempotent — e.g. called twice on fast restart)
     if (this.cronSchedulers.has(agentName)) {
       console.log(`[agent-manager] Cron scheduler already running for ${agentName} — skipped`);
@@ -1149,6 +1150,12 @@ export class AgentManager {
     const scheduler = new CronScheduler({
       agentName,
       onFire,
+      gate: makeCapacityGate({
+        agentName,
+        agentDir,
+        ctxRoot: this.ctxRoot,
+        logger: (msg) => console.log(`[daemon] ${msg}`),
+      }),
       logger: (msg) => console.log(`[daemon] ${msg}`),
     });
 
