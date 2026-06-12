@@ -95,21 +95,73 @@ describe('usage-accounts', () => {
   describe('evaluateAlerts (edge-triggered dedup)', () => {
     const base: AccountUsage = { account: 'a', ok: true, fetched_at: NOW };
     // Build a prev alert-state for account 'a'.
-    const st = (o: Partial<{ five_h_over: boolean; seven_d_over: boolean; extra_enabled: boolean; extra_credits: number; fetch_failing: boolean }>) => ({
-      a: { five_h_over: false, seven_d_over: false, extra_enabled: false, extra_credits: 0, fetch_failing: false, at: '2026-06-11T02:00:00.000Z', ...o },
+    const st = (o: Partial<{ five_h_over: boolean; seven_d_over: boolean; five_h_pending: boolean; seven_d_pending: boolean; extra_enabled: boolean; extra_credits: number; fetch_failing: boolean }>) => ({
+      a: { five_h_over: false, seven_d_over: false, five_h_pending: false, seven_d_pending: false, extra_enabled: false, extra_credits: 0, fetch_failing: false, at: '2026-06-11T02:00:00.000Z', ...o },
     });
 
-    it('fires 5h + 7d on the CROSS-UP edge from empty state', () => {
+    it('a SINGLE over-read from empty state is a candidate, NOT an alert (2-consecutive rule)', () => {
       const { alerts, nextState } = evaluateAlerts([
         { ...base, five_hour_pct: USAGE_ALERT_5H_PCT + 1, seven_day_pct: USAGE_ALERT_7D_PCT + 1 },
       ], {}, NOW);
+      expect(alerts).toEqual([]);
+      expect(nextState.a.five_h_pending).toBe(true);
+      expect(nextState.a.five_h_over).toBe(false);
+      expect(nextState.a.seven_d_pending).toBe(true);
+    });
+
+    it('CONFIRMS the alert on the 2nd consecutive over-read', () => {
+      const { alerts, nextState } = evaluateAlerts(
+        [{ ...base, five_hour_pct: 90, seven_day_pct: 95 }],
+        st({ five_h_pending: true, seven_d_pending: true }), NOW,
+      );
       expect(alerts.some(a => a.startsWith('5H'))).toBe(true);
       expect(alerts.some(a => a.startsWith('7D'))).toBe(true);
       expect(nextState.a.five_h_over).toBe(true);
-      expect(nextState.a.seven_d_over).toBe(true);
+      expect(nextState.a.five_h_pending).toBe(false);
     });
 
-    it('QUIETS a persistent over-threshold (the 15-min no-spam case)', () => {
+    it('ABSORBS a single-read anomaly (21 -> 100 -> 2 = ZERO alerts) - the regression case', () => {
+      let state = {};
+      let allAlerts: string[] = [];
+      for (const pct of [21, 100, 2]) {
+        const r = evaluateAlerts([{ ...base, five_hour_pct: pct }], state, NOW);
+        state = r.nextState;
+        allAlerts = allAlerts.concat(r.alerts);
+      }
+      expect(allAlerts).toEqual([]);
+    });
+
+    it('fires a SUSTAINED spike on the 2nd consecutive (88 -> 90 = one 5H alert)', () => {
+      let state = {};
+      let allAlerts: string[] = [];
+      for (const pct of [88, 90]) {
+        const r = evaluateAlerts([{ ...base, five_hour_pct: pct }], state, NOW);
+        state = r.nextState;
+        allAlerts = allAlerts.concat(r.alerts);
+      }
+      expect(allAlerts.filter(a => a.startsWith('5H'))).toHaveLength(1);
+    });
+
+    it('candidates are PER-ACCOUNT per-bucket (icloud over then seat over = two candidates, no cross-confirm)', () => {
+      // Read 1: icloud over, seat under.
+      let r = evaluateAlerts([
+        { account: 'icloud', ok: true, five_hour_pct: 90, fetched_at: NOW },
+        { account: 'seat', ok: true, five_hour_pct: 10, fetched_at: NOW },
+      ], {}, NOW);
+      expect(r.alerts).toEqual([]);
+      expect(r.nextState.icloud.five_h_pending).toBe(true);
+      // Read 2: icloud BACK under, seat now over. Neither should fire - icloud's
+      // candidate is absorbed; seat is a fresh first candidate.
+      r = evaluateAlerts([
+        { account: 'icloud', ok: true, five_hour_pct: 10, fetched_at: NOW },
+        { account: 'seat', ok: true, five_hour_pct: 90, fetched_at: NOW },
+      ], r.nextState, NOW);
+      expect(r.alerts).toEqual([]);
+      expect(r.nextState.icloud.five_h_pending).toBe(false);
+      expect(r.nextState.seat.five_h_pending).toBe(true);
+    });
+
+    it('QUIETS a persistent (confirmed) over-threshold (the 15-min no-spam case)', () => {
       const usage = { ...base, five_hour_pct: 90, seven_day_pct: 95 };
       const { alerts } = evaluateAlerts([usage], st({ five_h_over: true, seven_d_over: true }), NOW);
       expect(alerts).toEqual([]);
