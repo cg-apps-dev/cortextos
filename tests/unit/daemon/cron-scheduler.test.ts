@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockReadCrons  = vi.fn();
 const mockUpdateCron = vi.fn();
+const mockAppendExecutionLog = vi.fn();
 // readCronsWithStatus is what cron-scheduler actually calls (post-iter-9).
 // By default it mirrors mockReadCrons with corrupt:false so existing tests
 // keep working.  Tests that need to assert the corruption path can override
@@ -28,10 +29,15 @@ vi.mock('../../../src/bus/crons.js', () => ({
   updateCron: (...args: unknown[]) => mockUpdateCron(...args),
 }));
 
+vi.mock('../../../src/daemon/cron-execution-log.js', () => ({
+  appendExecutionLog: (...args: unknown[]) => mockAppendExecutionLog(...args),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports AFTER mock setup
 // ---------------------------------------------------------------------------
 
+import { GATE_RECHECK_MS } from '../../../src/daemon/cron-capacity-gate';
 import { CronScheduler, nextFireFromCron } from '../../../src/daemon/cron-scheduler';
 import type { CronDefinition } from '../../../src/types/index';
 
@@ -186,6 +192,7 @@ describe('CronScheduler', () => {
     fired  = [];
     mockReadCrons.mockReset();
     mockUpdateCron.mockReset();
+    mockAppendExecutionLog.mockReset();
     mockReadCronsWithStatus.mockReset();
     // Default: readCronsWithStatus reflects whatever readCrons returns
     // and reports the file as healthy (corrupt: false).
@@ -264,6 +271,82 @@ describe('CronScheduler', () => {
         fire_count: 1,
       })
     );
+  });
+
+  describe('capacity gate', () => {
+    it('defers a due cron without calling onFire and writes a deferred execution row', async () => {
+      const dueCron = makeCron({
+        name: 'gated',
+        schedule: '1m',
+        last_fired_at: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+      mockReadCrons.mockReturnValue([dueCron]);
+      const gatedScheduler = new CronScheduler({
+        agentName: 'test-agent',
+        onFire: (cron) => { fired.push(cron); },
+        gate: () => ({ defer: true, reason: 'account A 5h=100% capped + extra-usage meter on' }),
+        logger: (msg) => { logs.push(msg); },
+      });
+
+      gatedScheduler.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(fired).toHaveLength(0);
+      expect(mockAppendExecutionLog).toHaveBeenCalledWith(
+        'test-agent',
+        expect.objectContaining({
+          cron: 'gated',
+          status: 'deferred',
+          attempt: 0,
+          duration_ms: 0,
+          error: 'account A 5h=100% capped + extra-usage meter on',
+        })
+      );
+      expect(logs.some((line) => line.includes('capacity-deferred "gated"'))).toBe(true);
+      expect(gatedScheduler.getNextFireTimes()).toEqual([
+        { name: 'gated', nextFireAt: Date.now() + GATE_RECHECK_MS },
+      ]);
+
+      gatedScheduler.stop();
+    });
+
+    it('fails open when the gate throws', async () => {
+      mockReadCrons.mockReturnValue([
+        makeCron({
+          name: 'throwing-gate',
+          schedule: '1m',
+          last_fired_at: new Date(Date.now() - 2 * 60_000).toISOString(),
+        }),
+      ]);
+      const gatedScheduler = new CronScheduler({
+        agentName: 'test-agent',
+        onFire: (cron) => { fired.push(cron); },
+        gate: () => { throw new Error('gate unavailable'); },
+        logger: (msg) => { logs.push(msg); },
+      });
+
+      gatedScheduler.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(fired.map((cron) => cron.name)).toContain('throwing-gate');
+
+      gatedScheduler.stop();
+    });
+
+    it('fires normally when no gate is configured', async () => {
+      mockReadCrons.mockReturnValue([
+        makeCron({
+          name: 'ungated',
+          schedule: '1m',
+          last_fired_at: new Date(Date.now() - 2 * 60_000).toISOString(),
+        }),
+      ]);
+
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(fired.map((cron) => cron.name)).toContain('ungated');
+    });
   });
 
   // -------------------------------------------------------------------------

@@ -394,7 +394,12 @@ describe('AgentManager.reloadCrons - silent-success bug fix (iter 7)', () => {
   it('lazy-creates scheduler when non-Hermes agent has no scheduler wired', () => {
     // Simulate the start-window gap: agent registered, no scheduler yet.
     const am = new AgentManager('test-instance', ctxRoot, frameworkRoot, 'acme');
-    const fakeProcess = { config: { runtime: undefined } } as any;
+    // Stub mirrors the real AgentProcess surface this path touches:
+    // config.runtime (Hermes check) + getAgentDir (capacity-gate wiring).
+    const fakeProcess = {
+      config: { runtime: undefined },
+      getAgentDir: () => join(testDir, 'orgs', 'acme', 'agents', 'alice'),
+    } as any;
     (am as any).agents.set('alice', { process: fakeProcess, checker: {} });
 
     expect((am as any).cronSchedulers.has('alice')).toBe(false);

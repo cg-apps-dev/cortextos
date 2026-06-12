@@ -343,6 +343,14 @@ export interface CronDefinition {
   enabled: boolean;
 
   /**
+   * Critical crons are EXEMPT from capacity-aware gating: they fire even when
+   * the agent's billing account 5h bucket is capped with the extra-usage meter
+   * on (user-facing/safety work). Non-critical (default) crons - heartbeat
+   * class - are deferred until the bucket resets.
+   */
+  critical?: boolean;
+
+  /**
    * ISO 8601 UTC timestamp of when this cron definition was created.
    * Set automatically by `cortextos bus add-cron`; operators should not modify this.
    *
@@ -434,6 +442,7 @@ export interface CronDefinition {
  *   "fired"   — the fire attempt succeeded on this attempt.
  *   "retried" — this attempt failed but more retries remain (see `error`).
  *   "failed"  — final failure after exhausting all retries (see `error`).
+ *   "deferred" - capacity gate deferred this scheduled fire.
  */
 export interface CronExecutionLogEntry {
   /** ISO 8601 UTC timestamp of the fire attempt. */
@@ -441,7 +450,7 @@ export interface CronExecutionLogEntry {
   /** Cron name (matches CronDefinition.name). */
   cron: string;
   /** Outcome of this attempt. */
-  status: 'fired' | 'retried' | 'failed';
+  status: 'fired' | 'retried' | 'failed' | 'deferred';
   /** Attempt index (1-based). */
   attempt: number;
   /** Wall-clock duration of the fire attempt in milliseconds. */
@@ -685,7 +694,7 @@ export interface CronSummaryRow {
    * Outcome of the most recent execution log entry.
    * Null when the cron has never fired.
    */
-  lastStatus: 'fired' | 'retried' | 'failed' | null;
+  lastStatus: 'fired' | 'retried' | 'failed' | 'deferred' | null;
   /**
    * ISO 8601 timestamp of the next scheduled fire.
    * Computed from the cron's schedule + last_fired_at (or now).

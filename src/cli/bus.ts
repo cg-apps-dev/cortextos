@@ -1952,7 +1952,8 @@ busCommand
   .argument('<interval>', 'Schedule: interval ("6h", "30m", "1d") or 5-field cron expr ("0 8 * * *")')
   .argument('<prompt...>', 'Prompt text injected when the cron fires (all remaining words joined)')
   .option('--desc <description>', 'Human-readable description (optional)')
-  .action(async (agent: string, name: string, interval: string, promptWords: string[], opts: { desc?: string }) => {
+  .option('--critical', 'Exempt this cron from capacity-aware gating (fires even when the account is capped + metered)')
+  .action(async (agent: string, name: string, interval: string, promptWords: string[], opts: { desc?: string; critical?: boolean }) => {
     // Validate agent name format
     try { validateAgentName(agent); } catch (err) { console.error(String(err)); process.exit(1); }
 
@@ -1975,6 +1976,7 @@ busCommand
       schedule,
       enabled: true,
       created_at: new Date().toISOString(),
+      ...(opts.critical ? { critical: true } : {}),
       ...(opts.desc ? { description: opts.desc } : {}),
     };
 
