@@ -244,6 +244,49 @@ describe('usage-accounts', () => {
     });
   });
 
+  describe('evaluateAlerts display names (email-led, Adam request)', () => {
+    const base: AccountUsage = { account: 'me-com-max', ok: true, fetched_at: NOW };
+    const display = { 'me-com-max': 'afolker@me.com (me-com-max)' };
+
+    it('leads with email + pool label in parens when the display map has the account', () => {
+      const { alerts } = evaluateAlerts(
+        [{ ...base, extra_usage: { is_enabled: true, used_credits: 5 } }], {}, NOW, display,
+      );
+      expect(alerts[0]).toContain('EXTRA-USAGE afolker@me.com (me-com-max):');
+    });
+
+    it('falls back to the bare pool label when the account has no email', () => {
+      const { alerts } = evaluateAlerts(
+        [{ account: 'no-email-acct', ok: true, fetched_at: NOW, extra_usage: { is_enabled: true, used_credits: 5 } }],
+        {}, NOW, display,
+      );
+      expect(alerts[0]).toContain('EXTRA-USAGE no-email-acct:');
+      expect(alerts[0]).not.toContain('@');
+    });
+
+    it('threshold + fetch-fail strings use the display name too', () => {
+      let r = evaluateAlerts([{ ...base, five_hour_pct: 90 }], {}, NOW, display);
+      r = evaluateAlerts([{ ...base, five_hour_pct: 91 }], r.nextState, NOW, display);
+      expect(r.alerts.some(a => a.startsWith('5H afolker@me.com (me-com-max):'))).toBe(true);
+      const f = evaluateAlerts([{ account: 'me-com-max', ok: false, error: 'HTTP 500', fetched_at: NOW }], {}, NOW, display);
+      expect(f.alerts[0]).toContain('USAGE-FETCH-FAIL afolker@me.com (me-com-max):');
+    });
+
+    it('alert STATE stays keyed by pool label (email backfill cannot reset edges)', () => {
+      const r = evaluateAlerts(
+        [{ ...base, extra_usage: { is_enabled: true, used_credits: 5 } }], {}, NOW, display,
+      );
+      expect(Object.keys(r.nextState)).toEqual(['me-com-max']);
+    });
+
+    it('omitting the display map keeps legacy label-only strings (no behavior change)', () => {
+      const { alerts } = evaluateAlerts(
+        [{ ...base, extra_usage: { is_enabled: true, used_credits: 5 } }], {}, NOW,
+      );
+      expect(alerts[0]).toContain('EXTRA-USAGE me-com-max:');
+    });
+  });
+
   describe('captureKeychainUsageCredential', () => {
     const goodBlob = () => ({
       accessToken: 'sk-ant-oat01-mSECRETSECRETSECRETwQAA',
