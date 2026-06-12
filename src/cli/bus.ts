@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { spawnSync, execFileSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { sendMessage, checkInbox, ackInbox } from '../bus/message.js';
 import { validateAgentName, validateTaskId } from '../utils/validate.js';
@@ -20,6 +20,7 @@ import { nextFireFromCron } from '../daemon/cron-scheduler.js';
 import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/knowledge-base.js';
 import { checkUsageApi, refreshUsage, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D } from '../bus/oauth.js';
 import { captureKeychainUsageCredential, beginUsageAuth, completeUsageAuth, checkAllUsage, setAccountBenched, fingerprint as ucFingerprint } from '../bus/usage-accounts.js';
+import { resolveAgentAccount } from '../daemon/cron-capacity-gate.js';
 import { resolvePaths } from '../utils/paths.js';
 import { resolveEnv } from '../utils/env.js';
 import { IPCClient } from '../daemon/ipc-server.js';
@@ -2654,6 +2655,65 @@ busCommand
       } else {
         console.log('  usage-cred: NONE (account invisible to multi-account usage monitoring)');
       }
+    }
+  });
+
+busCommand
+  .command('list-agent-accounts')
+  .description('Show each agent\'s billing-account resolution as the capacity gate sees it (label + source only)')
+  .option('--org <org>', 'Limit to one org (default: all orgs)')
+  .option('--agent <name>', 'Limit to one agent')
+  .option('--json', 'Output as JSON')
+  .action((opts: { org?: string; agent?: string; json?: boolean }) => {
+    const env = resolveEnv();
+    if (!env.frameworkRoot) {
+      console.error('Error: framework root unknown (set CTX_FRAMEWORK_ROOT or run inside the framework).');
+      process.exit(1);
+    }
+    const orgsDir = join(env.frameworkRoot, 'orgs');
+    const rows: Array<{ org: string; agent: string; account: string | null; source: string | null; reason?: string }> = [];
+    let orgNames: string[];
+    try {
+      orgNames = readdirSync(orgsDir).filter(o => existsSync(join(orgsDir, o, 'agents')));
+    } catch {
+      console.error(`Error: cannot read orgs directory at ${orgsDir}`);
+      process.exit(1);
+    }
+    for (const org of orgNames) {
+      if (opts.org && org !== opts.org) continue;
+      let agents: string[] = [];
+      try { agents = readdirSync(join(orgsDir, org, 'agents')); } catch { continue; }
+      for (const agent of agents) {
+        if (opts.agent && agent !== opts.agent) continue;
+        const agentDir = join(orgsDir, org, 'agents', agent);
+        try { if (!statSync(agentDir).isDirectory()) continue; } catch { continue; }
+        // Read-only resolution; surfaces account LABEL + SOURCE only (never token bytes).
+        const r = resolveAgentAccount(agentDir, env.ctxRoot);
+        rows.push({
+          org,
+          agent,
+          account: r.label,
+          source: r.label ? (r.source ?? null) : null,
+          ...(r.label ? {} : { reason: r.reason ?? 'unresolved' }),
+        });
+      }
+    }
+    if (opts.json) {
+      console.log(JSON.stringify(rows, null, 2));
+      return;
+    }
+    if (rows.length === 0) {
+      console.log('No agents found.');
+      return;
+    }
+    const pad = (v: string, n: number) => v.padEnd(n);
+    const wAgent = Math.max(5, ...rows.map(r => r.agent.length));
+    const wAcct  = Math.max(7, ...rows.map(r => (r.account ?? 'UNRESOLVED').length));
+    console.log(`${pad('AGENT', wAgent)}  ${pad('ACCOUNT', wAcct)}  SOURCE`);
+    for (const r of rows) {
+      const acct = r.account ?? 'UNRESOLVED';
+      const src = r.account ? (r.source ?? '-') : `- (${r.reason})`;
+      console.log(`${pad(r.agent, wAgent)}  ${pad(acct, wAcct)}  ${src}`);
     }
   });
 

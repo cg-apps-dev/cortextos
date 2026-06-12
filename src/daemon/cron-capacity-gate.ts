@@ -50,8 +50,13 @@ interface OAuthAccountsFile {
   accounts: Record<string, OAuthAccount>;
 }
 
-interface AccountResolution {
+/** How an agent's billing account label was determined. */
+export type AccountResolutionSource = 'override' | 'token-match' | 'login-marker';
+
+export interface AccountResolution {
   label: string | null;
+  /** Present when label is non-null. */
+  source?: AccountResolutionSource;
   reason?: string;
 }
 
@@ -163,7 +168,7 @@ function readEnvToken(agentDir: string): { ok: true; token?: string } | { ok: fa
 function resolveAccountLabel(agentDir: string, ctxRoot: string): AccountResolution {
   const override = readUsageAccountOverride(agentDir);
   if (!override.ok) return { label: null, reason: override.reason };
-  if (override.label) return { label: override.label };
+  if (override.label) return { label: override.label, source: 'override' };
 
   const envToken = readEnvToken(agentDir);
   if (!envToken.ok) return { label: null, reason: envToken.reason };
@@ -175,7 +180,7 @@ function resolveAccountLabel(agentDir: string, ctxRoot: string): AccountResoluti
     const matches = Object.entries(oauth.accounts.accounts)
       .filter(([, account]) => account.access_token === envToken.token)
       .map(([label]) => label);
-    if (matches.length === 1) return { label: matches[0] };
+    if (matches.length === 1) return { label: matches[0], source: 'token-match' };
     return { label: null, reason: 'agent billing account unresolved' };
   }
 
@@ -184,8 +189,19 @@ function resolveAccountLabel(agentDir: string, ctxRoot: string): AccountResoluti
   const machineMatches = Object.entries(oauth.accounts.accounts)
     .filter(([, account]) => account.usage_credential?.source === 'keychain-capture')
     .map(([label]) => label);
-  if (machineMatches.length === 1) return { label: machineMatches[0] };
+  if (machineMatches.length === 1) return { label: machineMatches[0], source: 'login-marker' };
   return { label: null, reason: 'agent billing account unresolved' };
+}
+
+/**
+ * Public read surface for the gate's per-agent billing-account resolution
+ * (consumed by `bus list-agent-accounts`). Same chain the gate uses:
+ * config.json usage_account override -> .env token in-memory match ->
+ * keychain-capture login marker; null label + reason on any ambiguity.
+ * Read-only; never surfaces token bytes (labels + source only).
+ */
+export function resolveAgentAccount(agentDir: string, ctxRoot: string): AccountResolution {
+  return resolveAccountLabel(agentDir, ctxRoot);
 }
 
 export function makeCapacityGate(opts: CapacityGateOptions): (cron: CronDefinition) => GateDecision {
