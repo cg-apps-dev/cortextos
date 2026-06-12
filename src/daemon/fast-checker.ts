@@ -253,7 +253,7 @@ export class FastChecker {
     const replyNote = msg.reply_to ? ` [reply_to: ${msg.reply_to}]` : '';
     // msg.text/from are externally influenced (a body can carry its own
     // fence/header markers; --body-stdin/--body-file made arbitrary bodies easy
-    // to send). The body is wrapped with wrapFenceSafe — a dynamically-sized
+    // to send). The body is wrapped with wrapFenceSafe - a dynamically-sized
     // fence the body cannot close, with the body left byte-exact so pasted code
     // blocks stay readable. The inline `from` is collapse-sanitized (it sits in
     // the header line, not a fence).
@@ -296,7 +296,7 @@ Handle it now, then run: cortextos bus ack-reminder ${safeId}
     // text/display-name; reply-context, last-sent and recent-history are built
     // from prior external messages). Sanitize each so none can escape the fence
     // or forge a containment header. Unfenced context fields (reply/history) are
-    // the weakest surface — they sit raw in [Replying to: "..."] / [Recent ...].
+    // the weakest surface - they sit raw in [Replying to: "..."] / [Recent ...].
     let replyCx = '';
     if (replyToText) {
       replyCx = `[Replying to: "${sanitizeForPtyInjection(replyToText.slice(0, 500))}"]\n`;
@@ -317,7 +317,7 @@ Handle it now, then run: cortextos bus ack-reminder ${safeId}
     // can recognize and invoke them via the Skill tool (e.g. /loop, /commit, /restart).
     // Non-slash bodies use wrapFenceSafe: an unescapable dynamically-sized fence
     // that leaves the body byte-exact (legit code blocks preserved). Slash commands
-    // get control-char strip + header-quote only (no fence — must stay invokable).
+    // get control-char strip + header-quote only (no fence - must stay invokable).
     const isSlashCommand = /^\/[a-zA-Z]/.test(stripControlChars(text).trim());
     const body = isSlashCommand
       ? sanitizeForPtyInjection(text).trim()
@@ -331,7 +331,7 @@ ${lastSentCtx}Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
 
   /**
    * Format a Telegram message_reaction update for PTY injection.
-   * Reactions are emoji additions/removals on existing messages — they
+   * Reactions are emoji additions/removals on existing messages - they
    * surface to the agent so it can follow up on positive acknowledgements
    * or clarify after a negative reaction.
    *
@@ -502,7 +502,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
    *
    * Runs alongside the agent's primary bot callback handler when the agent
    * is the org's orchestrator (see agent-manager.ts for the wiring). Only
-   * appr_(allow|deny)_<approvalId> prefixes are accepted here — the
+   * appr_(allow|deny)_<approvalId> prefixes are accepted here - the
    * activity-channel bot only ever posts approval buttons, so any other
    * callback is rejected. The responding API must be the activity-channel
    * API (not the agent's own bot) so answerCallbackQuery + editMessageText
@@ -513,7 +513,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     const callbackQueryId = query.id;
 
     // SECURITY: callbacks must come from the whitelisted user. Identical
-    // check to handleCallback — approval clicks are as sensitive as
+    // check to handleCallback - approval clicks are as sensitive as
     // permission clicks and the same gate applies.
     if (this.allowedUserId !== undefined) {
       const fromUserId = query.from?.id;
@@ -543,7 +543,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
    * answers the Telegram callback so the spinner stops, and edits the
    * original message to show who approved/denied for the audit trail.
    *
-   * `api` is the TelegramAPI that owns the bot the callback came from —
+   * `api` is the TelegramAPI that owns the bot the callback came from -
    * answerCallbackQuery and editMessageText must target the same bot.
    */
   private async routeApprovalCallback(
@@ -932,7 +932,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
         this.log(`Urgent signal detected: ${content}`);
         unlinkSync(urgentPath);
 
-        // Inject the urgent message — fence the body unescapably (#592 follow-up)
+        // Inject the urgent message - fence the body unescapably (#592 follow-up)
         // so a signal payload carrying its own fence can't break out and forge
         // daemon containment headers.
         if (content) {
@@ -970,7 +970,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
   }
 
   /**
-   * Context monitor — called on every poll cycle.
+   * Context monitor - called on every poll cycle.
    * Reads context_status.json written by the statusLine bridge hook and takes
    * action when thresholds are crossed.
    */
@@ -999,7 +999,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       const raw = readFileSync(statusPath, 'utf-8');
       const data = JSON.parse(raw);
       const age = now - new Date(data.written_at || 0).getTime();
-      if (age > 10 * 60_000) return; // stale file — skip
+      if (age > 10 * 60_000) return; // stale file - skip
       pct = typeof data.used_percentage === 'number' ? data.used_percentage : null;
       exceeds200k = Boolean(data.exceeds_200k_tokens);
 
@@ -1028,13 +1028,13 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
 
     const { warn, handoff } = this.getCtxThresholds();
 
-    // No threshold configured — observe-only mode (log but don't act)
+    // No threshold configured - observe-only mode (log but don't act)
     if (this.agent.getConfig().ctx_handoff_threshold === undefined) return;
 
     const effectivePct = pct ?? (exceeds200k ? 101 : null);
     if (effectivePct === null) return;
 
-    // Tier 3: deadline exceeded — force restart if agent ignored handoff prompt
+    // Tier 3: deadline exceeded - force restart if agent ignored handoff prompt
     if (this.ctxHandoffDeadlineAt > 0 && now > this.ctxHandoffDeadlineAt) {
       this.log(`Handoff deadline exceeded (${Math.round(effectivePct)}%) — force restarting`);
       this.ctxHandoffDeadlineAt = 0;
@@ -1042,7 +1042,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       return;
     }
 
-    // Tier 1: warning — PTY injection only, no Telegram ping (context management is internal)
+    // Tier 1: warning - PTY injection only, no Telegram ping (context management is internal)
     if (effectivePct >= warn && now - this.ctxWarningFiredAt > 15 * 60_000) {
       this.ctxWarningFiredAt = now;
       const pctRound = Math.round(effectivePct);
@@ -1065,7 +1065,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       this.agent.injectMessage(handoffPrompt);
       this.log(`Handoff prompt injected at ${Math.round(effectivePct)}%`);
       // Pre-arm .force-fresh so the next restart is always a clean fresh session.
-      // If the agent cooperates and calls hard-restart, it also writes .force-fresh — no-op.
+      // If the agent cooperates and calls hard-restart, it also writes .force-fresh - no-op.
       // If context exhausts naturally before the agent acts, .force-fresh is already set,
       // preventing a --continue restart that would loop at the same high context level.
       try {
@@ -1082,7 +1082,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
   private forceContextRestart(reason: string): void {
     const now = Date.now();
 
-    // Update and check circuit breaker window (persisted to disk — survives --continue restarts)
+    // Update and check circuit breaker window (persisted to disk - survives --continue restarts)
     this.ctxCircuitRestarts = this.ctxCircuitRestarts.filter(t => now - t < 15 * 60_000);
     if (this.ctxCircuitRestarts.length >= 3) {
       this.ctxCircuitBrokenAt = now;
@@ -1116,7 +1116,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
           this.log(`Tier 3 restart: found recent handoff doc, writing marker → ${docPath}`);
         }
       }
-    } catch { /* non-fatal — proceed without handoff context */ }
+    } catch { /* non-fatal - proceed without handoff context */ }
 
     // Reset per-session context state for the new session
     this.ctxHandoffFiredAt = 0;
@@ -1232,7 +1232,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
   isAgentActive(): boolean {
     // Hook-based approach only. Claude Code writes ANSI escape codes (spinner,
     // cursor movement) to stdout constantly even when idle, so stdout.log always
-    // grows — using file size as an activity signal produces a permanent "typing"
+    // grows - using file size as an activity signal produces a permanent "typing"
     // indicator. Instead, rely solely on:
     //   - lastMessageInjectedAt: when fast-checker last pushed a message in
     //   - last_idle.flag: written by the Stop hook when Claude finishes a turn
@@ -1254,7 +1254,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
           // First check: seed baseline, don't trigger yet
           this.outboundLogSize = size;
         } else if (size > this.outboundLogSize) {
-          // New reply sent — clear typing state
+          // New reply sent - clear typing state
           this.outboundLogSize = size;
           this.lastMessageInjectedAt = 0;
           return false;
@@ -1266,14 +1266,14 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     const flagPath = join(this.paths.stateDir, 'last_idle.flag');
     try {
       if (!existsSync(flagPath)) {
-        // No idle flag yet — hook hasn't fired, so still working
+        // No idle flag yet - hook hasn't fired, so still working
         return true;
       }
       const idleTs = parseInt(readFileSync(flagPath, 'utf-8').trim(), 10) * 1000;
       // Typing if injection happened AFTER the last idle signal
       return this.lastMessageInjectedAt > idleTs;
     } catch {
-      return true; // Can't read flag — assume still active
+      return true; // Can't read flag - assume still active
     }
   }
 }
