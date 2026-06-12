@@ -177,6 +177,69 @@ describe('makeCapacityGate', () => {
     expectNoTokenLeak();
   });
 
+  it('defers on a PINNED 7d bucket even when 5h is under 100 (the weekend gap)', () => {
+    writeUsage(root, [{
+      account: 'A', ok: true, five_hour_pct: 40, seven_day_pct: 100,
+      extra_usage: { is_enabled: true, used_credits: 5 },
+    }]);
+    writeAccounts(root, baseAccounts());
+
+    const decision = gate()(cron());
+
+    expect(decision.defer).toBe(true);
+    expect(decision.reason).toContain('7d=100%');
+    expect(decision.reason).not.toContain('5h=');
+    expectNoTokenLeak();
+  });
+
+  it('names BOTH buckets when both are capped', () => {
+    writeUsage(root, [{
+      account: 'A', ok: true, five_hour_pct: 100, seven_day_pct: 100,
+      extra_usage: { is_enabled: true, used_credits: 5 },
+    }]);
+    writeAccounts(root, baseAccounts());
+
+    const decision = gate()(cron());
+
+    expect(decision.defer).toBe(true);
+    expect(decision.reason).toContain('5h=100%');
+    expect(decision.reason).toContain('7d=100%');
+    expectNoTokenLeak();
+  });
+
+  it('does not defer at 7d=99 with 5h under (no cap, no gate)', () => {
+    writeUsage(root, [{
+      account: 'A', ok: true, five_hour_pct: 40, seven_day_pct: 99,
+      extra_usage: { is_enabled: true, used_credits: 5 },
+    }]);
+    writeAccounts(root, baseAccounts());
+
+    expect(gate()(cron()).defer).toBe(false);
+    expectNoTokenLeak();
+  });
+
+  it('does not defer on a pinned 7d when the meter is OFF (no billing risk)', () => {
+    writeUsage(root, [{
+      account: 'A', ok: true, five_hour_pct: 40, seven_day_pct: 100,
+      extra_usage: { is_enabled: false, used_credits: 0 },
+    }]);
+    writeAccounts(root, baseAccounts());
+
+    expect(gate()(cron()).defer).toBe(false);
+    expectNoTokenLeak();
+  });
+
+  it('critical cron still exempt under a 7d cap', () => {
+    writeUsage(root, [{
+      account: 'A', ok: true, five_hour_pct: 100, seven_day_pct: 100,
+      extra_usage: { is_enabled: true, used_credits: 5 },
+    }]);
+    writeAccounts(root, baseAccounts());
+
+    expect(gate()(cron({ critical: true }))).toEqual({ defer: false });
+    expectNoTokenLeak();
+  });
+
   it('fails open for stale usage file', () => {
     writeUsage(root, [usageAccount('A', 100, true)], new Date(Date.now() - 31 * 60_000).toISOString());
     writeAccounts(root, baseAccounts());

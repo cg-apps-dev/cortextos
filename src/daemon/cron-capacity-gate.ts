@@ -33,6 +33,7 @@ interface UsageAccount {
   account: string;
   ok: boolean;
   five_hour_pct?: number;
+  seven_day_pct?: number;
   extra_usage?: { is_enabled: boolean; used_credits?: number };
 }
 
@@ -87,6 +88,9 @@ function parseUsageFile(value: unknown): UsageFile | null {
     };
     if (typeof account.five_hour_pct === 'number') {
       parsed.five_hour_pct = account.five_hour_pct;
+    }
+    if (typeof account.seven_day_pct === 'number') {
+      parsed.seven_day_pct = account.seven_day_pct;
     }
     if (isRecord(account.extra_usage) && typeof account.extra_usage.is_enabled === 'boolean') {
       parsed.extra_usage = { is_enabled: account.extra_usage.is_enabled };
@@ -262,10 +266,19 @@ export function makeCapacityGate(opts: CapacityGateOptions): (cron: CronDefiniti
       return failOpen();
     }
 
-    if ((account.five_hour_pct ?? 0) >= 100 && account.extra_usage?.is_enabled === true) {
+    // A pinned 7d bucket bills the meter the same as a capped 5h one, and can
+    // stay pinned for DAYS while the 5h bucket cycles under 100% - the exact
+    // weekend scenario a 5h-only condition misses.
+    const fiveCapped = (account.five_hour_pct ?? 0) >= 100;
+    const sevenCapped = (account.seven_day_pct ?? 0) >= 100;
+    if ((fiveCapped || sevenCapped) && account.extra_usage?.is_enabled === true) {
+      const buckets = [
+        ...(fiveCapped ? [`5h=${account.five_hour_pct}%`] : []),
+        ...(sevenCapped ? [`7d=${account.seven_day_pct}%`] : []),
+      ].join(' ');
       return {
         defer: true,
-        reason: `account ${resolution.label} 5h=${account.five_hour_pct}% capped + extra-usage meter on`,
+        reason: `account ${resolution.label} ${buckets} capped + extra-usage meter on`,
       };
     }
 
