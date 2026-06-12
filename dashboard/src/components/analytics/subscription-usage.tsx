@@ -1,5 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import type { AccountUsagePanelEntry, CodexUsagePanel } from '@/lib/data/reports';
+import type { AccountUsagePanelEntry, AgentAccounts, CodexUsagePanel } from '@/lib/data/reports';
 import { ResetCountdown } from './reset-countdown';
 
 /** Render an ISO timestamp in Pacific time (fleet rule: humans see PT). */
@@ -64,7 +64,23 @@ function ExtraUsage({ extra }: { extra: NonNullable<AccountUsagePanelEntry['extr
   );
 }
 
-function AccountCard({ entry }: { entry: AccountUsagePanelEntry }) {
+function AgentChips({ agents, warning = false }: { agents?: string[]; warning?: boolean }) {
+  if (!agents || agents.length === 0) return null;
+  const tone = warning
+    ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+    : 'bg-muted text-muted-foreground';
+  return (
+    <div className="flex flex-wrap gap-1">
+      {agents.map((agent) => (
+        <span key={agent} className={`rounded px-1.5 py-0.5 text-[10px] ${tone}`}>
+          {agent}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function AccountCard({ entry, agents }: { entry: AccountUsagePanelEntry; agents?: string[] }) {
   return (
     <div className="rounded-lg border border-border bg-card p-4 space-y-3">
       <div>
@@ -82,6 +98,7 @@ function AccountCard({ entry }: { entry: AccountUsagePanelEntry }) {
           Unavailable{entry.error ? ` (${entry.error})` : ''}
         </p>
       )}
+      <AgentChips agents={agents} />
     </div>
   );
 }
@@ -111,10 +128,13 @@ function CodexCard({ codex }: { codex: CodexUsagePanel }) {
 export function SubscriptionUsage({
   data,
   codex,
+  agentAccounts,
 }: {
   data: { generatedAt: string; accounts: AccountUsagePanelEntry[] } | null;
   codex?: CodexUsagePanel | null;
+  agentAccounts?: AgentAccounts | null;
 }) {
+  const unassigned = agentAccounts?.unassigned ?? [];
   return (
     <Card>
       <CardHeader>
@@ -127,10 +147,16 @@ export function SubscriptionUsage({
           <div className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {data?.accounts.map((a) => (
-                <AccountCard key={a.account} entry={a} />
+                <AccountCard key={a.account} entry={a} agents={agentAccounts?.byAccount[a.account]} />
               ))}
               {codex && <CodexCard codex={codex} />}
             </div>
+            {unassigned.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+                <span>unassigned:</span>
+                <AgentChips agents={unassigned} warning />
+              </div>
+            )}
             <p className="text-[10px] text-muted-foreground">
               {data ? `Claude updated ${ptTime(data.generatedAt)} · ` : ''}refreshes every 5 min
             </p>
