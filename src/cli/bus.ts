@@ -9,7 +9,7 @@ import { saveOutput } from '../bus/save-output.js';
 import { logEvent } from '../bus/event.js';
 import { updateHeartbeat, readAllHeartbeats } from '../bus/heartbeat.js';
 import { selfRestart, hardRestart, autoCommit, checkGoalStaleness, postActivity } from '../bus/system.js';
-import { createExperiment, runExperiment, evaluateExperiment, listExperiments, gatherContext, manageCycle, loadExperimentConfig } from '../bus/experiment.js';
+import { createExperiment, runExperiment, evaluateExperiment, updateExperiment, listExperiments, gatherContext, manageCycle, loadExperimentConfig } from '../bus/experiment.js';
 import { browseCatalog, installCommunityItem, prepareSubmission, submitCommunityItem } from '../bus/catalog.js';
 import { collectMetrics, parseUsageOutput, storeUsageData, checkUpstream, collectTelegramCommands, registerTelegramCommands } from '../bus/metrics.js';
 import { createApproval, updateApproval } from '../bus/approval.js';
@@ -776,6 +776,41 @@ busCommand
       justification: opts.justification,
     });
     console.log(JSON.stringify(experiment, null, 2));
+  });
+
+busCommand
+  .command('update-experiment')
+  .description('Update mutable fields of a proposed/running experiment (writes history + active.json in step)')
+  .argument('<id>', 'Experiment ID')
+  .option('--window <dur>', 'Measurement window (e.g. 24h, 7d)')
+  .option('--measurement <method>', 'How to measure the metric')
+  .option('--surface <path>', 'Surface path')
+  .option('--direction <dir>', 'Direction: higher or lower')
+  .option('--hypothesis <text>', 'Hypothesis text')
+  .action((id: string, opts: { window?: string; measurement?: string; surface?: string; direction?: string; hypothesis?: string }) => {
+    const env = resolveEnv();
+    const agentDir = env.agentDir || process.cwd();
+    if (opts.direction && opts.direction !== 'higher' && opts.direction !== 'lower') {
+      console.error(`Invalid --direction '${opts.direction}'. Must be 'higher' or 'lower'`);
+      process.exit(1);
+    }
+    if (!opts.window && !opts.measurement && !opts.surface && !opts.direction && !opts.hypothesis) {
+      console.error('Nothing to update: pass at least one of --window/--measurement/--surface/--direction/--hypothesis');
+      process.exit(1);
+    }
+    try {
+      const experiment = updateExperiment(agentDir, id, {
+        window: opts.window,
+        measurement: opts.measurement,
+        surface: opts.surface,
+        direction: opts.direction as 'higher' | 'lower' | undefined,
+        hypothesis: opts.hypothesis,
+      });
+      console.log(JSON.stringify(experiment, null, 2));
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
   });
 
 busCommand
