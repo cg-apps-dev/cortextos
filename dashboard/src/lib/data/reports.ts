@@ -310,10 +310,11 @@ const ACCOUNT_LABELS: Record<string, { email: string; plan: string }> = {
   'me-com-max': { email: 'afolker@me.com', plan: 'Personal Claude MAX Plan' },
   'cg-team-seat': { email: 'adam@cleangreen.com', plan: 'Teams Premium Seat Plan' },
   'icloud-max-20x': { email: 'afolker@icloud.com', plan: 'Personal Claude MAX Plan' },
+  'moonlight-max': { email: 'moonlightmedia312@gmail.com', plan: 'Personal Claude MAX Plan' },
 };
 
-// Display order: cleangreen seat first (primary), then the two personal MAX.
-const ACCOUNT_ORDER = ['cg-team-seat', 'me-com-max', 'icloud-max-20x'];
+// Display order: cleangreen seat first (primary), then the personal MAX accounts.
+const ACCOUNT_ORDER = ['cg-team-seat', 'me-com-max', 'icloud-max-20x', 'moonlight-max'];
 
 // Anthropic extra-usage billing: 100 credits = $1.00; me.com is capped at $10k.
 const CREDITS_PER_USD = 100;
