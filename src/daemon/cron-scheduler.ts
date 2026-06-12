@@ -479,7 +479,7 @@ export class CronScheduler {
           decision = undefined;
         }
         if (decision?.defer) {
-          this.logger(`[cron-scheduler] capacity-deferred "${name}" - ${decision.reason ?? 'capped'}; recheck in ${GATE_RECHECK_MS / 60000}min`);
+          this.logger(`[cron-scheduler] capacity-deferred "${name}" (agent ${this.agentName}) - ${decision.reason ?? 'capped'}; recheck in ${GATE_RECHECK_MS / 60000}min`);
           appendExecutionLog(this.agentName, {
             ts: new Date().toISOString(),
             cron: name,

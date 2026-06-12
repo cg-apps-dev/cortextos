@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { makeCapacityGate } from '../../../src/daemon/cron-capacity-gate';
+import { makeCapacityGate, resolveAgentAccount } from '../../../src/daemon/cron-capacity-gate';
 import type { CronDefinition } from '../../../src/types/index';
 
 const TOKEN_A = 'sk-ant-account-a-secret';
@@ -218,6 +218,44 @@ describe('makeCapacityGate', () => {
 
     expect(gate()(cron()).defer).toBe(false);
     expectNoTokenLeak();
+  });
+
+  describe('resolveAgentAccount (public read surface for list-agent-accounts)', () => {
+    it('reports source=override when config usage_account wins', () => {
+      writeEnv(agentDir, TOKEN_B);
+      writeConfig(agentDir, 'A');
+      writeAccounts(root, baseAccounts());
+      const r = resolveAgentAccount(agentDir, root);
+      expect(r).toEqual({ label: 'A', source: 'override' });
+    });
+
+    it('reports source=token-match for the .env lane', () => {
+      writeEnv(agentDir, TOKEN_B);
+      writeAccounts(root, baseAccounts());
+      const r = resolveAgentAccount(agentDir, root);
+      expect(r).toEqual({ label: 'B', source: 'token-match' });
+    });
+
+    it('reports source=login-marker for the tokenless lane', () => {
+      writeAccounts(root, baseAccounts());
+      const r = resolveAgentAccount(agentDir, root);
+      expect(r).toEqual({ label: 'A', source: 'login-marker' });
+    });
+
+    it('unresolved returns null label + reason and NEVER any token material', () => {
+      writeEnv(agentDir, 'sk-ant-not-in-accounts');
+      writeAccounts(root, baseAccounts());
+      const r = resolveAgentAccount(agentDir, root);
+      expect(r.label).toBeNull();
+      expect(r.source).toBeUndefined();
+      expect(JSON.stringify(r)).not.toContain('sk-ant');
+    });
+
+    it('successful resolutions never include token material either', () => {
+      writeEnv(agentDir, TOKEN_B);
+      writeAccounts(root, baseAccounts());
+      expect(JSON.stringify(resolveAgentAccount(agentDir, root))).not.toContain('sk-ant');
+    });
   });
 
   it('deduplicates repeated fail-open logger lines', () => {
