@@ -405,6 +405,33 @@ describe('updateCron', () => {
     expect(cron?.enabled).toBe(false);
   });
 
+  it('preserves critical:true across the every-fire persist patch (capacity-gate flag durability)', async () => {
+    // The daemon scheduler calls updateCron({ last_fired_at, fire_count }) on
+    // EVERY fire. If that rewrite dropped fields it did not patch, hand-set or
+    // CLI-set critical flags would silently evaporate within hours.
+    const { addCron, updateCron, getCronByName } = await importCrons();
+    addCron('boris', { ...makeHeartbeat(), critical: true });
+
+    updateCron('boris', 'heartbeat', { last_fired_at: '2026-06-12T07:00:00.000Z', fire_count: 7 });
+    updateCron('boris', 'heartbeat', { enabled: true });
+
+    const cron = getCronByName('boris', 'heartbeat');
+    expect(cron?.critical).toBe(true);
+    expect(cron?.fire_count).toBe(7);
+  });
+
+  it('preserves UNKNOWN extra keys across a patch (verbatim pass-through, no field whitelist)', async () => {
+    // Forward-compat guarantee: keys written by a newer daemon/operator that
+    // this build does not model must survive read -> patch -> write.
+    const { addCron, updateCron, getCronByName } = await importCrons();
+    addCron('boris', { ...makeHeartbeat(), future_key: 'must-survive' } as never);
+
+    updateCron('boris', 'heartbeat', { fire_count: 1 });
+
+    const cron = getCronByName('boris', 'heartbeat') as Record<string, unknown> | undefined;
+    expect(cron?.future_key).toBe('must-survive');
+  });
+
   it('patch cannot rename a cron (name field in patch is ignored)', async () => {
     const { addCron, updateCron, getCronByName } = await importCrons();
     addCron('boris', makeHeartbeat());

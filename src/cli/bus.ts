@@ -2104,12 +2104,13 @@ busCommand
   .option('--prompt <p>', 'New prompt text')
   .option('--enabled <bool>', 'Enable (true) or disable (false) the cron')
   .option('--desc <d>', 'New description')
-  .action(async (agent: string, name: string, opts: { interval?: string; cronExpr?: string; prompt?: string; enabled?: string; desc?: string }) => {
+  .option('--critical <bool>', 'Set capacity-gating exemption: true = fires even when the account is capped + metered, false = gated (default)')
+  .action(async (agent: string, name: string, opts: { interval?: string; cronExpr?: string; prompt?: string; enabled?: string; desc?: string; critical?: string }) => {
     try { validateAgentName(agent); } catch (err) { console.error(String(err)); process.exit(1); }
 
     const rawSchedule = opts.interval ?? opts.cronExpr;
-    if (!rawSchedule && opts.prompt === undefined && opts.enabled === undefined && opts.desc === undefined) {
-      console.error('Error: at least one of --interval, --cron-expr, --prompt, --enabled, or --desc is required.');
+    if (!rawSchedule && opts.prompt === undefined && opts.enabled === undefined && opts.desc === undefined && opts.critical === undefined) {
+      console.error('Error: at least one of --interval, --cron-expr, --prompt, --enabled, --desc, or --critical is required.');
       process.exit(1);
     }
 
@@ -2130,6 +2131,13 @@ busCommand
     }
     if (opts.desc !== undefined) {
       patch.description = opts.desc;
+    }
+    if (opts.critical !== undefined) {
+      if (opts.critical !== 'true' && opts.critical !== 'false') {
+        console.error(`Error: --critical must be 'true' or 'false', got '${opts.critical}'.`);
+        process.exit(1);
+      }
+      patch.critical = opts.critical === 'true';
     }
 
     const ok = updateCronDef(agent, name, patch);
