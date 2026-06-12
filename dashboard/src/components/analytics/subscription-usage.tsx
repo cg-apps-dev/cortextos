@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import type { AccountUsagePanelEntry, CodexUsagePanel } from '@/lib/data/reports';
+import { ResetCountdown } from './reset-countdown';
 
 /** Render an ISO timestamp in Pacific time (fleet rule: humans see PT). */
 function ptTime(iso: string | undefined): string {
@@ -30,7 +31,7 @@ function UsageRow({ label, pct, resets }: { label: string; pct?: number; resets?
       <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
         <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.min(100, Math.max(0, value ?? 0))}%` }} />
       </div>
-      {resets && <p className="text-[10px] text-muted-foreground">Resets {ptTime(resets)}</p>}
+      {resets && <ResetCountdown resets={resets} fallback={`Resets ${ptTime(resets)}`} />}
     </div>
   );
 }
@@ -131,7 +132,7 @@ export function SubscriptionUsage({
               {codex && <CodexCard codex={codex} />}
             </div>
             <p className="text-[10px] text-muted-foreground">
-              {data ? `Claude updated ${ptTime(data.generatedAt)} · ` : ''}refreshes every 15 min
+              {data ? `Claude updated ${ptTime(data.generatedAt)} · ` : ''}refreshes every 5 min
             </p>
           </div>
         ) : (
