@@ -22,6 +22,12 @@ import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
 
 export interface OAuthAccount {
   label: string;
+  /**
+   * Account email for human-facing alert display ("email (pool-label)") -
+   * matches what Adam sees on Anthropic billing pages. Optional: absent ->
+   * alerts fall back to the pool label. Backfilled by the orchestrator.
+   */
+  email?: string;
   access_token: string;
   refresh_token: string;
   expires_at: number; // Unix ms

@@ -649,10 +649,16 @@ export function evaluateAlerts(
   usages: AccountUsage[],
   prevState: AlertState,
   now: string,
+  display?: Record<string, string>,
 ): { alerts: string[]; nextState: AlertState } {
   const alerts: string[] = [];
   const nextState: AlertState = { ...prevState };
   for (const u of usages) {
+    // Human-facing name: "email (pool-label)" when the account has an email
+    // (Adam request - matches Anthropic billing pages), else the pool label.
+    // DISPLAY ONLY: state keys stay pool-label so alert dedup/edge state is
+    // unaffected by email backfills.
+    const who = display?.[u.account] ?? u.account;
     const prev: AccountAlertState = prevState[u.account] ?? {
       five_h_over: false, seven_d_over: false,
       five_h_pending: false, seven_d_pending: false,
@@ -664,7 +670,7 @@ export function evaluateAlerts(
 
     if (!u.ok) {
       if (!prev.fetch_failing) {
-        alerts.push(`USAGE-FETCH-FAIL ${u.account}: ${u.error} (monitoring blind for this account)`);
+        alerts.push(`USAGE-FETCH-FAIL ${who}: ${u.error} (monitoring blind for this account)`);
       }
       next.fetch_failing = true;
       nextState[u.account] = next;
@@ -672,7 +678,7 @@ export function evaluateAlerts(
     }
     // Recovery: fetch was failing, now ok.
     if (prev.fetch_failing) {
-      alerts.push(`RECOVERED ${u.account}: usage fetch restored (monitoring back online)`);
+      alerts.push(`RECOVERED ${who}: usage fetch restored (monitoring back online)`);
     }
     next.fetch_failing = false;
 
@@ -691,8 +697,8 @@ export function evaluateAlerts(
     // on a 2nd consecutive over-read.
     const fiveOver = u.five_hour_pct !== undefined && u.five_hour_pct > USAGE_ALERT_5H_PCT;
     const five = stepThreshold(fiveOver, prev.five_h_over, prev.five_h_pending, benched,
-      `5H ${u.account}: ${u.five_hour_pct}% (>${USAGE_ALERT_5H_PCT}%)${u.five_hour_resets ? ` resets ${ptTime(u.five_hour_resets)}` : ''}`,
-      `RECOVERED ${u.account}: 5h back under ${USAGE_ALERT_5H_PCT}% (now ${u.five_hour_pct ?? '?'}%)`);
+      `5H ${who}: ${u.five_hour_pct}% (>${USAGE_ALERT_5H_PCT}%)${u.five_hour_resets ? ` resets ${ptTime(u.five_hour_resets)}` : ''}`,
+      `RECOVERED ${who}: 5h back under ${USAGE_ALERT_5H_PCT}% (now ${u.five_hour_pct ?? '?'}%)`);
     if (five.alert) alerts.push(five.alert);
     next.five_h_over = five.over;
     next.five_h_pending = five.pending;
@@ -701,8 +707,8 @@ export function evaluateAlerts(
     // reset clears 95% -> recovery line once confirmed-over clears).
     const sevenOver = u.seven_day_pct !== undefined && u.seven_day_pct > USAGE_ALERT_7D_PCT;
     const seven = stepThreshold(sevenOver, prev.seven_d_over, prev.seven_d_pending, benched,
-      `7D ${u.account}: ${u.seven_day_pct}% (>${USAGE_ALERT_7D_PCT}%)${u.seven_day_resets ? ` resets ${ptTime(u.seven_day_resets)}` : ''}`,
-      `RECOVERED ${u.account}: 7d back under ${USAGE_ALERT_7D_PCT}% (now ${u.seven_day_pct ?? '?'}%)`);
+      `7D ${who}: ${u.seven_day_pct}% (>${USAGE_ALERT_7D_PCT}%)${u.seven_day_resets ? ` resets ${ptTime(u.seven_day_resets)}` : ''}`,
+      `RECOVERED ${who}: 7d back under ${USAGE_ALERT_7D_PCT}% (now ${u.seven_day_pct ?? '?'}%)`);
     if (seven.alert) alerts.push(seven.alert);
     next.seven_d_over = seven.over;
     next.seven_d_pending = seven.pending;
@@ -713,13 +719,13 @@ export function evaluateAlerts(
     if (enabled && !prev.extra_enabled) {
       alerts.push(
         credits > 0
-          ? `EXTRA-USAGE ${u.account}: ENABLED with ${credits} credits already used (silent billing - first sighting)`
-          : `EXTRA-USAGE ${u.account}: ENABLED (no credits used yet - watch)`,
+          ? `EXTRA-USAGE ${who}: ENABLED with ${credits} credits already used (silent billing - first sighting)`
+          : `EXTRA-USAGE ${who}: ENABLED (no credits used yet - watch)`,
       );
     } else if (!enabled && prev.extra_enabled) {
-      alerts.push(`EXTRA-USAGE ${u.account}: DISABLED (was at ${prev.extra_credits} credits) - meter walled off`);
+      alerts.push(`EXTRA-USAGE ${who}: DISABLED (was at ${prev.extra_credits} credits) - meter walled off`);
     } else if (enabled && prev.extra_enabled && credits > prev.extra_credits) {
-      alerts.push(`EXTRA-USAGE ${u.account}: credits RISING ${prev.extra_credits} -> ${credits} (delta +${credits - prev.extra_credits} since ${ptTime(prev.at)}) (silent billing ACTIVE)`);
+      alerts.push(`EXTRA-USAGE ${who}: credits RISING ${prev.extra_credits} -> ${credits} (delta +${credits - prev.extra_credits} since ${ptTime(prev.at)}) (silent billing ACTIVE)`);
     }
     // enabled + flat, or persistently disabled -> quiet.
     next.extra_enabled = enabled;
@@ -772,7 +778,13 @@ export async function checkAllUsage(ctxRoot: string): Promise<AllUsageResult> {
   if (existsSync(statePath)) {
     try { prevState = JSON.parse(readFileSync(statePath, 'utf-8')) as AlertState; } catch { /* fresh */ }
   }
-  const { alerts, nextState } = evaluateAlerts(usages, prevState, now);
+  // "email (pool-label)" display map for alert strings (display-only).
+  const display: Record<string, string> = {};
+  for (const name of names) {
+    const email = store.accounts[name].email;
+    if (email) display[name] = `${email} (${name})`;
+  }
+  const { alerts, nextState } = evaluateAlerts(usages, prevState, now, display);
   ensureDir(join(ctxRoot, 'state', 'usage'));
   atomicWriteSync(statePath, JSON.stringify(nextState, null, 2));
 
