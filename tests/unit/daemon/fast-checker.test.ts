@@ -882,7 +882,7 @@ describe('FastChecker', () => {
       await vi.advanceTimersByTimeAsync(50 * 60 * 1000);
       expect(execFile).toHaveBeenCalledWith(
         'cortextos',
-        expect.arrayContaining(['bus', 'update-heartbeat', expect.stringContaining('[watchdog] my-agent alive — idle session')]),
+        expect.arrayContaining(['bus', 'update-heartbeat', expect.stringContaining('[watchdog] my-agent alive - idle session')]),
         expect.any(Function),
       );
       checker.stop();
