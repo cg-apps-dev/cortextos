@@ -495,11 +495,16 @@ export function parseUsageResponse(account: string, data: unknown, now: string):
     if (v === undefined) return undefined;
     return Math.round(Math.min(100, Math.max(0, v)));
   };
+  // Impossible-read: a window reporting USAGE (>0) with no resets_at - you
+  // cannot be at >0% with no active rolling window. utilization:0 + null
+  // resets_at is a VALID IDLE window (no recent usage -> no rolling window ->
+  // no reset time), verified against raw Anthropic payloads - so a legit idle
+  // 0 must NOT trip the detector.
   const invalidWindows: string[] = [];
-  if (typeof d.five_hour?.utilization === 'number' && d.five_hour.resets_at == null) {
+  if (typeof d.five_hour?.utilization === 'number' && d.five_hour.utilization > 0 && d.five_hour.resets_at == null) {
     invalidWindows.push('five_hour');
   }
-  if (typeof d.seven_day?.utilization === 'number' && d.seven_day.resets_at == null) {
+  if (typeof d.seven_day?.utilization === 'number' && d.seven_day.utilization > 0 && d.seven_day.resets_at == null) {
     invalidWindows.push('seven_day');
   }
   const usage: AccountUsage = {

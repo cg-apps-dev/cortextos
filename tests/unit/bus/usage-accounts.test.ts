@@ -121,15 +121,29 @@ describe('usage-accounts', () => {
       expect(u.extra_usage).toBeUndefined();
     });
 
-    it('marks utilization with null reset metadata as an impossible read', () => {
+    it('marks POSITIVE utilization with null reset metadata as an impossible read', () => {
       const u = parseUsageResponse('seat', {
-        five_hour: { utilization: 0, resets_at: null },
+        five_hour: { utilization: 5, resets_at: null },
         seven_day: { utilization: 17, resets_at: '2026-06-15T00:00:00Z' },
       }, NOW);
       expect(u.ok).toBe(false);
       expect(u.status).toBe('impossible-read');
       expect(u.error).toContain('five_hour');
       expect(JSON.stringify(u)).not.toContain('sk-ant');
+    });
+
+    it('treats zero utilization with null reset as a VALID IDLE window (not impossible)', () => {
+      // Anthropic returns utilization:0 + resets_at:null for a window with no
+      // recent usage (no active rolling window -> no reset time). A legit idle 0
+      // must read ok:true/0%, NOT impossible-read. (Raw-payload-verified fix.)
+      const u = parseUsageResponse('idle', {
+        five_hour: { utilization: 0, resets_at: null },
+        seven_day: { utilization: 1, resets_at: '2026-06-15T00:00:00Z' },
+      }, NOW);
+      expect(u.ok).toBe(true);
+      expect(u.status).toBeUndefined();
+      expect(u.five_hour_pct).toBe(0);
+      expect(u.seven_day_pct).toBe(1);
     });
 
     it('keeps zero utilization with valid reset metadata as legitimate idle state', () => {
@@ -666,8 +680,8 @@ describe('usage-accounts', () => {
         }],
       }, null, 2));
       stubUsageResponses([{
-        five_hour: { utilization: 0, resets_at: null },
-        seven_day: { utilization: 0, resets_at: null },
+        five_hour: { utilization: 5, resets_at: null },
+        seven_day: { utilization: 5, resets_at: null },
       }]);
 
       const result = await checkAllUsage(ctxRoot);
@@ -695,8 +709,8 @@ describe('usage-accounts', () => {
         'cg-team-seat': { source: 'pkce-authorize', token: 'sk-ant-oat01-PKCESECRETwTOK' },
       });
       stubUsageResponses([{
-        five_hour: { utilization: 0, resets_at: null },
-        seven_day: { utilization: 0, resets_at: null },
+        five_hour: { utilization: 5, resets_at: null },
+        seven_day: { utilization: 5, resets_at: null },
       }]);
 
       await checkAllUsage(ctxRoot);
@@ -845,8 +859,8 @@ describe('usage-accounts', () => {
       mkdirSync(join(ctxRoot, 'state', 'usage'), { recursive: true });
       mkdirSync(diagnosticsPath());
       stubUsageResponses([{
-        five_hour: { utilization: 0, resets_at: null },
-        seven_day: { utilization: 0, resets_at: null },
+        five_hour: { utilization: 5, resets_at: null },
+        seven_day: { utilization: 5, resets_at: null },
       }]);
 
       const result = await checkAllUsage(ctxRoot);
@@ -863,8 +877,8 @@ describe('usage-accounts', () => {
       const existing = Array.from({ length: 505 }, (_, i) => JSON.stringify({ ts: NOW, account: `old-${i}` })).join('\n');
       atomicWriteSync(diagnosticsPath(), existing);
       stubUsageResponses([{
-        five_hour: { utilization: 0, resets_at: null },
-        seven_day: { utilization: 0, resets_at: null },
+        five_hour: { utilization: 5, resets_at: null },
+        seven_day: { utilization: 5, resets_at: null },
       }]);
 
       await checkAllUsage(ctxRoot);
@@ -885,8 +899,8 @@ describe('usage-accounts', () => {
         `${JSON.stringify({ account: 'legacy', credential_fingerprint: 'sk-ant-oat01-LEAK' })}\n${JSON.stringify({ account: 'safe-old' })}`,
       );
       stubUsageResponses([{
-        five_hour: { utilization: 0, resets_at: null },
-        seven_day: { utilization: 0, resets_at: null },
+        five_hour: { utilization: 5, resets_at: null },
+        seven_day: { utilization: 5, resets_at: null },
       }]);
 
       await checkAllUsage(ctxRoot);
@@ -962,9 +976,9 @@ describe('usage-accounts', () => {
         }],
       }, null, 2));
       stubUsageResponses([
-        { five_hour: { utilization: 0, resets_at: null }, seven_day: { utilization: 0, resets_at: null } },
-        { five_hour: { utilization: 0, resets_at: null }, seven_day: { utilization: 0, resets_at: null } },
-        { five_hour: { utilization: 0, resets_at: null }, seven_day: { utilization: 0, resets_at: null } },
+        { five_hour: { utilization: 5, resets_at: null }, seven_day: { utilization: 5, resets_at: null } },
+        { five_hour: { utilization: 5, resets_at: null }, seven_day: { utilization: 5, resets_at: null } },
+        { five_hour: { utilization: 5, resets_at: null }, seven_day: { utilization: 5, resets_at: null } },
         {
           five_hour: { utilization: 7, resets_at: '2026-06-13T06:39:59Z' },
           seven_day: { utilization: 100, resets_at: '2026-06-18T18:59:59Z' },
