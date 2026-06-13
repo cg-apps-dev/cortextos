@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { createHash } from 'crypto';
 import {
   fingerprint,
   ptTime,
@@ -20,6 +21,10 @@ import {
 import { atomicWriteSync } from '../../../src/utils/atomic';
 
 const NOW = '2026-06-11T03:00:00.000Z';
+
+function hash8(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 8);
+}
 
 function makeCtxRoot(): string {
   const dir = mkdtempSync(join(tmpdir(), 'usage-accounts-test-'));
@@ -48,15 +53,17 @@ describe('usage-accounts', () => {
   });
 
   describe('fingerprint', () => {
-    it('never reveals the token middle', () => {
+    it('returns a stable hash and never reveals token bytes', () => {
       const t = 'sk-ant-oat01-mABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789wQAA';
       const f = fingerprint(t);
-      expect(f).toBe('sk-ant-oat01-m...wQAA');
-      expect(f.length).toBeLessThan(25);
+      expect(f).toBe(hash8(t));
+      expect(f).toMatch(/^[a-f0-9]{8}$/);
+      expect(f).not.toContain('sk-ant');
+      expect(f).not.toContain('ABCDEFGHIJKLMNOPQRSTUVWXYZ');
     });
     it('handles short/empty safely', () => {
       expect(fingerprint('')).toBe('(empty)');
-      expect(fingerprint('short')).toBe('shor...');
+      expect(fingerprint('short')).toBe(hash8('short'));
     });
   });
 
@@ -87,10 +94,25 @@ describe('usage-accounts', () => {
       expect(u.extra_usage).toEqual({ is_enabled: true, used_credits: 3 });
     });
 
-    it('normalizes 0-1 fractional utilization to percent', () => {
-      const u = parseUsageResponse('seat', { five_hour: { utilization: 0.85, resets_at: '2026-06-11T05:00:00Z' } }, NOW);
+    it('treats utilization as an already-0-100 percentage with clamping', () => {
+      const u = parseUsageResponse('seat', {
+        five_hour: { utilization: 0, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 101, resets_at: '2026-06-15T00:00:00Z' },
+      }, NOW);
       expect(u.ok).toBe(true);
-      expect(u.five_hour_pct).toBe(85);
+      expect(u.five_hour_pct).toBe(0);
+      expect(u.seven_day_pct).toBe(100);
+    });
+
+    it('utilization of 1 is one percent, not one hundred (me-com/icloud anchor)', () => {
+      const u = parseUsageResponse('me-com-max', {
+        five_hour: { utilization: 1, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 1, resets_at: '2026-06-15T00:00:00Z' },
+      }, NOW);
+      // Load-bearing regression for the 2026-06-13 wrong-numbers incident.
+      expect(u.ok).toBe(true);
+      expect(u.five_hour_pct).toBe(1);
+      expect(u.seven_day_pct).toBe(1);
     });
 
     it('tolerates missing extra_usage', () => {
@@ -335,8 +357,9 @@ describe('usage-accounts', () => {
 
     it('stores the credential on the named account with source + fingerprint-only return', () => {
       const r = captureKeychainUsageCredential(ctxRoot, 'cg-team-seat', goodBlob);
-      expect(r.fingerprint).toBe('sk-ant-oat01-m...wQAA');
+      expect(r.fingerprint).toBe(hash8('sk-ant-oat01-mSECRETSECRETSECRETwQAA'));
       expect(JSON.stringify(r)).not.toContain('SECRET');
+      expect(JSON.stringify(r)).not.toContain('sk-ant');
       const store = JSON.parse(readFileSync(join(ctxRoot, 'state', 'oauth', 'accounts.json'), 'utf-8'));
       const cred = store.accounts['cg-team-seat'].usage_credential;
       expect(cred.source).toBe('keychain-capture');
@@ -479,12 +502,14 @@ describe('usage-accounts', () => {
 
       expect(usage.ok).toBe(true);
       expect(usage.credential_source).toBe('keychain-capture');
-      expect(usage.credential_fingerprint).toBe('sk-ant-oat01-L...wNEW');
+      expect(usage.credential_fingerprint).toBe(hash8('sk-ant-oat01-LIVESECRETwNEW'));
       expect(JSON.stringify(usage)).not.toContain('LIVESECRET');
+      expect(JSON.stringify(usage)).not.toContain('sk-ant');
       const raw = readJson(join(ctxRoot, 'state', 'usage', 'raw', 'cg-team-seat.json')) as { entries: Array<{ response: unknown }> };
       expect(JSON.stringify(raw)).toContain('credential_fingerprint');
       expect(JSON.stringify(raw.entries[0].response)).not.toContain('sk-ant');
       expect(JSON.stringify(raw)).not.toContain('LIVESECRET');
+      expect(JSON.stringify(raw)).not.toContain('sk-ant');
     });
 
     it('checkAllUsage carries pkce attribution into the multi-account row', async () => {
@@ -502,10 +527,11 @@ describe('usage-accounts', () => {
         account: 'icloud-max-20x',
         ok: true,
         credential_source: 'pkce-authorize',
-        credential_fingerprint: 'sk-ant-oat01-P...wTOK',
+        credential_fingerprint: hash8('sk-ant-oat01-PKCESECRETwTOK'),
       });
       const snapshot = readJson(join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'));
       expect(JSON.stringify(snapshot)).not.toContain('PKCESECRET');
+      expect(JSON.stringify(snapshot)).not.toContain('sk-ant');
     });
 
     it('keeps last_good when an impossible read replaces a prior good row', async () => {
@@ -542,8 +568,10 @@ describe('usage-accounts', () => {
         seven_day_pct: 12,
         fetched_at: '2026-06-11T03:00:00.000Z',
       });
+      expect(row.last_good?.credential_fingerprint).toBe(hash8('sk-ant-oat01-P...wTOK'));
       expect(result.alerts.some((a) => a.includes('USAGE-FETCH-FAIL cg-team-seat'))).toBe(true);
       expect(JSON.stringify(row)).not.toContain('PKCESECRET');
+      expect(JSON.stringify(row)).not.toContain('sk-ant');
     });
 
     it('flags an implausible 7d rise within one cycle as suspect', async () => {
@@ -575,6 +603,7 @@ describe('usage-accounts', () => {
       expect(row.suspect).toBe(true);
       expect(row.last_good?.seven_day_pct).toBe(2);
       expect(JSON.stringify(row)).not.toContain('MOONSECRET');
+      expect(JSON.stringify(row)).not.toContain('sk-ant');
     });
 
     it('allows a 5h zero-drop after the prior reset timestamp has passed', async () => {
@@ -653,6 +682,7 @@ describe('usage-accounts', () => {
       expect(JSON.stringify(result)).not.toContain('ICLOUDSECRET');
       expect(JSON.stringify(result)).not.toContain('MECOMSECRET');
       expect(JSON.stringify(result)).not.toContain('MOONLIVESECRET');
+      expect(JSON.stringify(result)).not.toContain('sk-ant');
     });
   });
 

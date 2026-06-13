@@ -18,7 +18,7 @@
  *
  * SECURITY INVARIANTS (review lane: security-agent):
  * - No token is ever logged, echoed, or included in errors. Any surfaced
- *   reference uses fingerprint() => "sk-ant-oat01-m...wQAA" form.
+ *   reference uses fingerprint() => first 8 hex chars of sha256(token).
  * - accounts.json writes are atomic + chmod 0600 (saveAccounts in oauth.ts).
  * - Refresh tokens are one-time use: the store is written BEFORE the new
  *   token is used (same invariant as refreshOAuthToken).
@@ -173,11 +173,14 @@ const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 
 // --- Helpers ---
 
-/** "sk-ant-oat01-m...wQAA" - the ONLY form a token may appear in anywhere. */
+/** Stable non-reversible credential id - never includes token bytes. */
 export function fingerprint(token: string): string {
   if (!token) return '(empty)';
-  if (token.length <= 18) return `${token.slice(0, 4)}...`;
-  return `${token.slice(0, 14)}...${token.slice(-4)}`;
+  return createHash('sha256').update(token).digest('hex').slice(0, 8);
+}
+
+function safeStoredFingerprint(value: string): string {
+  return value.includes('sk-ant') ? fingerprint(value) : value;
 }
 
 function pendingAuthPath(ctxRoot: string): string {
@@ -484,7 +487,7 @@ export function parseUsageResponse(account: string, data: unknown, now: string):
   };
   const pct = (v: number | undefined): number | undefined => {
     if (v === undefined) return undefined;
-    return Math.round(v <= 1 ? v * 100 : v);
+    return Math.round(Math.min(100, Math.max(0, v)));
   };
   const invalidWindows: string[] = [];
   if (typeof d.five_hour?.utilization === 'number' && d.five_hour.resets_at == null) {
@@ -737,7 +740,7 @@ function lastGoodFrom(prior: AccountUsage | undefined): LastGoodUsage | undefine
     ...(prior.extra_usage ? { extra_usage: prior.extra_usage } : {}),
     fetched_at: prior.fetched_at,
     ...(prior.credential_source ? { credential_source: prior.credential_source } : {}),
-    ...(prior.credential_fingerprint ? { credential_fingerprint: prior.credential_fingerprint } : {}),
+    ...(prior.credential_fingerprint ? { credential_fingerprint: safeStoredFingerprint(prior.credential_fingerprint) } : {}),
   };
 }
 
