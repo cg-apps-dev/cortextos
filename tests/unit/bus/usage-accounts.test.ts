@@ -155,8 +155,8 @@ describe('usage-accounts', () => {
   describe('evaluateAlerts (edge-triggered dedup)', () => {
     const base: AccountUsage = { account: 'a', ok: true, fetched_at: NOW };
     // Build a prev alert-state for account 'a'.
-    const st = (o: Partial<{ five_h_over: boolean; seven_d_over: boolean; five_h_pending: boolean; seven_d_pending: boolean; extra_enabled: boolean; extra_credits: number; fetch_failing: boolean }>) => ({
-      a: { five_h_over: false, seven_d_over: false, five_h_pending: false, seven_d_pending: false, extra_enabled: false, extra_credits: 0, fetch_failing: false, at: '2026-06-11T02:00:00.000Z', ...o },
+    const st = (o: Partial<{ five_h_over: boolean; seven_d_over: boolean; five_h_pending: boolean; seven_d_pending: boolean; extra_enabled: boolean; extra_credits: number; fetch_failing: boolean; fail_consecutive: number; fetch_fail_alerted: boolean }>) => ({
+      a: { five_h_over: false, seven_d_over: false, five_h_pending: false, seven_d_pending: false, extra_enabled: false, extra_credits: 0, fetch_failing: false, fail_consecutive: 0, fetch_fail_alerted: false, at: '2026-06-11T02:00:00.000Z', ...o },
     });
 
     it('a SINGLE over-read from empty state is a candidate, NOT an alert (2-consecutive rule)', () => {
@@ -270,14 +270,108 @@ describe('usage-accounts', () => {
       expect(nextState.a.extra_enabled).toBe(false);
     });
 
-    it('fetch-fail fires on the failure EDGE then QUIETS while persistent, RECOVERS on restore', () => {
+    it('suppresses a 1-cycle fetch-fail blip and does not recover-alert', () => {
       const failing = { account: 'b', ok: false, error: 'HTTP 403', fetched_at: NOW };
       const first = evaluateAlerts([failing], {}, NOW);
-      expect(first.alerts.some(a => a.includes('USAGE-FETCH-FAIL b'))).toBe(true);
+      expect(first.alerts).toEqual([]);
+      expect(first.nextState.b.fail_consecutive).toBe(1);
+      const recovered = evaluateAlerts([{ account: 'b', ok: true, fetched_at: NOW }], first.nextState, NOW);
+      expect(recovered.alerts).toEqual([]);
+      expect(recovered.nextState.b.fail_consecutive).toBe(0);
+      expect(recovered.nextState.b.fetch_fail_alerted).toBe(false);
+    });
+
+    it('suppresses a 2-cycle fetch-fail blip and does not recover-alert', () => {
+      const failing = { account: 'b', ok: false, error: 'HTTP 403', fetched_at: NOW };
+      const first = evaluateAlerts([failing], {}, NOW);
       const second = evaluateAlerts([failing], first.nextState, NOW);
-      expect(second.alerts).toEqual([]); // persistent failure -> quiet
+      expect(first.alerts).toEqual([]);
+      expect(second.alerts).toEqual([]);
       const recovered = evaluateAlerts([{ account: 'b', ok: true, fetched_at: NOW }], second.nextState, NOW);
+      expect(recovered.alerts).toEqual([]);
+    });
+
+    it('fetch-fail fires once on the 3rd consecutive failure', () => {
+      const failing = { account: 'b', ok: false, error: 'HTTP 403', fetched_at: NOW };
+      let state = {};
+      const allAlerts: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        const r = evaluateAlerts([failing], state, NOW);
+        state = r.nextState;
+        allAlerts.push(...r.alerts);
+      }
+      expect(allAlerts.filter(a => a.includes('USAGE-FETCH-FAIL b'))).toHaveLength(1);
+      expect(allAlerts[0]).toContain('HTTP 403');
+    });
+
+    it('persistent fetch-fail stays quiet after the one confirmed alert', () => {
+      const failing = { account: 'b', ok: false, error: 'HTTP 403', fetched_at: NOW };
+      let state = {};
+      const allAlerts: string[] = [];
+      for (let i = 0; i < 6; i++) {
+        const r = evaluateAlerts([failing], state, NOW);
+        state = r.nextState;
+        allAlerts.push(...r.alerts);
+      }
+      expect(allAlerts.filter(a => a.includes('USAGE-FETCH-FAIL b'))).toHaveLength(1);
+      expect(allAlerts.some(a => a.includes('RECOVERED'))).toBe(false);
+    });
+
+    it('recovery fires only after a confirmed fetch-fail alert', () => {
+      const failing = { account: 'b', ok: false, error: 'HTTP 403', fetched_at: NOW };
+      let state = {};
+      for (let i = 0; i < 3; i++) {
+        const r = evaluateAlerts([failing], state, NOW);
+        state = r.nextState;
+      }
+      const recovered = evaluateAlerts([{ account: 'b', ok: true, fetched_at: NOW }], state, NOW);
       expect(recovered.alerts.some(a => a.startsWith('RECOVERED') && a.includes('fetch restored'))).toBe(true);
+      expect(recovered.nextState.b.fail_consecutive).toBe(0);
+      expect(recovered.nextState.b.fetch_fail_alerted).toBe(false);
+    });
+
+    it('re-fail after recovery needs 3 more failures to alert again', () => {
+      const failing = { account: 'b', ok: false, error: 'HTTP 403', fetched_at: NOW };
+      let state = {};
+      const allAlerts: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        const r = evaluateAlerts([failing], state, NOW);
+        state = r.nextState;
+        allAlerts.push(...r.alerts);
+      }
+      const recovered = evaluateAlerts([{ account: 'b', ok: true, fetched_at: NOW }], state, NOW);
+      state = recovered.nextState;
+      allAlerts.push(...recovered.alerts);
+      for (let i = 0; i < 3; i++) {
+        const r = evaluateAlerts([failing], state, NOW);
+        state = r.nextState;
+        allAlerts.push(...r.alerts);
+      }
+      expect(allAlerts.filter(a => a.includes('USAGE-FETCH-FAIL b'))).toHaveLength(2);
+      expect(allAlerts.filter(a => a.includes('RECOVERED b'))).toHaveLength(1);
+    });
+
+    it('back-compatible old fetch state behaves as fresh and does not crash', () => {
+      const failing = { account: 'a', ok: false, error: 'HTTP 403', fetched_at: NOW };
+      const oldState = st({ fetch_failing: true });
+      const r = evaluateAlerts([failing], oldState, NOW);
+      expect(r.alerts).toEqual([]);
+      expect(r.nextState.a.fail_consecutive).toBe(1);
+      expect(r.nextState.a.fetch_fail_alerted).toBe(false);
+    });
+
+    it('incident replay: fail/ok flap sequence produces zero alerts', () => {
+      let state = {};
+      const allAlerts: string[] = [];
+      for (const ok of [false, true, false, true, false, true, false, true]) {
+        const row = ok
+          ? { account: 'cg-team-seat', ok: true, fetched_at: NOW }
+          : { account: 'cg-team-seat', ok: false, error: 'impossible-read', fetched_at: NOW };
+        const r = evaluateAlerts([row], state, NOW);
+        state = r.nextState;
+        allAlerts.push(...r.alerts);
+      }
+      expect(allAlerts).toEqual([]);
     });
 
     it('suppresses 5h/7d threshold edges for a BENCHED account (data-driven) but keeps extra-usage + fetch-fail', () => {
@@ -289,9 +383,11 @@ describe('usage-accounts', () => {
       expect(alerts.some(a => a.startsWith('7D'))).toBe(false);
       // ...but extra-usage ENABLE still alerts (decision-relevant even benched).
       expect(alerts.some(a => a.includes('EXTRA-USAGE') && a.includes('ENABLED'))).toBe(true);
-      // fetch-fail still alerts for a benched account too.
+      // fetch-fail still alerts for a benched account too once confirmed.
       const benchedFail = { account: 'me-com-max', ok: false, error: 'HTTP 403', benched: true, fetched_at: NOW };
-      expect(evaluateAlerts([benchedFail], {}, NOW).alerts.some(a => a.includes('USAGE-FETCH-FAIL'))).toBe(true);
+      let state = {};
+      for (let i = 0; i < 2; i++) state = evaluateAlerts([benchedFail], state, NOW).nextState;
+      expect(evaluateAlerts([benchedFail], state, NOW).alerts.some(a => a.includes('USAGE-FETCH-FAIL'))).toBe(true);
     });
 
     it('a failing fetch does NOT reset the 5h/7d/extra edges (carried forward)', () => {
@@ -301,6 +397,7 @@ describe('usage-accounts', () => {
       expect(nextState.a.extra_enabled).toBe(true);
       expect(nextState.a.extra_credits).toBe(100);
       expect(nextState.a.fetch_failing).toBe(true);
+      expect(nextState.a.fail_consecutive).toBe(1);
     });
   });
 
@@ -328,7 +425,10 @@ describe('usage-accounts', () => {
       let r = evaluateAlerts([{ ...base, five_hour_pct: 90 }], {}, NOW, display);
       r = evaluateAlerts([{ ...base, five_hour_pct: 91 }], r.nextState, NOW, display);
       expect(r.alerts.some(a => a.startsWith('5H afolker@me.com (me-com-max):'))).toBe(true);
-      const f = evaluateAlerts([{ account: 'me-com-max', ok: false, error: 'HTTP 500', fetched_at: NOW }], {}, NOW, display);
+      const fail = { account: 'me-com-max', ok: false, error: 'HTTP 500', fetched_at: NOW };
+      let state = {};
+      for (let i = 0; i < 2; i++) state = evaluateAlerts([fail], state, NOW, display).nextState;
+      const f = evaluateAlerts([fail], state, NOW, display);
       expect(f.alerts[0]).toContain('USAGE-FETCH-FAIL afolker@me.com (me-com-max):');
     });
 
@@ -580,7 +680,12 @@ describe('usage-accounts', () => {
         fetched_at: '2026-06-11T03:00:00.000Z',
       });
       expect(row.last_good?.credential_fingerprint).toBe(hash8('sk-ant-oat01-P...wTOK'));
-      expect(result.alerts.some((a) => a.includes('USAGE-FETCH-FAIL cg-team-seat'))).toBe(true);
+      expect(result.alerts.some((a) => a.includes('USAGE-FETCH-FAIL cg-team-seat'))).toBe(false);
+      const alertState = readJson(join(ctxRoot, 'state', 'usage', 'alert-state.json')) as {
+        'cg-team-seat': { fail_consecutive: number; fetch_fail_alerted: boolean };
+      };
+      expect(alertState['cg-team-seat'].fail_consecutive).toBe(1);
+      expect(alertState['cg-team-seat'].fetch_fail_alerted).toBe(false);
       expect(JSON.stringify(row)).not.toContain('PKCESECRET');
       expect(JSON.stringify(row)).not.toContain('sk-ant');
     });
