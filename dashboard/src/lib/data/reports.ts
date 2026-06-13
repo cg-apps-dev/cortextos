@@ -404,6 +404,7 @@ export function getMultiAccountUsage(): { generatedAt: string; accounts: Account
 export interface AgentAccounts {
   byAccount: Record<string, string[]>;
   unassigned: string[];
+  codexAgents: string[];
 }
 
 export function shortAgentName(name: string): string {
@@ -418,25 +419,29 @@ export function getAgentAccounts(): AgentAccounts | null {
   if (!fs.existsSync(file)) return null;
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
-      agents?: Array<{ agent?: unknown; account?: unknown }>;
+      agents?: Array<{ agent?: unknown; account?: unknown; source?: unknown }>;
     };
     if (!Array.isArray(raw.agents)) return null;
 
     const byAccount: Record<string, string[]> = {};
     const unassigned: string[] = [];
+    const codexAgents: string[] = [];
     for (const entry of raw.agents) {
       if (typeof entry.agent !== 'string') continue;
       const name = shortAgentName(entry.agent);
       if (typeof entry.account === 'string' && entry.account.length > 0) {
         if (!byAccount[entry.account]) byAccount[entry.account] = [];
         byAccount[entry.account].push(name);
+      } else if (entry.source === 'runtime-excluded') {
+        codexAgents.push(name);
       } else {
         unassigned.push(name);
       }
     }
     for (const names of Object.values(byAccount)) names.sort();
     unassigned.sort();
-    return { byAccount, unassigned };
+    codexAgents.sort();
+    return { byAccount, unassigned, codexAgents };
   } catch {
     return null;
   }
