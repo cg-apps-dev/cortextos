@@ -118,7 +118,7 @@ export class FastChecker {
     const agentName = this.agent.name;
     this.heartbeatTimer = setInterval(() => {
       const ts = new Date().toISOString();
-      execFile('cortextos', ['bus', 'update-heartbeat', `[watchdog] ${agentName} alive — idle session ${ts}`], (err) => {
+      execFile('cortextos', ['bus', 'update-heartbeat', `[watchdog] ${agentName} alive - idle session ${ts}`], (err) => {
         if (err) this.log(`Heartbeat watchdog error: ${err.message}`);
       });
     }, HEARTBEAT_INTERVAL_MS);
@@ -1012,7 +1012,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
           this.ctxHandoffFiredAt = 0;
           this.ctxHandoffDeadlineAt = 0;
           this.ctxWarningFiredAt = 0;
-          this.log(`New session detected (${incomingSessionId.slice(0, 8)}…) — per-session ctx state reset`);
+          this.log(`New session detected (${incomingSessionId.slice(0, 8)}…) - per-session ctx state reset`);
         }
         this.ctxLastSessionId = incomingSessionId;
       }
@@ -1021,7 +1021,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     // Check PTY output for hard API overflow errors (always act regardless of threshold config)
     const recentOutput = this.agent.getOutputBuffer()?.getRecent(8000) ?? '';
     if (/extra usage.*?1[Mm] context|conversation too long.*?compaction/i.test(recentOutput)) {
-      this.log('Context overflow error detected in PTY output — force restarting');
+      this.log('Context overflow error detected in PTY output - force restarting');
       this.forceContextRestart('API overflow error in PTY output');
       return;
     }
@@ -1036,9 +1036,9 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
 
     // Tier 3: deadline exceeded - force restart if agent ignored handoff prompt
     if (this.ctxHandoffDeadlineAt > 0 && now > this.ctxHandoffDeadlineAt) {
-      this.log(`Handoff deadline exceeded (${Math.round(effectivePct)}%) — force restarting`);
+      this.log(`Handoff deadline exceeded (${Math.round(effectivePct)}%) - force restarting`);
       this.ctxHandoffDeadlineAt = 0;
-      this.forceContextRestart(`ctx ${Math.round(effectivePct)}% — handoff not completed within 5min`);
+      this.forceContextRestart(`ctx ${Math.round(effectivePct)}% - handoff not completed within 5min`);
       return;
     }
 
