@@ -23,6 +23,19 @@ describe('buildContextFooter', () => {
     expect(buildContextFooter(fresh(), NOW)).toBe('---\nctx: ~124k / 200k (62%)');
   });
 
+  it('renders codex status from total_input_tokens and ignores cumulative current_usage', () => {
+    const out = buildContextFooter(fresh({
+      used_percentage: 1,
+      total_input_tokens: 1500,
+      current_usage: {
+        input_tokens: 13_345_966,
+        output_tokens: 35_463,
+        cache_read_input_tokens: 12_711_552,
+      },
+    }), NOW);
+    expect(out).toBe('---\nctx: ~2k / 200k (1%)');
+  });
+
   it('derives tokens from pct*size when total_input_tokens is absent', () => {
     const out = buildContextFooter(fresh({ total_input_tokens: null }), NOW);
     // 62% of 200000 = 124000 -> 124k
@@ -51,6 +64,18 @@ describe('buildContextFooter', () => {
 
   it('omits when used_percentage is null (before first API call)', () => {
     expect(buildContextFooter(fresh({ used_percentage: null }), NOW)).toBeNull();
+  });
+
+  it('omits codex status when only cumulative current_usage is present', () => {
+    expect(buildContextFooter(fresh({
+      used_percentage: null,
+      total_input_tokens: null,
+      current_usage: {
+        input_tokens: 13_345_966,
+        output_tokens: 35_463,
+        cache_read_input_tokens: 12_711_552,
+      },
+    }), NOW)).toBeNull();
   });
 
   it('omits when the file is stale (older than max age)', () => {
