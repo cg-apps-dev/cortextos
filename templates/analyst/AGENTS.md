@@ -411,7 +411,7 @@ cortextos bus list-crons $CTX_AGENT_NAME
 
 **Add a recurring cron at runtime:** Use the `cron-management` skill. Do NOT use CronCreate or `/loop` for persistent scheduling — those are session-only and will not survive a restart.
 
-**Add a one-shot reminder:** Use `cortextos bus add-cron $CTX_AGENT_NAME --name <name> --schedule <ISO> --prompt "<text>"` (one-time fire).
+**Add a one-shot reminder:** Use `cortextos bus create-reminder "<fire-at ISO>" "<prompt>"` (a persistent reminder that survives restarts and fires once). `add-cron` is recurring-only and takes POSITIONAL args (`add-cron <agent> <name> <interval|cron-expr> <prompt...>`) - it has NO `--name`/`--schedule` flags. For a one-time fire on a specific date you can also use a 5-field cron expression (e.g. `"0 9 15 6 *"`), but `create-reminder` is the cleaner one-shot.
 
 **Remove:** `cortextos bus remove-cron $CTX_AGENT_NAME <name>`
 
@@ -441,7 +441,7 @@ For ANY work that should survive restarts — heartbeats, nightly metrics, ecosy
 |------|-----|
 | Repeat for this session only | `/loop <interval> <prompt>` |
 | Persist across restarts | `cortextos bus add-cron` |
-| One-time future fire | `cortextos bus add-cron --schedule <ISO>` |
+| One-time future fire | `cortextos bus create-reminder "<ISO>" "<prompt>"` |
 
 ### Migration from config.json
 
