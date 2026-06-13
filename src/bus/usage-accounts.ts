@@ -195,6 +195,10 @@ function multiAccountUsagePath(ctxRoot: string): string {
   return join(ctxRoot, 'state', 'usage', 'multi-account-usage.json');
 }
 
+function diagnosticsPath(ctxRoot: string): string {
+  return join(ctxRoot, 'state', 'usage', 'diagnostics.jsonl');
+}
+
 function rawUsagePath(ctxRoot: string, account: string): string {
   return join(ctxRoot, 'state', 'usage', 'raw', `${account}.json`);
 }
@@ -551,6 +555,192 @@ function recordRawUsageResponse(
   atomicWriteSync(path, JSON.stringify({ account, entries: entries.slice(-20) }, null, 2));
 }
 
+type UsageDiagnosticFailure = 'impossible-read' | 'suspect' | 'fetch-fail' | 'no-credential';
+
+interface UsageResponseWindowShape {
+  present: boolean;
+  keys: string[];
+  has_utilization: boolean;
+  utilization_type: string | null;
+  has_resets_at: boolean;
+  resets_at_state: 'present' | 'null' | 'missing';
+}
+
+interface UsageResponseShape {
+  row: {
+    keys: string[];
+    has_five_hour_pct: boolean;
+    has_seven_day_pct: boolean;
+    has_five_hour_resets: boolean;
+    has_seven_day_resets: boolean;
+    has_extra_usage: boolean;
+  };
+  raw: {
+    found: boolean;
+    top_level_keys: string[];
+    five_hour: UsageResponseWindowShape;
+    seven_day: UsageResponseWindowShape;
+    extra_usage_keys: string[];
+  };
+}
+
+interface UsageDiagnosticEntry {
+  ts: string;
+  account: string;
+  credential_source: UsageCredentialSource | null;
+  credential_fingerprint: string | null;
+  failure: UsageDiagnosticFailure;
+  status: AccountUsage['status'] | null;
+  error: string | null;
+  which_check: string;
+  response_shape: UsageResponseShape;
+  prior: { five_hour_pct?: number; seven_day_pct?: number; fetched_at: string } | null;
+  suggested_cause: string;
+}
+
+const USAGE_DIAGNOSTIC_RETENTION = 500;
+
+function sortedKeys(value: unknown): string[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  return Object.keys(value).sort();
+}
+
+function windowShape(value: unknown): UsageResponseWindowShape {
+  const record = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+  return {
+    present: record !== null,
+    keys: sortedKeys(value),
+    has_utilization: record ? Object.prototype.hasOwnProperty.call(record, 'utilization') : false,
+    utilization_type: record && Object.prototype.hasOwnProperty.call(record, 'utilization')
+      ? typeof record.utilization
+      : null,
+    has_resets_at: record ? Object.prototype.hasOwnProperty.call(record, 'resets_at') : false,
+    resets_at_state: record && Object.prototype.hasOwnProperty.call(record, 'resets_at')
+      ? (record.resets_at === null ? 'null' : 'present')
+      : 'missing',
+  };
+}
+
+function latestRawResponse(ctxRoot: string, account: string): unknown {
+  const path = rawUsagePath(ctxRoot, account);
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { entries?: Array<{ response?: unknown }> };
+    return Array.isArray(parsed.entries) ? parsed.entries.at(-1)?.response : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function usageResponseShape(ctxRoot: string, row: AccountUsage): UsageResponseShape {
+  const raw = latestRawResponse(ctxRoot, row.account);
+  const rawRecord = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : null;
+  return {
+    row: {
+      keys: sortedKeys(row),
+      has_five_hour_pct: row.five_hour_pct !== undefined,
+      has_seven_day_pct: row.seven_day_pct !== undefined,
+      has_five_hour_resets: row.five_hour_resets !== undefined,
+      has_seven_day_resets: row.seven_day_resets !== undefined,
+      has_extra_usage: row.extra_usage !== undefined,
+    },
+    raw: {
+      found: rawRecord !== null,
+      top_level_keys: sortedKeys(raw),
+      five_hour: windowShape(rawRecord?.five_hour),
+      seven_day: windowShape(rawRecord?.seven_day),
+      extra_usage_keys: sortedKeys(rawRecord?.extra_usage),
+    },
+  };
+}
+
+function classifyFailure(row: AccountUsage): UsageDiagnosticFailure {
+  if (row.status === 'impossible-read') return 'impossible-read';
+  if (row.status === 'suspect') return 'suspect';
+  if (row.error === 'no usage_credential') return 'no-credential';
+  return 'fetch-fail';
+}
+
+function whichCheck(row: AccountUsage, failure: UsageDiagnosticFailure): string {
+  if (failure === 'impossible-read') return row.error ?? 'utilization present without resets_at';
+  if (failure === 'no-credential') return 'account has no usage_credential configured';
+  if (failure === 'suspect') return row.error ?? 'delta sanity marked read as suspect';
+  if (row.error?.startsWith('HTTP ')) return `usage API returned ${row.error}`;
+  return 'usage credential resolution or fetch threw an exception';
+}
+
+function suggestedCause(row: AccountUsage, failure: UsageDiagnosticFailure): string {
+  const source = row.credential_source ?? 'unknown';
+  const error = row.error ?? 'fetch failed';
+  if (failure === 'impossible-read') {
+    return `Anthropic usage API returned utilization with null resets_at (degraded/transient zero-payload). Credential ${source} served this read. If transient, self-heals next cycle; if persistent, check the account's pkce/keychain credential.`;
+  }
+  if (failure === 'suspect' && row.error?.includes('7d rose')) {
+    return 'Implausible 7d rise within one cycle - possible cross-account credential mislabel (wrong credential serving this account) OR a genuine fast climb. Compare credential_fingerprint against prior cycles; raw buffer state/usage/raw/<account>.json has the response.';
+  }
+  if (failure === 'suspect' && row.error?.includes('dropped to zero')) {
+    return 'Window dropped to 0 before its prior reset_at passed - suspect read, not a real reset. Check raw buffer.';
+  }
+  if (failure === 'fetch-fail' && row.error === 'HTTP 401') {
+    return 'Auth rejected - credential expired/invalid; pkce should reactive-refresh, keychain re-reads live. If persistent, re-capture the credential.';
+  }
+  if (failure === 'fetch-fail' && row.error?.startsWith('HTTP ')) {
+    return `Usage API ${row.error} - transient API error or rate-limit; retries next cycle.`;
+  }
+  if (failure === 'fetch-fail') {
+    return `${error} - credential resolution or network failure before/at fetch.`;
+  }
+  return 'Account has no usage_credential configured - add via capture-usage-credential (keychain) or add-usage-account (pkce).';
+}
+
+function diagnosticPrior(row: AccountUsage): UsageDiagnosticEntry['prior'] {
+  if (!row.last_good) return null;
+  return {
+    ...(row.last_good.five_hour_pct !== undefined ? { five_hour_pct: row.last_good.five_hour_pct } : {}),
+    ...(row.last_good.seven_day_pct !== undefined ? { seven_day_pct: row.last_good.seven_day_pct } : {}),
+    fetched_at: row.last_good.fetched_at,
+  };
+}
+
+function buildUsageDiagnostic(ctxRoot: string, row: AccountUsage, ts: string): UsageDiagnosticEntry {
+  const failure = classifyFailure(row);
+  return {
+    ts,
+    account: row.account,
+    credential_source: row.credential_source ?? null,
+    credential_fingerprint: row.credential_fingerprint ?? null,
+    failure,
+    status: row.status ?? null,
+    error: row.error ?? null,
+    which_check: whichCheck(row, failure),
+    response_shape: usageResponseShape(ctxRoot, row),
+    prior: diagnosticPrior(row),
+    suggested_cause: suggestedCause(row, failure),
+  };
+}
+
+function appendUsageDiagnostics(ctxRoot: string, rows: AccountUsage[], ts: string): void {
+  const failures = rows.filter((row) => row.ok === false);
+  if (failures.length === 0) return;
+  const path = diagnosticsPath(ctxRoot);
+  const entries = failures.map((row) => buildUsageDiagnostic(ctxRoot, row, ts));
+  if (containsTokenMaterial(entries)) {
+    throw new Error('usage diagnostic contained token-like material');
+  }
+  let existing: string[] = [];
+  if (existsSync(path)) {
+    existing = readFileSync(path, 'utf-8')
+      .split(/\n/)
+      .filter((line) => line.trim().length > 0 && !line.includes('sk-ant'));
+  }
+  const next = existing.concat(entries.map((entry) => JSON.stringify(entry))).slice(-USAGE_DIAGNOSTIC_RETENTION);
+  atomicWriteSync(path, `${next.join('\n')}\n`);
+}
+
 /**
  * Resolve a usable access token for an account, branching on credential
  * SOURCE:
@@ -652,8 +842,13 @@ export async function fetchAccountUsage(
     return { account: accountName, ok: false, error: 'no usage_credential', fetched_at: now };
   }
   const isKeychain = cred.source === 'keychain-capture';
+  let attribution: Omit<UsageTokenResolution, 'token'> | undefined;
   try {
     let resolved = await resolveUsageTokenWithAttribution(ctxRoot, accountName, blobReader);
+    attribution = {
+      credential_source: resolved.credential_source,
+      credential_fingerprint: resolved.credential_fingerprint,
+    };
     let response = await fetch(USAGE_API, {
       headers: { Authorization: `Bearer ${resolved.token}`, 'anthropic-beta': 'oauth-2025-04-20' },
     });
@@ -666,12 +861,22 @@ export async function fetchAccountUsage(
         credential_source: 'pkce-authorize',
         credential_fingerprint: fingerprint(token),
       };
+      attribution = {
+        credential_source: resolved.credential_source,
+        credential_fingerprint: resolved.credential_fingerprint,
+      };
       response = await fetch(USAGE_API, {
         headers: { Authorization: `Bearer ${resolved.token}`, 'anthropic-beta': 'oauth-2025-04-20' },
       });
     }
     if (!response.ok) {
-      return { account: accountName, ok: false, error: `HTTP ${response.status}`, fetched_at: now };
+      return {
+        account: accountName,
+        ok: false,
+        error: `HTTP ${response.status}`,
+        fetched_at: now,
+        ...(attribution ?? {}),
+      };
     }
     const raw = await response.json();
     recordRawUsageResponse(ctxRoot, accountName, raw, now, resolved);
@@ -682,7 +887,7 @@ export async function fetchAccountUsage(
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { account: accountName, ok: false, error: msg.slice(0, 200), fetched_at: now };
+    return { account: accountName, ok: false, error: msg.slice(0, 200), fetched_at: now, ...(attribution ?? {}) };
   }
 }
 
@@ -985,6 +1190,9 @@ export async function checkAllUsage(
     usages.push(usage);
   }
   const guardedUsages = applyUsageGuards(usages, priorUsage);
+  try {
+    appendUsageDiagnostics(ctxRoot, guardedUsages, now);
+  } catch { /* diagnostics are best-effort; never break usage monitoring */ }
 
   // Edge-triggered alert dedup: load the per-account last-alerted state so a
   // persistent condition does not re-fire every (now 15-min) cycle.

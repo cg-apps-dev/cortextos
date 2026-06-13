@@ -484,6 +484,17 @@ describe('usage-accounts', () => {
       return JSON.parse(readFileSync(path, 'utf-8')) as unknown;
     }
 
+    function diagnosticsPath(): string {
+      return join(ctxRoot, 'state', 'usage', 'diagnostics.jsonl');
+    }
+
+    function readDiagnostics(): Array<Record<string, unknown>> {
+      return readFileSync(diagnosticsPath(), 'utf-8')
+        .split(/\n/)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+    }
+
     it('fetchAccountUsage writes source attribution, fingerprint, and raw response without token material', async () => {
       seedAccounts({
         'cg-team-seat': { source: 'keychain-capture', token: 'sk-ant-oat01-STOREDSECRETwOLD' },
@@ -574,6 +585,33 @@ describe('usage-accounts', () => {
       expect(JSON.stringify(row)).not.toContain('sk-ant');
     });
 
+    it('writes an impossible-read diagnostic entry with shape, cause, and no token material', async () => {
+      seedAccounts({
+        'cg-team-seat': { source: 'pkce-authorize', token: 'sk-ant-oat01-PKCESECRETwTOK' },
+      });
+      stubUsageResponses([{
+        five_hour: { utilization: 0, resets_at: null },
+        seven_day: { utilization: 0, resets_at: null },
+      }]);
+
+      await checkAllUsage(ctxRoot);
+
+      const entries = readDiagnostics();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        account: 'cg-team-seat',
+        credential_source: 'pkce-authorize',
+        credential_fingerprint: hash8('sk-ant-oat01-PKCESECRETwTOK'),
+        failure: 'impossible-read',
+        status: 'impossible-read',
+      });
+      expect(entries[0].suggested_cause).toContain('null resets_at');
+      expect(entries[0].which_check).toContain('utilization without resets_at');
+      expect(JSON.stringify(entries[0])).toContain('has_utilization');
+      expect(JSON.stringify(entries[0])).not.toContain('PKCESECRET');
+      expect(JSON.stringify(entries[0])).not.toContain('sk-ant');
+    });
+
     it('flags an implausible 7d rise within one cycle as suspect', async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2026-06-11T03:05:00.000Z'));
@@ -604,6 +642,154 @@ describe('usage-accounts', () => {
       expect(row.last_good?.seven_day_pct).toBe(2);
       expect(JSON.stringify(row)).not.toContain('MOONSECRET');
       expect(JSON.stringify(row)).not.toContain('sk-ant');
+    });
+
+    it('writes a suspect diagnostic entry for a 7d spike with a mislabel cause', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-11T03:05:00.000Z'));
+      seedAccounts({
+        moonlight: { source: 'pkce-authorize', token: 'sk-ant-oat01-MOONSECRETwTOK' },
+      });
+      atomicWriteSync(join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'moonlight',
+          ok: true,
+          five_hour_pct: 7,
+          seven_day_pct: 2,
+          five_hour_resets: '2026-06-11T05:00:00Z',
+          seven_day_resets: '2026-06-15T00:00:00Z',
+          fetched_at: '2026-06-11T03:00:00.000Z',
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 7, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 100, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      await checkAllUsage(ctxRoot);
+
+      const [entry] = readDiagnostics();
+      expect(entry.failure).toBe('suspect');
+      expect(entry.error).toContain('7d rose');
+      expect(entry.suggested_cause).toContain('cross-account credential mislabel');
+      expect(entry.prior).toMatchObject({ seven_day_pct: 2, fetched_at: '2026-06-11T03:00:00.000Z' });
+      expect(JSON.stringify(entry)).not.toContain('MOONSECRET');
+      expect(JSON.stringify(entry)).not.toContain('sk-ant');
+    });
+
+    it('writes a fetch-fail diagnostic entry with the HTTP 401 auth cause', async () => {
+      seedAccounts({
+        'icloud-max-20x': { source: 'keychain-capture', token: 'sk-ant-oat01-STOREDSECRETwTOK' },
+      });
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401 }));
+
+      await checkAllUsage(ctxRoot, () => ({
+        accessToken: 'sk-ant-oat01-LIVESECRETwNEW',
+        refreshToken: 'rt-live',
+        expiresAt: Date.now() + 3600_000,
+        scopes: ['user:profile'],
+      }));
+
+      const [entry] = readDiagnostics();
+      expect(entry).toMatchObject({
+        account: 'icloud-max-20x',
+        failure: 'fetch-fail',
+        error: 'HTTP 401',
+        credential_source: 'keychain-capture',
+        credential_fingerprint: hash8('sk-ant-oat01-LIVESECRETwNEW'),
+      });
+      expect(entry.suggested_cause).toContain('Auth rejected');
+      expect(JSON.stringify(entry)).not.toContain('LIVESECRET');
+      expect(JSON.stringify(entry)).not.toContain('sk-ant');
+    });
+
+    it('writes a no-credential diagnostic entry', async () => {
+      await checkAllUsage(ctxRoot);
+
+      const [entry] = readDiagnostics();
+      expect(entry).toMatchObject({
+        account: 'cg-team-seat',
+        credential_source: null,
+        credential_fingerprint: null,
+        failure: 'no-credential',
+        error: 'no usage_credential',
+      });
+      expect(entry.suggested_cause).toContain('capture-usage-credential');
+      expect(JSON.stringify(entry)).not.toContain('sk-ant');
+    });
+
+    it('writes nothing for an all-ok cycle', async () => {
+      seedAccounts({
+        'icloud-max-20x': { source: 'pkce-authorize', token: 'sk-ant-oat01-PKCESECRETwTOK' },
+      });
+      stubUsageResponses([{
+        five_hour: { utilization: 1, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 2, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      await checkAllUsage(ctxRoot);
+
+      expect(existsSync(diagnosticsPath())).toBe(false);
+    });
+
+    it('keeps diagnostics best-effort when the diagnostic write throws', async () => {
+      seedAccounts({
+        'icloud-max-20x': { source: 'pkce-authorize', token: 'sk-ant-oat01-PKCESECRETwTOK' },
+      });
+      mkdirSync(join(ctxRoot, 'state', 'usage'), { recursive: true });
+      mkdirSync(diagnosticsPath());
+      stubUsageResponses([{
+        five_hour: { utilization: 0, resets_at: null },
+        seven_day: { utilization: 0, resets_at: null },
+      }]);
+
+      const result = await checkAllUsage(ctxRoot);
+
+      expect(result.accounts[0].ok).toBe(false);
+      expect(existsSync(join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'))).toBe(true);
+    });
+
+    it('caps diagnostics.jsonl to the last 500 entries', async () => {
+      seedAccounts({
+        'icloud-max-20x': { source: 'pkce-authorize', token: 'sk-ant-oat01-PKCESECRETwTOK' },
+      });
+      mkdirSync(join(ctxRoot, 'state', 'usage'), { recursive: true });
+      const existing = Array.from({ length: 505 }, (_, i) => JSON.stringify({ ts: NOW, account: `old-${i}` })).join('\n');
+      atomicWriteSync(diagnosticsPath(), existing);
+      stubUsageResponses([{
+        five_hour: { utilization: 0, resets_at: null },
+        seven_day: { utilization: 0, resets_at: null },
+      }]);
+
+      await checkAllUsage(ctxRoot);
+
+      const entries = readDiagnostics();
+      expect(entries).toHaveLength(500);
+      expect(entries[0].account).toBe('old-6');
+      expect(entries.at(-1)?.account).toBe('icloud-max-20x');
+    });
+
+    it('does not carry forward a legacy diagnostic line containing sk-ant material', async () => {
+      seedAccounts({
+        'icloud-max-20x': { source: 'pkce-authorize', token: 'sk-ant-oat01-PKCESECRETwTOK' },
+      });
+      mkdirSync(join(ctxRoot, 'state', 'usage'), { recursive: true });
+      atomicWriteSync(
+        diagnosticsPath(),
+        `${JSON.stringify({ account: 'legacy', credential_fingerprint: 'sk-ant-oat01-LEAK' })}\n${JSON.stringify({ account: 'safe-old' })}`,
+      );
+      stubUsageResponses([{
+        five_hour: { utilization: 0, resets_at: null },
+        seven_day: { utilization: 0, resets_at: null },
+      }]);
+
+      await checkAllUsage(ctxRoot);
+
+      const entries = readDiagnostics();
+      expect(entries.map((entry) => entry.account)).toEqual(['safe-old', 'icloud-max-20x']);
+      expect(JSON.stringify(entries)).not.toContain('sk-ant');
+      expect(JSON.stringify(entries)).not.toContain('PKCESECRET');
     });
 
     it('allows a 5h zero-drop after the prior reset timestamp has passed', async () => {
@@ -649,13 +835,27 @@ describe('usage-accounts', () => {
       expect(row.suspect).toBeUndefined();
     });
 
-    it('incident replay: original zero-null snapshot flags the three bad accounts and keeps moonlight attributable', async () => {
+    it('incident replay: original zero-null snapshot plus moonlight mislabel writes four diagnostics', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-13T03:05:00.000Z'));
       seedAccounts({
         'cg-team-seat': { source: 'pkce-authorize', token: 'sk-ant-oat01-SEATSECRETwTOK' },
         'icloud-max-20x': { source: 'pkce-authorize', token: 'sk-ant-oat01-ICLOUDSECRETwTOK' },
         'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
         'moonlight-max': { source: 'keychain-capture', token: 'sk-ant-oat01-MOONOLDSECRETwTOK' },
       });
+      atomicWriteSync(join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'), JSON.stringify({
+        generated_at: '2026-06-13T03:00:00.000Z',
+        accounts: [{
+          account: 'moonlight-max',
+          ok: true,
+          five_hour_pct: 7,
+          seven_day_pct: 2,
+          five_hour_resets: '2026-06-13T06:39:59Z',
+          seven_day_resets: '2026-06-18T18:59:59Z',
+          fetched_at: '2026-06-13T03:00:00.000Z',
+        }],
+      }, null, 2));
       stubUsageResponses([
         { five_hour: { utilization: 0, resets_at: null }, seven_day: { utilization: 0, resets_at: null } },
         { five_hour: { utilization: 0, resets_at: null }, seven_day: { utilization: 0, resets_at: null } },
@@ -675,14 +875,28 @@ describe('usage-accounts', () => {
       const impossible = result.accounts.filter((row) => row.status === 'impossible-read').map((row) => row.account);
       expect(impossible).toEqual(['cg-team-seat', 'icloud-max-20x', 'me-com-max']);
       expect(result.accounts.find((row) => row.account === 'moonlight-max')).toMatchObject({
-        ok: true,
+        ok: false,
+        status: 'suspect',
         credential_source: 'keychain-capture',
       });
+      const diagnostics = readDiagnostics();
+      expect(diagnostics).toHaveLength(4);
+      expect(diagnostics.filter((entry) => entry.failure === 'impossible-read')).toHaveLength(3);
+      expect(diagnostics.find((entry) => entry.account === 'moonlight-max')).toMatchObject({
+        failure: 'suspect',
+        credential_source: 'keychain-capture',
+      });
+      expect(JSON.stringify(diagnostics)).toContain('cross-account credential mislabel');
       expect(JSON.stringify(result)).not.toContain('SEATSECRET');
       expect(JSON.stringify(result)).not.toContain('ICLOUDSECRET');
       expect(JSON.stringify(result)).not.toContain('MECOMSECRET');
       expect(JSON.stringify(result)).not.toContain('MOONLIVESECRET');
       expect(JSON.stringify(result)).not.toContain('sk-ant');
+      expect(JSON.stringify(diagnostics)).not.toContain('SEATSECRET');
+      expect(JSON.stringify(diagnostics)).not.toContain('ICLOUDSECRET');
+      expect(JSON.stringify(diagnostics)).not.toContain('MECOMSECRET');
+      expect(JSON.stringify(diagnostics)).not.toContain('MOONLIVESECRET');
+      expect(JSON.stringify(diagnostics)).not.toContain('sk-ant');
     });
   });
 
