@@ -783,9 +783,11 @@ export class CodexAppServerPTY {
    * monitor. Writes atomically; failures are non-fatal (observability only).
    *
    * Mapping (per codex schema ThreadTokenUsageUpdatedNotification):
-   *   - used_percentage = total.totalTokens / cap * 100  (clamped to [0, 100])
+   *   - used_percentage = last prompt tokens / cap * 100 when tokenUsage.last exists (clamped to [0, 100])
+   *   - used_percentage = null when tokenUsage.last is absent (honest absence beats cumulative-token lies)
    *   - context_window_size = modelContextWindow ?? config.codex_context_cap ?? 256000
-   *   - exceeds_200k_tokens = total.totalTokens > 200000
+   *   - total_input_tokens = last totalTokens when tokenUsage.last exists, falling back to last inputTokens
+   *   - exceeds_200k_tokens = total_input_tokens > 200000
    *   - current_usage.{input,output,cache_read} from total.{input,output,cachedInput}Tokens
    *   - session_id = current threadId
    */
@@ -801,16 +803,23 @@ export class CodexAppServerPTY {
       ? tokenUsage.modelContextWindow
       : null;
     const cap = modelContextWindow ?? this._config.codex_context_cap ?? 256000;
-    const usedPct = cap > 0 ? Math.min(100, (totalTokens / cap) * 100) : null;
 
     const inputTokens = typeof total.inputTokens === 'number' ? total.inputTokens : 0;
     const outputTokens = typeof total.outputTokens === 'number' ? total.outputTokens : 0;
     const cachedInputTokens = typeof total.cachedInputTokens === 'number' ? total.cachedInputTokens : 0;
+    const last = isRecord(tokenUsage.last) ? tokenUsage.last : null;
+    const lastTotalTokens = last && typeof last.totalTokens === 'number' ? last.totalTokens : null;
+    const lastInputTokens = last && typeof last.inputTokens === 'number' ? last.inputTokens : null;
+    const contextInputTokens = lastTotalTokens ?? lastInputTokens;
+    const usedPct = contextInputTokens !== null && cap > 0
+      ? Math.min(100, (contextInputTokens / cap) * 100)
+      : null;
 
     const payload = JSON.stringify({
       used_percentage: usedPct,
       context_window_size: cap,
-      exceeds_200k_tokens: totalTokens > 200000,
+      ...(contextInputTokens !== null ? { total_input_tokens: contextInputTokens } : {}),
+      exceeds_200k_tokens: contextInputTokens !== null ? contextInputTokens > 200000 : false,
       current_usage: {
         input_tokens: inputTokens,
         output_tokens: outputTokens,

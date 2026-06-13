@@ -926,11 +926,11 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → context_status.json', 
     return JSON.parse(lastCall[1]) as Record<string, unknown>;
   }
 
-  it('writes context_status.json atomically with computed used_percentage', () => {
+  it('writes context_status.json atomically with last-token occupancy percentage', () => {
     const pty = new CodexAppServerPTY(mockEnv, {});
     (pty as unknown as { _threadId: string })._threadId = 'thread-9';
     feedTokenUsage(pty, {
-      last: { cachedInputTokens: 0, inputTokens: 1000, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 1000 },
+      last: { cachedInputTokens: 500, inputTokens: 1000, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 1000 },
       total: { cachedInputTokens: 5000, inputTokens: 60000, outputTokens: 4000, reasoningOutputTokens: 1000, totalTokens: 70000 },
       modelContextWindow: 200000,
     });
@@ -939,8 +939,9 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → context_status.json', 
     const [path] = atomicWriteSyncMock.mock.calls[0];
     expect(path).toBe('/tmp/ctx/state/codex-app-agent/context_status.json');
     const payload = lastWrittenPayload()!;
-    expect(payload.used_percentage).toBeCloseTo(35, 5);
+    expect(payload.used_percentage).toBeCloseTo(0.5, 5);
     expect(payload.context_window_size).toBe(200000);
+    expect(payload.total_input_tokens).toBe(1000);
     expect(payload.exceeds_200k_tokens).toBe(false);
     expect(payload.session_id).toBe('thread-9');
     expect(typeof payload.written_at).toBe('string');
@@ -956,7 +957,7 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → context_status.json', 
     const pty = new CodexAppServerPTY(mockEnv, {});
     (pty as unknown as { _threadId: string })._threadId = 'thread-9';
     feedTokenUsage(pty, {
-      last: { cachedInputTokens: 0, inputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 },
+      last: { cachedInputTokens: 0, inputTokens: 64000, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 64000 },
       total: { cachedInputTokens: 0, inputTokens: 64000, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 64000 },
       modelContextWindow: null,
     });
@@ -970,7 +971,7 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → context_status.json', 
     const pty = new CodexAppServerPTY(mockEnv, { codex_context_cap: 100000 });
     (pty as unknown as { _threadId: string })._threadId = 'thread-9';
     feedTokenUsage(pty, {
-      last: { cachedInputTokens: 0, inputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 },
+      last: { cachedInputTokens: 0, inputTokens: 50000, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 50000 },
       total: { cachedInputTokens: 0, inputTokens: 50000, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 50000 },
       modelContextWindow: null,
     });
@@ -980,12 +981,26 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → context_status.json', 
     expect(payload.used_percentage).toBeCloseTo(50, 5);
   });
 
-  it('flags exceeds_200k_tokens once total > 200k', () => {
+  it('falls back to last inputTokens when last totalTokens is absent', () => {
     const pty = new CodexAppServerPTY(mockEnv, {});
     (pty as unknown as { _threadId: string })._threadId = 'thread-9';
     feedTokenUsage(pty, {
-      last: { cachedInputTokens: 0, inputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 },
-      total: { cachedInputTokens: 0, inputTokens: 210000, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 210000 },
+      last: { cachedInputTokens: 0, inputTokens: 120000, outputTokens: 0, reasoningOutputTokens: 0 },
+      total: { cachedInputTokens: 0, inputTokens: 900000, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 900000 },
+      modelContextWindow: 240000,
+    });
+
+    const payload = lastWrittenPayload()!;
+    expect(payload.total_input_tokens).toBe(120000);
+    expect(payload.used_percentage).toBeCloseTo(50, 5);
+  });
+
+  it('flags exceeds_200k_tokens once current occupancy exceeds 200k', () => {
+    const pty = new CodexAppServerPTY(mockEnv, {});
+    (pty as unknown as { _threadId: string })._threadId = 'thread-9';
+    feedTokenUsage(pty, {
+      last: { cachedInputTokens: 1000, inputTokens: 210000, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 210000 },
+      total: { cachedInputTokens: 0, inputTokens: 500000, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 500000 },
       modelContextWindow: 1000000,
     });
 
@@ -997,13 +1012,62 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → context_status.json', 
     const pty = new CodexAppServerPTY(mockEnv, {});
     (pty as unknown as { _threadId: string })._threadId = 'thread-9';
     feedTokenUsage(pty, {
-      last: { cachedInputTokens: 0, inputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 },
+      last: { cachedInputTokens: 100000, inputTokens: 300000, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 300000 },
       total: { cachedInputTokens: 0, inputTokens: 300000, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 300000 },
       modelContextWindow: 256000,
     });
 
     const payload = lastWrittenPayload()!;
     expect(payload.used_percentage).toBe(100);
+  });
+
+  it('does not double-count cached input for high-cache codex footer readings', () => {
+    const pty = new CodexAppServerPTY(mockEnv, {});
+    (pty as unknown as { _threadId: string })._threadId = 'thread-9';
+    feedTokenUsage(pty, {
+      last: {
+        inputTokens: 233199,
+        cachedInputTokens: 232320,
+        outputTokens: 77,
+        reasoningOutputTokens: 0,
+        totalTokens: 233276,
+      },
+      total: {
+        inputTokens: 13_345_966,
+        cachedInputTokens: 12_711_552,
+        outputTokens: 35_463,
+        reasoningOutputTokens: 0,
+        totalTokens: 13_381_429,
+      },
+      modelContextWindow: 258400,
+    });
+
+    // Load-bearing regression for Adam's footer bug: cachedInputTokens is a
+    // subset of inputTokens, so double-counting it would clamp this to 100%.
+    const payload = lastWrittenPayload()!;
+    expect(payload.total_input_tokens).toBe(233276);
+    expect(payload.used_percentage).toBeCloseTo((233276 / 258400) * 100, 5);
+    expect(payload.used_percentage).not.toBe(100);
+  });
+
+  it('writes null used_percentage when last-token occupancy is absent', () => {
+    const pty = new CodexAppServerPTY(mockEnv, {});
+    (pty as unknown as { _threadId: string })._threadId = 'thread-9';
+    feedTokenUsage(pty, {
+      total: { cachedInputTokens: 5000, inputTokens: 60000, outputTokens: 4000, reasoningOutputTokens: 1000, totalTokens: 70000 },
+      modelContextWindow: 200000,
+    });
+
+    const payload = lastWrittenPayload()!;
+    expect(payload.used_percentage).toBeNull();
+    expect(payload.total_input_tokens).toBeUndefined();
+    expect(payload.exceeds_200k_tokens).toBe(false);
+    expect(payload.current_usage).toEqual({
+      input_tokens: 60000,
+      output_tokens: 4000,
+      cache_read_input_tokens: 5000,
+      cache_creation_input_tokens: 0,
+    });
   });
 
   it('skips the write when params.tokenUsage is missing', () => {
