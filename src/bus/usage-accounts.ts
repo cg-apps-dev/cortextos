@@ -98,6 +98,8 @@ export interface AllUsageResult {
 // extra_usage.is_enabled with rising used_credits.
 export const USAGE_ALERT_5H_PCT = 80;
 export const USAGE_ALERT_7D_PCT = 60;
+// Fetch failures alert only after 3 consecutive reads: 15 min at the 5-min poll.
+export const FETCH_FAIL_ALERT_CYCLES = 3;
 
 
 // All OAuth constants are taken VERBATIM from the live Claude Code 2.1.173
@@ -909,6 +911,8 @@ interface AccountAlertState {
   extra_enabled: boolean;   // last-seen: extra-usage meter enabled
   extra_credits: number;    // last-seen: credits (for rise detection)
   fetch_failing: boolean;   // last-seen: fetch failing (monitoring blind)
+  fail_consecutive?: number; // consecutive ok:false reads in the current episode
+  fetch_fail_alerted?: boolean; // FAIL alert sent for the current episode
   at: string;
 }
 
@@ -1077,25 +1081,35 @@ export function evaluateAlerts(
     const prev: AccountAlertState = prevState[u.account] ?? {
       five_h_over: false, seven_d_over: false,
       five_h_pending: false, seven_d_pending: false,
-      extra_enabled: false, extra_credits: 0, fetch_failing: false, at: now,
+      extra_enabled: false, extra_credits: 0, fetch_failing: false,
+      fail_consecutive: 0, fetch_fail_alerted: false, at: now,
     };
     // Start from prev and carry forward; a failing fetch must NOT reset the
     // 5h/7d/extra edges (we just cannot read them this cycle).
     const next: AccountAlertState = { ...prev, at: now };
 
     if (!u.ok) {
-      if (!prev.fetch_failing) {
+      const failConsecutive = (prev.fail_consecutive ?? 0) + 1;
+      const alreadyAlerted = prev.fetch_fail_alerted === true;
+      if (failConsecutive >= FETCH_FAIL_ALERT_CYCLES && !alreadyAlerted) {
         alerts.push(`USAGE-FETCH-FAIL ${who}: ${u.error} (monitoring blind for this account)`);
+        next.fetch_fail_alerted = true;
+      } else {
+        next.fetch_fail_alerted = alreadyAlerted;
       }
       next.fetch_failing = true;
+      next.fail_consecutive = failConsecutive;
       nextState[u.account] = next;
       continue;
     }
-    // Recovery: fetch was failing, now ok.
-    if (prev.fetch_failing) {
+    // Recovery alerts only after a FAIL was sent for this episode; sub-threshold
+    // blips reset silently.
+    if (prev.fetch_fail_alerted === true) {
       alerts.push(`RECOVERED ${who}: usage fetch restored (monitoring back online)`);
     }
     next.fetch_failing = false;
+    next.fetch_fail_alerted = false;
+    next.fail_consecutive = 0;
 
     // Threshold edges are suppressed for benched accounts (not decision-
     // relevant - nothing to act on). State is still tracked so an un-benched
