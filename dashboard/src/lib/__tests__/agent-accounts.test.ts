@@ -57,6 +57,7 @@ describe('getAgentAccounts', () => {
     writeSnapshot([
       { org: 'o1', agent: 'meta-ads-agent', account: 'B', source: 'token-match' },
       { org: 'o1', agent: 'the-orchestrator', account: null, source: null },
+      { org: 'o1', agent: 'codex-dev-agent', account: null, source: 'runtime-excluded' },
       { org: 'o1', agent: 'cro-agent', account: 'A', source: 'login-marker' },
       { org: 'o1', agent: 'cortextos-dev-agent', account: 'A', source: 'login-marker' },
     ]);
@@ -67,6 +68,7 @@ describe('getAgentAccounts', () => {
         B: ['meta-ads'],
       },
       unassigned: ['orchestrator'],
+      codexAgents: ['codex-dev'],
     });
   });
 });

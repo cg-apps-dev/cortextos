@@ -72,6 +72,24 @@ function checkDeliverableRequirement(taskId: string, frameworkRoot: string, org:
 export const busCommand = new Command('bus')
   .description('Bus commands for agent messaging, tasks, and events');
 
+export interface AgentAccountCliRow {
+  org: string;
+  agent: string;
+  account: string | null;
+  source: string | null;
+  reason?: string;
+}
+
+export function formatAgentAccountRow(row: AgentAccountCliRow): { account: string; source: string } {
+  if (row.account) {
+    return { account: row.account, source: row.source ?? '-' };
+  }
+  if (row.source === 'runtime-excluded') {
+    return { account: 'EXCLUDED', source: `runtime-excluded (${row.reason ?? 'not a Claude account'})` };
+  }
+  return { account: 'UNRESOLVED', source: `- (${row.reason ?? 'unresolved'})` };
+}
+
 busCommand
   .command('send-message')
   .argument('<to>', 'Target agent')
@@ -2712,7 +2730,7 @@ busCommand
           org,
           agent,
           account: r.label,
-          source: r.label ? (r.source ?? null) : null,
+          source: r.source ?? null,
           ...(r.label ? {} : { reason: r.reason ?? 'unresolved' }),
         });
       }
@@ -2727,12 +2745,11 @@ busCommand
     }
     const pad = (v: string, n: number) => v.padEnd(n);
     const wAgent = Math.max(5, ...rows.map(r => r.agent.length));
-    const wAcct  = Math.max(7, ...rows.map(r => (r.account ?? 'UNRESOLVED').length));
+    const formatted = rows.map(r => ({ row: r, display: formatAgentAccountRow(r) }));
+    const wAcct  = Math.max(7, ...formatted.map(r => r.display.account.length));
     console.log(`${pad('AGENT', wAgent)}  ${pad('ACCOUNT', wAcct)}  SOURCE`);
-    for (const r of rows) {
-      const acct = r.account ?? 'UNRESOLVED';
-      const src = r.account ? (r.source ?? '-') : `- (${r.reason})`;
-      console.log(`${pad(r.agent, wAgent)}  ${pad(acct, wAcct)}  ${src}`);
+    for (const { row, display } of formatted) {
+      console.log(`${pad(row.agent, wAgent)}  ${pad(display.account, wAcct)}  ${display.source}`);
     }
   });
 

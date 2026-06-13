@@ -49,16 +49,19 @@ describe('writeAgentAccountsSnapshot', () => {
     const a1 = join(agentsRoot, 'a1');
     const a2 = join(agentsRoot, 'a2');
     const a3 = join(agentsRoot, 'a3');
+    const a4 = join(agentsRoot, 'a4');
     mkdirSync(a1, { recursive: true });
     mkdirSync(a2, { recursive: true });
     mkdirSync(a3, { recursive: true });
+    mkdirSync(a4, { recursive: true });
     writeAccounts(ctxRoot);
     writeFileSync(join(a2, '.env'), `CLAUDE_CODE_OAUTH_TOKEN="${TOKEN_B}"\n`, 'utf-8');
     writeFileSync(join(a3, '.env'), 'CLAUDE_CODE_OAUTH_TOKEN="sk-ant-missing"\n', 'utf-8');
+    writeJson(join(a4, 'config.json'), { runtime: 'codex-app-server' });
 
     const count = writeAgentAccountsSnapshot(ctxRoot, frameworkRoot);
 
-    expect(count).toBe(3);
+    expect(count).toBe(4);
     const file = join(ctxRoot, 'state', 'usage', 'agent-accounts.json');
     expect(existsSync(file)).toBe(true);
     const raw = readFileSync(file, 'utf-8');
@@ -71,7 +74,14 @@ describe('writeAgentAccountsSnapshot', () => {
     expect(snapshot.agents).toEqual([
       { org: 'o1', agent: 'a1', account: 'A', source: 'login-marker' },
       { org: 'o1', agent: 'a2', account: 'B', source: 'token-match' },
-      { org: 'o1', agent: 'a3', account: null, source: null },
+      { org: 'o1', agent: 'a3', account: null, source: null, reason: 'agent billing account unresolved' },
+      {
+        org: 'o1',
+        agent: 'a4',
+        account: null,
+        source: 'runtime-excluded',
+        reason: 'codex-app-server runtime bills the Codex plan, not a Claude account',
+      },
     ]);
   });
 

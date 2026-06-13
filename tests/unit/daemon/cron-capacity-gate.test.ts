@@ -48,8 +48,15 @@ function writeEnv(agentDir: string, token: string): void {
   writeFileSync(join(agentDir, '.env'), `export CLAUDE_CODE_OAUTH_TOKEN="${token}"\n`, 'utf-8');
 }
 
-function writeConfig(agentDir: string, usageAccount: string): void {
-  writeJson(join(agentDir, 'config.json'), { usage_account: usageAccount });
+function writeConfig(agentDir: string, usageAccount: string, runtime?: string): void {
+  writeJson(join(agentDir, 'config.json'), {
+    usage_account: usageAccount,
+    ...(runtime ? { runtime } : {}),
+  });
+}
+
+function writeRuntime(agentDir: string, runtime: string): void {
+  writeJson(join(agentDir, 'config.json'), { runtime });
 }
 
 function baseAccounts(): Record<string, unknown> {
@@ -177,6 +184,34 @@ describe('makeCapacityGate', () => {
     expectNoTokenLeak();
   });
 
+  it('codex-runtime agent is deliberately excluded from Claude billing and does not defer', () => {
+    writeRuntime(agentDir, 'codex-app-server');
+    writeUsage(root, [usageAccount('A', 100, true)]);
+    writeAccounts(root, baseAccounts());
+
+    // Load-bearing regression: future fail-open changes must break this test
+    // rather than silently re-gating Codex crons under Claude account caps.
+    const decision = gate()(cron());
+
+    expect(decision.defer).toBe(false);
+    expect(logs).toEqual([
+      '[capacity-gate] agent: codex-app-server runtime bills the Codex plan, not a Claude account',
+    ]);
+    expectNoTokenLeak();
+  });
+
+  it('usage_account override wins over codex runtime exclusion', () => {
+    writeConfig(agentDir, 'A', 'codex-app-server');
+    writeUsage(root, [usageAccount('A', 100, true)]);
+    writeAccounts(root, baseAccounts());
+
+    const decision = gate()(cron());
+
+    expect(decision.defer).toBe(true);
+    expect(decision.reason).toContain('A');
+    expectNoTokenLeak();
+  });
+
   it('fails open for stale usage file', () => {
     writeUsage(root, [usageAccount('A', 100, true)], new Date(Date.now() - 31 * 60_000).toISOString());
     writeAccounts(root, baseAccounts());
@@ -237,6 +272,24 @@ describe('makeCapacityGate', () => {
     });
 
     it('reports source=login-marker for the tokenless lane', () => {
+      writeAccounts(root, baseAccounts());
+      const r = resolveAgentAccount(agentDir, root);
+      expect(r).toEqual({ label: 'A', source: 'login-marker' });
+    });
+
+    it('reports source=runtime-excluded for codex-app-server agents', () => {
+      writeRuntime(agentDir, 'codex-app-server');
+      writeAccounts(root, baseAccounts());
+      const r = resolveAgentAccount(agentDir, root);
+      expect(r).toEqual({
+        label: null,
+        source: 'runtime-excluded',
+        reason: 'codex-app-server runtime bills the Codex plan, not a Claude account',
+      });
+    });
+
+    it('missing runtime field keeps claude-code default behavior', () => {
+      writeJson(join(agentDir, 'config.json'), {});
       writeAccounts(root, baseAccounts());
       const r = resolveAgentAccount(agentDir, root);
       expect(r).toEqual({ label: 'A', source: 'login-marker' });

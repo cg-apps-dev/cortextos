@@ -50,12 +50,12 @@ interface OAuthAccountsFile {
   accounts: Record<string, OAuthAccount>;
 }
 
-/** How an agent's billing account label was determined. */
-export type AccountResolutionSource = 'override' | 'token-match' | 'login-marker';
+/** How an agent's billing account label was determined or intentionally excluded. */
+export type AccountResolutionSource = 'override' | 'token-match' | 'login-marker' | 'runtime-excluded';
 
 export interface AccountResolution {
   label: string | null;
-  /** Present when label is non-null. */
+  /** Present for successful labels and deliberate exclusions. */
   source?: AccountResolutionSource;
   reason?: string;
 }
@@ -129,6 +129,18 @@ function readUsageAccountOverride(agentDir: string): { ok: true; label?: string 
   }
 }
 
+function readAgentRuntime(agentDir: string): { ok: true; runtime?: string } | { ok: false; reason: string } {
+  const configPath = join(agentDir, 'config.json');
+  if (!existsSync(configPath)) return { ok: true };
+  try {
+    const raw = readJson(configPath);
+    if (!isRecord(raw)) return { ok: false, reason: 'agent config unreadable' };
+    return { ok: true, runtime: typeof raw.runtime === 'string' ? raw.runtime : undefined };
+  } catch {
+    return { ok: false, reason: 'agent config unreadable' };
+  }
+}
+
 function readOAuthAccounts(ctxRoot: string): { ok: true; accounts: OAuthAccountsFile } | { ok: false; reason: string } {
   try {
     const parsed = parseOAuthAccounts(readJson(join(ctxRoot, 'state', 'oauth', 'accounts.json')));
@@ -169,6 +181,17 @@ function resolveAccountLabel(agentDir: string, ctxRoot: string): AccountResoluti
   const override = readUsageAccountOverride(agentDir);
   if (!override.ok) return { label: null, reason: override.reason };
   if (override.label) return { label: override.label, source: 'override' };
+
+  const runtime = readAgentRuntime(agentDir);
+  if (!runtime.ok) return { label: null, reason: runtime.reason };
+  if (runtime.runtime === 'codex-app-server') {
+    return {
+      label: null,
+      source: 'runtime-excluded',
+      reason: 'codex-app-server runtime bills the Codex plan, not a Claude account',
+    };
+  }
+  // Hermes billing is unmodeled; keep legacy Claude-account resolution until defined.
 
   const envToken = readEnvToken(agentDir);
   if (!envToken.ok) return { label: null, reason: envToken.reason };

@@ -104,7 +104,7 @@ function AccountCard({ entry, agents }: { entry: AccountUsagePanelEntry; agents?
 }
 
 /** Codex (OpenAI ChatGPT plan) usage card - read-only, last-seen, as-of stamped. */
-function CodexCard({ codex }: { codex: CodexUsagePanel }) {
+function CodexCard({ codex, agents }: { codex: CodexUsagePanel; agents?: string[] }) {
   const plan = codex.plan_type ? codex.plan_type.charAt(0).toUpperCase() + codex.plan_type.slice(1) : 'ChatGPT';
   const resetIso = (s?: number) => (s ? new Date(s * 1000).toISOString() : undefined);
   return (
@@ -121,6 +121,7 @@ function CodexCard({ codex }: { codex: CodexUsagePanel }) {
         )}
         <p className="text-[10px] text-muted-foreground">as of {ptTime(codex.as_of)} (last Codex run)</p>
       </div>
+      <AgentChips agents={agents} />
     </div>
   );
 }
@@ -149,7 +150,7 @@ export function SubscriptionUsage({
               {data?.accounts.map((a) => (
                 <AccountCard key={a.account} entry={a} agents={agentAccounts?.byAccount[a.account]} />
               ))}
-              {codex && <CodexCard codex={codex} />}
+              {codex && <CodexCard codex={codex} agents={agentAccounts?.codexAgents} />}
             </div>
             {unassigned.length > 0 && (
               <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">

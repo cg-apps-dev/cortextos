@@ -8,6 +8,7 @@ export interface AgentAccountEntry {
   agent: string;
   account: string | null;
   source: string | null;
+  reason?: string;
 }
 
 export function writeAgentAccountsSnapshot(ctxRoot: string, frameworkRoot: string): number | null {
@@ -29,7 +30,8 @@ export function writeAgentAccountsSnapshot(ctxRoot: string, frameworkRoot: strin
           org,
           agent,
           account: resolution.label,
-          source: resolution.label ? (resolution.source ?? null) : null,
+          source: resolution.source ?? null,
+          ...(resolution.reason ? { reason: resolution.reason } : {}),
         });
       }
     }
