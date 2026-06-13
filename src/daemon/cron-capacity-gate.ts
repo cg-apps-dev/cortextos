@@ -10,6 +10,16 @@
  * go stale. Fail-open behavior covers safety, but the flip procedure must
  * update usage_credential sources or set explicit usage_account overrides on
  * login-lane agents.
+ *
+ * FLIP PROCEDURE - BOTH HALVES (learned live, 2026-06-12 moonlight cutover):
+ * capturing the NEW login account is not enough. The OLD login account's
+ * entry still carries source=keychain-capture, which (a) double-markers
+ * resolution into fail-open (safe, as documented above), but ALSO (b) makes
+ * the usage monitor's live-keychain re-read silently serve the NEW account's
+ * numbers under the OLD account's label - cross-account data corruption,
+ * worse than ungated. The flip MUST also RE-SOURCE the old entry (e.g. to
+ * pkce-authorize, or set explicit overrides); verify with
+ * `bus list-agent-accounts` + distinct per-account usage reads.
  */
 
 import { existsSync, readFileSync } from 'fs';
