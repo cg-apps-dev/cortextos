@@ -40,7 +40,7 @@ const TEMPLATES = [
     value: 'agent-codex',
     label: 'Agent (Codex)',
     runtime: 'codex-app-server',
-    description: 'General-purpose worker on the codex-app-server runtime (gpt-5-codex). Skills under plugins/cortextos-agent-skills/skills/, no slash-commands.',
+    description: 'General-purpose worker on the codex-app-server runtime (gpt-5.5). Skills under plugins/cortextos-agent-skills/skills/, no slash-commands.',
   },
   {
     value: 'orchestrator',
