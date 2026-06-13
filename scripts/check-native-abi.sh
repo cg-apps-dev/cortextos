@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: scripts/check-native-abi.sh [--fix]" >&2
+  echo "Usage: scripts/check-native-abi.sh [--fix|--child]" >&2
 }
 
 die_internal() {
@@ -11,23 +11,28 @@ die_internal() {
 }
 
 fix=0
-case "${1:-}" in
-  "")
-    ;;
-  --fix)
-    fix=1
-    ;;
-  -h|--help)
-    usage
-    exit 0
-    ;;
-  *)
-    usage
-    exit 2
-    ;;
-esac
+child=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --fix)
+      fix=1
+      ;;
+    --child)
+      child=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+  shift
+done
 
-if [ "$#" -gt 1 ]; then
+if [ "$fix" -eq 1 ] && [ "$child" -eq 1 ]; then
   usage
   exit 2
 fi
@@ -38,6 +43,73 @@ module_dir="$dashboard_dir/node_modules/better-sqlite3"
 
 command -v node >/dev/null 2>&1 || die_internal "node is not on PATH"
 command -v npm >/dev/null 2>&1 || die_internal "npm is not on PATH"
+
+find_child_node() {
+  command -v pgrep >/dev/null 2>&1 || die_internal "pgrep is not on PATH"
+  command -v lsof >/dev/null 2>&1 || die_internal "lsof is not on PATH"
+
+  pids="$(pgrep -f 'next-dev|next-server|next dev' 2>/dev/null || true)"
+  if [ -z "$pids" ]; then
+    return 1
+  fi
+
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    [ "$pid" != "$$" ] || continue
+    cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)"
+    case "$cwd" in
+      "$dashboard_dir"|"$dashboard_dir"/*)
+        node_path="$(lsof -p "$pid" 2>/dev/null | awk '$NF ~ /\/bin\/node$/ { print $NF; exit }')"
+        if [ -n "$node_path" ]; then
+          printf '%s\t%s\n' "$pid" "$node_path"
+          return 0
+        fi
+        ;;
+    esac
+  done <<EOF
+$pids
+EOF
+  return 1
+}
+
+check_child() {
+  child_info="$(find_child_node)" || {
+    echo "ERROR: no running next-dev/next-server child found under $dashboard_dir" >&2
+    return 2
+  }
+  child_pid="${child_info%%	*}"
+  child_node="${child_info#*	}"
+  child_abi="$("$child_node" -p 'process.versions.modules' 2>/dev/null)" || die_internal "failed to read child Node ABI"
+  child_version="$("$child_node" -p 'process.version' 2>/dev/null)" || die_internal "failed to read child Node version"
+
+  echo "Dashboard child PID: $child_pid"
+  echo "Dashboard child Node: $child_version ABI $child_abi at $child_node"
+
+  if (
+    cd "$dashboard_dir" &&
+      "$child_node" --no-warnings -e '
+        const Database = require("better-sqlite3");
+        const db = new Database(":memory:");
+        try {
+          const row = db.prepare("SELECT 1 AS ok").get();
+          if (row.ok !== 1) throw new Error("unexpected query result");
+        } finally {
+          db.close();
+        }
+      '
+  ); then
+    echo "PASS: better-sqlite3 instantiate test passed under dashboard child Node ABI $child_abi"
+    return 0
+  fi
+
+  echo "MISMATCH: better-sqlite3 instantiate test failed under dashboard child Node ABI $child_abi" >&2
+  return 1
+}
+
+if [ "$child" -eq 1 ]; then
+  check_child
+  exit "$?"
+fi
 
 current_abi="$(node -p 'process.versions.modules' 2>/dev/null)" || die_internal "failed to read current Node ABI"
 node_version="$(node -p 'process.version' 2>/dev/null)" || die_internal "failed to read current Node version"

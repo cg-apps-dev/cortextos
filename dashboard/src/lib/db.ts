@@ -1,15 +1,54 @@
 // cortextOS Dashboard - SQLite database singleton
 // Read cache for JSON/JSONL files on disk. WAL mode for concurrent reads.
 
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { createRequire } from 'module';
+
+const nodeRequire = createRequire(import.meta.url);
+type DatabaseConstructor = typeof import('better-sqlite3');
 
 const instanceId = process.env.CTX_INSTANCE_ID ?? 'default';
 const ctxRoot = process.env.CTX_ROOT;
 const DB_PATH = ctxRoot
   ? path.join(ctxRoot, 'dashboard', `cortextos-${instanceId}.db`)
   : path.join(process.cwd(), '.data', `cortextos-${instanceId}.db`);
+
+function nativeAbiMismatchMessage(error: unknown): string {
+  const text = String((error as { stack?: unknown; message?: unknown })?.stack ?? (error as { message?: unknown })?.message ?? error);
+  const matches = [...text.matchAll(/NODE_MODULE_VERSION\s+([0-9]+)/g)].map((match) => match[1]);
+  const builtAbi = matches[0] ?? 'unknown';
+  const runningAbi = matches[1] ?? process.versions.modules;
+  const dashboardNodeBin = process.env.DASHBOARD_NODE_BIN;
+  const rebuildCommand = dashboardNodeBin
+    ? `${dashboardNodeBin}/npm rebuild better-sqlite3`
+    : 'DASHBOARD_NODE_BIN is unset; rebuild with the dashboard pinned Node from the PM2 ecosystem env';
+
+  return [
+    `better-sqlite3 ABI mismatch: built for NODE_MODULE_VERSION ${builtAbi}, running node reports ${runningAbi}.`,
+    `Running node: ${process.execPath} (${process.version}).`,
+    `Fix: cd dashboard && ${rebuildCommand}`,
+    `Original error: ${text.split('\n')[0] ?? String(error)}`,
+  ].join('\n');
+}
+
+function loadDatabaseConstructor(): DatabaseConstructor {
+  try {
+    const DatabaseCtor = nodeRequire('better-sqlite3') as DatabaseConstructor;
+    const probe = new DatabaseCtor(':memory:');
+    try {
+      probe.prepare('SELECT 1').get();
+    } finally {
+      probe.close();
+    }
+    return DatabaseCtor;
+  } catch (error) {
+    const message = nativeAbiMismatchMessage(error);
+    console.error(message);
+    throw new Error(message, { cause: error });
+  }
+}
 
 function createDatabase(): Database.Database {
   // Ensure .data directory exists
@@ -18,7 +57,8 @@ function createDatabase(): Database.Database {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  const db = new Database(DB_PATH, { timeout: 10000 });
+  const DatabaseCtor = loadDatabaseConstructor();
+  const db = new DatabaseCtor(DB_PATH, { timeout: 10000 });
 
   // Set busy_timeout BEFORE attempting any schema or pragma changes that
   // require write locks (e.g. WAL switch, CREATE TABLE). Without this, parallel

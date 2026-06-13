@@ -46,4 +46,9 @@ npm test
 - Shell and test runs use Node 22, ABI 127.
 - Rebuild `better-sqlite3` under the Node version that will load it. A binary compiled for one ABI will crash when loaded by the other.
 - Deploy recipe: build the dashboard under Node 25 from `/opt/homebrew/Cellar/node/25.9.0_1/bin`, or dashboard restarts can fail with `NODE_MODULE_VERSION` errors.
-- Check the current shell with `scripts/check-native-abi.sh`; use `scripts/check-native-abi.sh --fix` to run `npm rebuild better-sqlite3` in `dashboard/` with the current Node and re-check.
+- `dashboard/.nvmrc` contains `25` as dev convenience and intent only. PM2 does not read `.nvmrc`; the runtime fix is the generated PM2 env PATH pin from `cortextos ecosystem`.
+- WARNING: `pm2 jlist` `node_version`, shell `node --version`, the npm parent process, and `scripts/check-native-abi.sh` without `--child` can all report the Node-22 parent, not the runtime that loads `better-sqlite3`.
+- Canonical runtime verify: find the live `next-dev` or `next-server` child PID, then run `lsof -p <child_pid> | grep bin/node`. That child node is the dashboard runtime to verify, not the PM2 parent or shell.
+- The authoritative ABI check is an instantiate test under that child node: `require("better-sqlite3")`, `new Database(":memory:")`, then a simple query. A bare require is not enough.
+- Use `scripts/check-native-abi.sh --child` to lsof the live Next child and run the instantiate test under its node. Use `scripts/check-native-abi.sh --fix` only when you intentionally want to rebuild for the current shell node.
+- 2026-06-13 incident note: treating the Node-22 parent as the dashboard runtime led to an ABI-127 rebuild that crashed the dashboard. The child process was Node 25.
