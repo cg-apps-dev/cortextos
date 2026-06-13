@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -8,6 +8,8 @@ import {
   parseUsageResponse,
   evaluateAlerts,
   captureKeychainUsageCredential,
+  fetchAccountUsage,
+  checkAllUsage,
   resolveUsageToken,
   beginUsageAuth,
   assertGrantedScopeSafe,
@@ -39,7 +41,11 @@ describe('usage-accounts', () => {
   let ctxRoot: string;
 
   beforeEach(() => { ctxRoot = makeCtxRoot(); });
-  afterEach(() => { rmSync(ctxRoot, { recursive: true, force: true }); });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    rmSync(ctxRoot, { recursive: true, force: true });
+  });
 
   describe('fingerprint', () => {
     it('never reveals the token middle', () => {
@@ -82,13 +88,45 @@ describe('usage-accounts', () => {
     });
 
     it('normalizes 0-1 fractional utilization to percent', () => {
-      const u = parseUsageResponse('seat', { five_hour: { utilization: 0.85 } }, NOW);
+      const u = parseUsageResponse('seat', { five_hour: { utilization: 0.85, resets_at: '2026-06-11T05:00:00Z' } }, NOW);
+      expect(u.ok).toBe(true);
       expect(u.five_hour_pct).toBe(85);
     });
 
     it('tolerates missing extra_usage', () => {
-      const u = parseUsageResponse('seat', { five_hour: { utilization: 10 } }, NOW);
+      const u = parseUsageResponse('seat', { five_hour: { utilization: 10, resets_at: '2026-06-11T05:00:00Z' } }, NOW);
+      expect(u.ok).toBe(true);
       expect(u.extra_usage).toBeUndefined();
+    });
+
+    it('marks utilization with null reset metadata as an impossible read', () => {
+      const u = parseUsageResponse('seat', {
+        five_hour: { utilization: 0, resets_at: null },
+        seven_day: { utilization: 17, resets_at: '2026-06-15T00:00:00Z' },
+      }, NOW);
+      expect(u.ok).toBe(false);
+      expect(u.status).toBe('impossible-read');
+      expect(u.error).toContain('five_hour');
+      expect(JSON.stringify(u)).not.toContain('sk-ant');
+    });
+
+    it('keeps zero utilization with valid reset metadata as legitimate idle state', () => {
+      const u = parseUsageResponse('me-com-max', {
+        five_hour: { utilization: 0, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: '2026-06-15T00:00:00Z' },
+      }, NOW);
+      expect(u).toMatchObject({
+        ok: true,
+        five_hour_pct: 0,
+        seven_day_pct: 0,
+      });
+    });
+
+    it('does not classify a missing utilization with null reset as impossible-read', () => {
+      const u = parseUsageResponse('fresh', { five_hour: { resets_at: null } }, NOW);
+      expect(u.ok).toBe(true);
+      expect(u.status).toBeUndefined();
+      expect(u.five_hour_pct).toBeUndefined();
     });
   });
 
@@ -375,6 +413,246 @@ describe('usage-accounts', () => {
       const token = await resolveUsageToken(ctxRoot, 'cg-team-seat', () => { keychainRead = true; return null; });
       expect(token).toBe('sk-ant-oat01-PKCESTOREDwTOK');
       expect(keychainRead).toBe(false);
+    });
+  });
+
+  describe('usage monitor hardening', () => {
+    function seedAccounts(accounts: Record<string, { source: 'keychain-capture' | 'pkce-authorize'; token: string; benched?: boolean }>) {
+      const shaped: Record<string, unknown> = {};
+      for (const [name, account] of Object.entries(accounts)) {
+        shaped[name] = {
+          label: name,
+          access_token: '',
+          refresh_token: '',
+          expires_at: 0,
+          last_refreshed: '',
+          five_hour_utilization: 0,
+          seven_day_utilization: 0,
+          benched: account.benched,
+          usage_credential: {
+            access_token: account.token,
+            refresh_token: 'rt',
+            expires_at: Date.now() + 3600_000,
+            scopes: ['user:profile'],
+            source: account.source,
+            captured_at: NOW,
+          },
+        };
+      }
+      atomicWriteSync(join(ctxRoot, 'state', 'oauth', 'accounts.json'), JSON.stringify({
+        active: Object.keys(accounts)[0],
+        accounts: shaped,
+        rotation_log: [],
+      }, null, 2));
+    }
+
+    function okResponse(body: unknown) {
+      return { ok: true, status: 200, json: async () => body };
+    }
+
+    function stubUsageResponses(bodies: unknown[]) {
+      const fetchMock = vi.fn();
+      for (const body of bodies) fetchMock.mockResolvedValueOnce(okResponse(body));
+      vi.stubGlobal('fetch', fetchMock);
+      return fetchMock;
+    }
+
+    function readJson(path: string): unknown {
+      return JSON.parse(readFileSync(path, 'utf-8')) as unknown;
+    }
+
+    it('fetchAccountUsage writes source attribution, fingerprint, and raw response without token material', async () => {
+      seedAccounts({
+        'cg-team-seat': { source: 'keychain-capture', token: 'sk-ant-oat01-STOREDSECRETwOLD' },
+      });
+      stubUsageResponses([{
+        five_hour: { utilization: 12, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 34, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      const usage = await fetchAccountUsage(ctxRoot, 'cg-team-seat', () => ({
+        accessToken: 'sk-ant-oat01-LIVESECRETwNEW',
+        refreshToken: 'rt-live',
+        expiresAt: Date.now() + 3600_000,
+        scopes: ['user:profile'],
+      }));
+
+      expect(usage.ok).toBe(true);
+      expect(usage.credential_source).toBe('keychain-capture');
+      expect(usage.credential_fingerprint).toBe('sk-ant-oat01-L...wNEW');
+      expect(JSON.stringify(usage)).not.toContain('LIVESECRET');
+      const raw = readJson(join(ctxRoot, 'state', 'usage', 'raw', 'cg-team-seat.json')) as { entries: Array<{ response: unknown }> };
+      expect(JSON.stringify(raw)).toContain('credential_fingerprint');
+      expect(JSON.stringify(raw.entries[0].response)).not.toContain('sk-ant');
+      expect(JSON.stringify(raw)).not.toContain('LIVESECRET');
+    });
+
+    it('checkAllUsage carries pkce attribution into the multi-account row', async () => {
+      seedAccounts({
+        'icloud-max-20x': { source: 'pkce-authorize', token: 'sk-ant-oat01-PKCESECRETwTOK' },
+      });
+      stubUsageResponses([{
+        five_hour: { utilization: 1, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 2, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      const result = await checkAllUsage(ctxRoot);
+
+      expect(result.accounts[0]).toMatchObject({
+        account: 'icloud-max-20x',
+        ok: true,
+        credential_source: 'pkce-authorize',
+        credential_fingerprint: 'sk-ant-oat01-P...wTOK',
+      });
+      const snapshot = readJson(join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'));
+      expect(JSON.stringify(snapshot)).not.toContain('PKCESECRET');
+    });
+
+    it('keeps last_good when an impossible read replaces a prior good row', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-11T03:05:00.000Z'));
+      seedAccounts({
+        'cg-team-seat': { source: 'pkce-authorize', token: 'sk-ant-oat01-PKCESECRETwTOK' },
+      });
+      atomicWriteSync(join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'cg-team-seat',
+          ok: true,
+          five_hour_pct: 44,
+          seven_day_pct: 12,
+          five_hour_resets: '2026-06-11T05:00:00Z',
+          seven_day_resets: '2026-06-15T00:00:00Z',
+          fetched_at: '2026-06-11T03:00:00.000Z',
+          credential_source: 'pkce-authorize',
+          credential_fingerprint: 'sk-ant-oat01-P...wTOK',
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 0, resets_at: null },
+        seven_day: { utilization: 0, resets_at: null },
+      }]);
+
+      const result = await checkAllUsage(ctxRoot);
+      const row = result.accounts[0];
+      expect(row.ok).toBe(false);
+      expect(row.status).toBe('impossible-read');
+      expect(row.last_good).toMatchObject({
+        five_hour_pct: 44,
+        seven_day_pct: 12,
+        fetched_at: '2026-06-11T03:00:00.000Z',
+      });
+      expect(result.alerts.some((a) => a.includes('USAGE-FETCH-FAIL cg-team-seat'))).toBe(true);
+      expect(JSON.stringify(row)).not.toContain('PKCESECRET');
+    });
+
+    it('flags an implausible 7d rise within one cycle as suspect', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-11T03:05:00.000Z'));
+      seedAccounts({
+        moonlight: { source: 'pkce-authorize', token: 'sk-ant-oat01-MOONSECRETwTOK' },
+      });
+      atomicWriteSync(join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'moonlight',
+          ok: true,
+          five_hour_pct: 7,
+          seven_day_pct: 2,
+          five_hour_resets: '2026-06-11T05:00:00Z',
+          seven_day_resets: '2026-06-15T00:00:00Z',
+          fetched_at: '2026-06-11T03:00:00.000Z',
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 7, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 100, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      const row = (await checkAllUsage(ctxRoot)).accounts[0];
+      expect(row.ok).toBe(false);
+      expect(row.status).toBe('suspect');
+      expect(row.suspect).toBe(true);
+      expect(row.last_good?.seven_day_pct).toBe(2);
+      expect(JSON.stringify(row)).not.toContain('MOONSECRET');
+    });
+
+    it('allows a 5h zero-drop after the prior reset timestamp has passed', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-11T03:05:00.000Z'));
+      seedAccounts({
+        seat: { source: 'pkce-authorize', token: 'sk-ant-oat01-SEATSECRETwTOK' },
+      });
+      atomicWriteSync(join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'seat',
+          ok: true,
+          five_hour_pct: 100,
+          seven_day_pct: 10,
+          five_hour_resets: '2026-06-11T03:04:00.000Z',
+          seven_day_resets: '2026-06-15T00:00:00Z',
+          fetched_at: '2026-06-11T03:00:00.000Z',
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 0, resets_at: '2026-06-11T08:04:00Z' },
+        seven_day: { utilization: 10, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      const row = (await checkAllUsage(ctxRoot)).accounts[0];
+      expect(row.ok).toBe(true);
+      expect(row.status).toBeUndefined();
+      expect(row.five_hour_pct).toBe(0);
+    });
+
+    it('does not delta-flag first-ever reads with no prior snapshot', async () => {
+      seedAccounts({
+        moonlight: { source: 'pkce-authorize', token: 'sk-ant-oat01-MOONSECRETwTOK' },
+      });
+      stubUsageResponses([{
+        five_hour: { utilization: 80, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 100, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      const row = (await checkAllUsage(ctxRoot)).accounts[0];
+      expect(row.ok).toBe(true);
+      expect(row.suspect).toBeUndefined();
+    });
+
+    it('incident replay: original zero-null snapshot flags the three bad accounts and keeps moonlight attributable', async () => {
+      seedAccounts({
+        'cg-team-seat': { source: 'pkce-authorize', token: 'sk-ant-oat01-SEATSECRETwTOK' },
+        'icloud-max-20x': { source: 'pkce-authorize', token: 'sk-ant-oat01-ICLOUDSECRETwTOK' },
+        'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+        'moonlight-max': { source: 'keychain-capture', token: 'sk-ant-oat01-MOONOLDSECRETwTOK' },
+      });
+      stubUsageResponses([
+        { five_hour: { utilization: 0, resets_at: null }, seven_day: { utilization: 0, resets_at: null } },
+        { five_hour: { utilization: 0, resets_at: null }, seven_day: { utilization: 0, resets_at: null } },
+        { five_hour: { utilization: 0, resets_at: null }, seven_day: { utilization: 0, resets_at: null } },
+        {
+          five_hour: { utilization: 7, resets_at: '2026-06-13T06:39:59Z' },
+          seven_day: { utilization: 100, resets_at: '2026-06-18T18:59:59Z' },
+        },
+      ]);
+
+      const result = await checkAllUsage(ctxRoot, () => ({
+        accessToken: 'sk-ant-oat01-MOONLIVESECRETwTOK',
+        refreshToken: 'rt-live',
+        expiresAt: Date.now() + 3600_000,
+        scopes: ['user:profile'],
+      }));
+      const impossible = result.accounts.filter((row) => row.status === 'impossible-read').map((row) => row.account);
+      expect(impossible).toEqual(['cg-team-seat', 'icloud-max-20x', 'me-com-max']);
+      expect(result.accounts.find((row) => row.account === 'moonlight-max')).toMatchObject({
+        ok: true,
+        credential_source: 'keychain-capture',
+      });
+      expect(JSON.stringify(result)).not.toContain('SEATSECRET');
+      expect(JSON.stringify(result)).not.toContain('ICLOUDSECRET');
+      expect(JSON.stringify(result)).not.toContain('MECOMSECRET');
+      expect(JSON.stringify(result)).not.toContain('MOONLIVESECRET');
     });
   });
 

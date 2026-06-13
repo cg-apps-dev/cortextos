@@ -45,20 +45,44 @@ export interface UsageCredential {
   captured_at: string;         // ISO 8601
 }
 
+export type UsageCredentialSource = UsageCredential['source'];
+
+export interface UsageTokenResolution {
+  token: string;
+  credential_source: UsageCredentialSource;
+  credential_fingerprint: string;
+}
+
 export interface ExtraUsage {
   is_enabled: boolean;
   used_credits?: number;
 }
 
+export interface LastGoodUsage {
+  five_hour_pct?: number;
+  seven_day_pct?: number;
+  five_hour_resets?: string;
+  seven_day_resets?: string;
+  extra_usage?: ExtraUsage;
+  fetched_at: string;
+  credential_source?: UsageCredentialSource;
+  credential_fingerprint?: string;
+}
+
 export interface AccountUsage {
   account: string;
   ok: boolean;
+  status?: 'impossible-read' | 'suspect';
+  suspect?: boolean;
   error?: string;              // status/short reason only - never a token
   five_hour_pct?: number;      // 0-100
   seven_day_pct?: number;      // 0-100
   five_hour_resets?: string;
   seven_day_resets?: string;
   extra_usage?: ExtraUsage;
+  credential_source?: UsageCredentialSource;
+  credential_fingerprint?: string;
+  last_good?: LastGoodUsage;
   /** Benched/inactive (from the accounts.json `benched` flag): 5h/7d
    *  threshold edges are suppressed for these in the human alert stream. */
   benched?: boolean;
@@ -162,6 +186,14 @@ function pendingAuthPath(ctxRoot: string): string {
 
 function alertStatePath(ctxRoot: string): string {
   return join(ctxRoot, 'state', 'usage', 'alert-state.json');
+}
+
+function multiAccountUsagePath(ctxRoot: string): string {
+  return join(ctxRoot, 'state', 'usage', 'multi-account-usage.json');
+}
+
+function rawUsagePath(ctxRoot: string, account: string): string {
+  return join(ctxRoot, 'state', 'usage', 'raw', `${account}.json`);
 }
 
 function requireStore(ctxRoot: string): AccountsStore {
@@ -446,21 +478,34 @@ export async function refreshUsageCredential(
 /** Parse the raw usage API response into an AccountUsage. Pure - unit-testable. */
 export function parseUsageResponse(account: string, data: unknown, now: string): AccountUsage {
   const d = data as {
-    five_hour?: { utilization?: number; resets_at?: string };
-    seven_day?: { utilization?: number; resets_at?: string };
+    five_hour?: { utilization?: number; resets_at?: string | null };
+    seven_day?: { utilization?: number; resets_at?: string | null };
     extra_usage?: { is_enabled?: boolean; used_credits?: number };
   };
   const pct = (v: number | undefined): number | undefined => {
     if (v === undefined) return undefined;
     return Math.round(v <= 1 ? v * 100 : v);
   };
+  const invalidWindows: string[] = [];
+  if (typeof d.five_hour?.utilization === 'number' && d.five_hour.resets_at == null) {
+    invalidWindows.push('five_hour');
+  }
+  if (typeof d.seven_day?.utilization === 'number' && d.seven_day.resets_at == null) {
+    invalidWindows.push('seven_day');
+  }
   const usage: AccountUsage = {
     account,
-    ok: true,
+    ok: invalidWindows.length === 0,
+    ...(invalidWindows.length > 0
+      ? {
+          status: 'impossible-read' as const,
+          error: `impossible-read: ${invalidWindows.join('+')} utilization without resets_at`,
+        }
+      : {}),
     five_hour_pct: pct(d.five_hour?.utilization),
     seven_day_pct: pct(d.seven_day?.utilization),
-    five_hour_resets: d.five_hour?.resets_at,
-    seven_day_resets: d.seven_day?.resets_at,
+    ...(d.five_hour?.resets_at ? { five_hour_resets: d.five_hour.resets_at } : {}),
+    ...(d.seven_day?.resets_at ? { seven_day_resets: d.seven_day.resets_at } : {}),
     fetched_at: now,
   };
   if (d.extra_usage && typeof d.extra_usage.is_enabled === 'boolean') {
@@ -470,6 +515,37 @@ export function parseUsageResponse(account: string, data: unknown, now: string):
     };
   }
   return usage;
+}
+
+function containsTokenMaterial(value: unknown): boolean {
+  return JSON.stringify(value).includes('sk-ant');
+}
+
+function recordRawUsageResponse(
+  ctxRoot: string,
+  account: string,
+  responseBody: unknown,
+  fetchedAt: string,
+  attribution: Omit<UsageTokenResolution, 'token'>,
+): void {
+  const path = rawUsagePath(ctxRoot, account);
+  let entries: unknown[] = [];
+  if (existsSync(path)) {
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { entries?: unknown[] };
+      if (Array.isArray(parsed.entries)) entries = parsed.entries;
+    } catch { /* reset corrupt forensic buffer */ }
+  }
+  const safeBody = containsTokenMaterial(responseBody)
+    ? { redacted: true, reason: 'token-like material omitted' }
+    : responseBody;
+  entries.push({
+    fetched_at: fetchedAt,
+    credential_source: attribution.credential_source,
+    credential_fingerprint: attribution.credential_fingerprint,
+    response: safeBody,
+  });
+  atomicWriteSync(path, JSON.stringify({ account, entries: entries.slice(-20) }, null, 2));
 }
 
 /**
@@ -497,6 +573,14 @@ export async function resolveUsageToken(
   accountName: string,
   blobReader: () => KeychainBlob | null = readKeychainBlob,
 ): Promise<string> {
+  return (await resolveUsageTokenWithAttribution(ctxRoot, accountName, blobReader)).token;
+}
+
+export async function resolveUsageTokenWithAttribution(
+  ctxRoot: string,
+  accountName: string,
+  blobReader: () => KeychainBlob | null = readKeychainBlob,
+): Promise<UsageTokenResolution> {
   const store = requireStore(ctxRoot);
   const cred = store.accounts[accountName]?.usage_credential;
   if (!cred) throw new Error('no usage_credential');
@@ -522,15 +606,28 @@ export async function resolveUsageToken(
         saveAccounts(ctxRoot, reloaded);
       }
     }
-    return blob.accessToken;
+    return {
+      token: blob.accessToken,
+      credential_source: 'keychain-capture',
+      credential_fingerprint: fingerprint(blob.accessToken),
+    };
   }
 
   // pkce-authorize: stored token, proactive refresh when expiring soon.
   if (!cred.access_token) throw new Error('no usage_credential access token');
   if (cred.expires_at && cred.expires_at - Date.now() < 5 * 60 * 1000) {
-    return refreshUsageCredential(ctxRoot, accountName);
+    const token = await refreshUsageCredential(ctxRoot, accountName);
+    return {
+      token,
+      credential_source: 'pkce-authorize',
+      credential_fingerprint: fingerprint(token),
+    };
   }
-  return cred.access_token;
+  return {
+    token: cred.access_token,
+    credential_source: 'pkce-authorize',
+    credential_fingerprint: fingerprint(cred.access_token),
+  };
 }
 
 /**
@@ -553,22 +650,33 @@ export async function fetchAccountUsage(
   }
   const isKeychain = cred.source === 'keychain-capture';
   try {
-    let token = await resolveUsageToken(ctxRoot, accountName, blobReader);
+    let resolved = await resolveUsageTokenWithAttribution(ctxRoot, accountName, blobReader);
     let response = await fetch(USAGE_API, {
-      headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' },
+      headers: { Authorization: `Bearer ${resolved.token}`, 'anthropic-beta': 'oauth-2025-04-20' },
     });
     if (response.status === 401 && !isKeychain) {
       // Reactive refresh+retry only for PKCE (a fresh keychain read already
       // gave the newest token; a 401 there is not fixable by re-reading).
-      token = await refreshUsageCredential(ctxRoot, accountName);
+      const token = await refreshUsageCredential(ctxRoot, accountName);
+      resolved = {
+        token,
+        credential_source: 'pkce-authorize',
+        credential_fingerprint: fingerprint(token),
+      };
       response = await fetch(USAGE_API, {
-        headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' },
+        headers: { Authorization: `Bearer ${resolved.token}`, 'anthropic-beta': 'oauth-2025-04-20' },
       });
     }
     if (!response.ok) {
       return { account: accountName, ok: false, error: `HTTP ${response.status}`, fetched_at: now };
     }
-    return parseUsageResponse(accountName, await response.json(), now);
+    const raw = await response.json();
+    recordRawUsageResponse(ctxRoot, accountName, raw, now, resolved);
+    return {
+      ...parseUsageResponse(accountName, raw, now),
+      credential_source: resolved.credential_source,
+      credential_fingerprint: resolved.credential_fingerprint,
+    };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { account: accountName, ok: false, error: msg.slice(0, 200), fetched_at: now };
@@ -598,6 +706,105 @@ interface AccountAlertState {
 
 interface AlertState {
   [account: string]: AccountAlertState;
+}
+
+const DELTA_SANITY_MAX_CYCLE_MS = 10 * 60_000;
+const SEVEN_DAY_RISE_SUSPECT_POINTS = 30;
+
+function loadPriorUsage(ctxRoot: string): Map<string, AccountUsage> {
+  const prior = new Map<string, AccountUsage>();
+  const path = multiAccountUsagePath(ctxRoot);
+  if (!existsSync(path)) return prior;
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { accounts?: unknown[] };
+    if (!Array.isArray(parsed.accounts)) return prior;
+    for (const row of parsed.accounts) {
+      if (typeof row === 'object' && row !== null && typeof (row as AccountUsage).account === 'string') {
+        prior.set((row as AccountUsage).account, row as AccountUsage);
+      }
+    }
+  } catch { /* no prior */ }
+  return prior;
+}
+
+function lastGoodFrom(prior: AccountUsage | undefined): LastGoodUsage | undefined {
+  if (!prior?.ok || prior.status) return undefined;
+  return {
+    ...(prior.five_hour_pct !== undefined ? { five_hour_pct: prior.five_hour_pct } : {}),
+    ...(prior.seven_day_pct !== undefined ? { seven_day_pct: prior.seven_day_pct } : {}),
+    ...(prior.five_hour_resets ? { five_hour_resets: prior.five_hour_resets } : {}),
+    ...(prior.seven_day_resets ? { seven_day_resets: prior.seven_day_resets } : {}),
+    ...(prior.extra_usage ? { extra_usage: prior.extra_usage } : {}),
+    fetched_at: prior.fetched_at,
+    ...(prior.credential_source ? { credential_source: prior.credential_source } : {}),
+    ...(prior.credential_fingerprint ? { credential_fingerprint: prior.credential_fingerprint } : {}),
+  };
+}
+
+function hasPassedReset(reset: string | undefined, fetchedAt: string): boolean {
+  if (!reset) return false;
+  const resetAt = Date.parse(reset);
+  const fetched = Date.parse(fetchedAt);
+  return !Number.isNaN(resetAt) && !Number.isNaN(fetched) && resetAt <= fetched;
+}
+
+function withinDeltaCycle(prior: AccountUsage, current: AccountUsage): boolean {
+  const prev = Date.parse(prior.fetched_at);
+  const now = Date.parse(current.fetched_at);
+  if (Number.isNaN(prev) || Number.isNaN(now)) return false;
+  const elapsed = now - prev;
+  return elapsed >= 0 && elapsed <= DELTA_SANITY_MAX_CYCLE_MS;
+}
+
+function markSuspect(usage: AccountUsage, prior: AccountUsage, reason: string): AccountUsage {
+  return {
+    ...usage,
+    ok: false,
+    status: 'suspect',
+    suspect: true,
+    error: `suspect-read: ${reason}`,
+    last_good: lastGoodFrom(prior),
+  };
+}
+
+function applyUsageGuards(usages: AccountUsage[], prior: Map<string, AccountUsage>): AccountUsage[] {
+  return usages.map((usage) => {
+    const previous = prior.get(usage.account);
+    const lastGood = lastGoodFrom(previous);
+    if (!usage.ok) {
+      return lastGood ? { ...usage, last_good: lastGood } : usage;
+    }
+    if (!previous?.ok || !withinDeltaCycle(previous, usage)) {
+      return usage;
+    }
+
+    const sevenRise = usage.seven_day_pct !== undefined && previous.seven_day_pct !== undefined
+      ? usage.seven_day_pct - previous.seven_day_pct
+      : 0;
+    if (sevenRise > SEVEN_DAY_RISE_SUSPECT_POINTS) {
+      return markSuspect(usage, previous, `7d rose ${sevenRise} points within ${DELTA_SANITY_MAX_CYCLE_MS / 60_000}m`);
+    }
+
+    if (
+      previous.five_hour_pct !== undefined &&
+      previous.five_hour_pct > 0 &&
+      usage.five_hour_pct === 0 &&
+      !hasPassedReset(previous.five_hour_resets, usage.fetched_at)
+    ) {
+      return markSuspect(usage, previous, '5h dropped to zero before prior reset timestamp passed');
+    }
+
+    if (
+      previous.seven_day_pct !== undefined &&
+      previous.seven_day_pct > 0 &&
+      usage.seven_day_pct === 0 &&
+      !hasPassedReset(previous.seven_day_resets, usage.fetched_at)
+    ) {
+      return markSuspect(usage, previous, '7d dropped to zero before prior reset timestamp passed');
+    }
+
+    return usage;
+  });
 }
 
 /**
@@ -756,20 +963,25 @@ export function setAccountBenched(ctxRoot: string, accountName: string, benched:
  * persist extra-usage state. Accounts without a credential are reported
  * (visible gap) rather than silently skipped.
  */
-export async function checkAllUsage(ctxRoot: string): Promise<AllUsageResult> {
+export async function checkAllUsage(
+  ctxRoot: string,
+  blobReader: () => KeychainBlob | null = readKeychainBlob,
+): Promise<AllUsageResult> {
   const store = requireStore(ctxRoot);
   const now = new Date().toISOString();
   const names = Object.keys(store.accounts);
+  const priorUsage = loadPriorUsage(ctxRoot);
   const usages: AccountUsage[] = [];
   for (const name of names) {
     const usage = store.accounts[name].usage_credential
-      ? await fetchAccountUsage(ctxRoot, name)
+      ? await fetchAccountUsage(ctxRoot, name, blobReader)
       : { account: name, ok: false, error: 'no usage_credential', fetched_at: now };
     // Surface the account's benched flag onto the usage so the (pure) alert
     // evaluator can suppress threshold edges by DATA, not a code const.
     usage.benched = store.accounts[name].benched === true;
     usages.push(usage);
   }
+  const guardedUsages = applyUsageGuards(usages, priorUsage);
 
   // Edge-triggered alert dedup: load the per-account last-alerted state so a
   // persistent condition does not re-fire every (now 15-min) cycle.
@@ -784,7 +996,7 @@ export async function checkAllUsage(ctxRoot: string): Promise<AllUsageResult> {
     const email = store.accounts[name].email;
     if (email) display[name] = `${email} (${name})`;
   }
-  const { alerts, nextState } = evaluateAlerts(usages, prevState, now, display);
+  const { alerts, nextState } = evaluateAlerts(guardedUsages, prevState, now, display);
   ensureDir(join(ctxRoot, 'state', 'usage'));
   atomicWriteSync(statePath, JSON.stringify(nextState, null, 2));
 
@@ -794,8 +1006,8 @@ export async function checkAllUsage(ctxRoot: string): Promise<AllUsageResult> {
   // there is no shape conflict. The 15-min launchd check-all-usage run
   // refreshes it. Usage numbers + reset times + extra-usage state only - never a token.
   atomicWriteSync(
-    join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'),
-    JSON.stringify({ generated_at: now, accounts: usages }, null, 2),
+    multiAccountUsagePath(ctxRoot),
+    JSON.stringify({ generated_at: now, accounts: guardedUsages }, null, 2),
   );
 
   // Fold the Codex (ChatGPT plan) usage into the same 15-min write so it rides
@@ -812,5 +1024,5 @@ export async function checkAllUsage(ctxRoot: string): Promise<AllUsageResult> {
     }
   } catch { /* Codex usage is best-effort; never break the Claude write */ }
 
-  return { accounts: usages, alerts };
+  return { accounts: guardedUsages, alerts };
 }

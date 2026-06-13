@@ -290,6 +290,20 @@ describe('makeCapacityGate', () => {
     expectNoTokenLeak();
   });
 
+  it('fails open when every usage row is an impossible read', () => {
+    writeUsage(root, [
+      { ...usageAccount('A', 0, true, false), status: 'impossible-read', error: 'impossible-read: five_hour+seven_day utilization without resets_at' },
+      { ...usageAccount('B', 0, true, false), status: 'impossible-read', error: 'impossible-read: five_hour+seven_day utilization without resets_at' },
+    ]);
+    writeAccounts(root, baseAccounts());
+
+    const decision = gate()(cron());
+
+    expect(decision.defer).toBe(false);
+    expect(logs.join('\n')).toContain('usage account A unavailable');
+    expectNoTokenLeak();
+  });
+
   it('fails open when .env token matches no account', () => {
     writeEnv(agentDir, 'sk-ant-not-in-accounts');
     writeUsage(root, [usageAccount('A', 100, true)]);
