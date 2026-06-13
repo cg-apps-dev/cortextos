@@ -4,6 +4,8 @@ import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 
+const DASHBOARD_NODE_BIN = '/opt/homebrew/Cellar/node/25.9.0_1/bin';
+
 export const ecosystemCommand = new Command('ecosystem')
   .option('--instance <id>', 'Instance ID', 'default')
   .option('--org <name>', 'Organization name (auto-detected if not specified)')
@@ -110,6 +112,8 @@ export const ecosystemCommand = new Command('ecosystem')
       cwd: ${JSON.stringify(dashboardDir)},
       env: {
         PORT: process.env.PORT || '3000',
+        DASHBOARD_NODE_BIN: ${JSON.stringify(DASHBOARD_NODE_BIN)},
+        PATH: ${JSON.stringify(DASHBOARD_NODE_BIN)} + ':' + (process.env.PATH || ''),
       },
       // Dashboard reads its real config from dashboard/.env.local — populated
       // by /onboarding Phase 7. PM2 just supervises the dashboard process.
