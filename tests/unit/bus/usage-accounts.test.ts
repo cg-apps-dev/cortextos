@@ -128,8 +128,103 @@ describe('usage-accounts', () => {
       }, NOW);
       expect(u.ok).toBe(false);
       expect(u.status).toBe('impossible-read');
-      expect(u.error).toContain('five_hour');
+      expect(u.error).toBe('impossible-read: five_hour utilization without resets_at');
       expect(JSON.stringify(u)).not.toContain('sk-ant');
+    });
+
+    it('marks a full five-hour cap with raw zero seven-day usage as an impossible subset read', () => {
+      const u = parseUsageResponse('cg-team-seat', {
+        five_hour: { utilization: 100, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: '2026-06-15T00:00:00Z' },
+      }, NOW);
+      expect(u.ok).toBe(false);
+      expect(u.status).toBe('impossible-read');
+      expect(u.error).toContain('subset-invariant');
+      expect(u.five_hour_pct).toBe(100);
+      expect(u.seven_day_pct).toBe(0);
+    });
+
+    it('does not mark raw nonzero seven-day usage that rounds to zero as impossible', () => {
+      const u = parseUsageResponse('fresh-window', {
+        five_hour: { utilization: 100, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0.3, resets_at: '2026-06-15T00:00:00Z' },
+      }, NOW);
+      expect(u.ok).toBe(true);
+      expect(u.status).toBeUndefined();
+      expect(u.five_hour_pct).toBe(100);
+      expect(u.seven_day_pct).toBe(0);
+    });
+
+    it('keeps a full five-hour cap with raw nonzero seven-day usage legitimate', () => {
+      const u = parseUsageResponse('real-cap', {
+        five_hour: { utilization: 100, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 3, resets_at: '2026-06-15T00:00:00Z' },
+      }, NOW);
+      expect(u.ok).toBe(true);
+      expect(u.status).toBeUndefined();
+      expect(u.five_hour_pct).toBe(100);
+      expect(u.seven_day_pct).toBe(3);
+    });
+
+    it('does not mark partial five-hour usage with raw zero seven-day usage as impossible', () => {
+      const u = parseUsageResponse('partial-5h', {
+        five_hour: { utilization: 50, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: '2026-06-15T00:00:00Z' },
+      }, NOW);
+      expect(u.ok).toBe(true);
+      expect(u.status).toBeUndefined();
+      expect(u.five_hour_pct).toBe(50);
+      expect(u.seven_day_pct).toBe(0);
+    });
+
+    it('does not mark just-under-full five-hour usage with raw zero seven-day usage as impossible', () => {
+      const u = parseUsageResponse('under-full-5h', {
+        five_hour: { utilization: 99.9, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: '2026-06-15T00:00:00Z' },
+      }, NOW);
+      expect(u.ok).toBe(true);
+      expect(u.status).toBeUndefined();
+      expect(u.five_hour_pct).toBe(100);
+      expect(u.seven_day_pct).toBe(0);
+    });
+
+    it('keeps all-idle null-reset windows legitimate', () => {
+      const u = parseUsageResponse('all-idle', {
+        five_hour: { utilization: 0, resets_at: null },
+        seven_day: { utilization: 0, resets_at: null },
+      }, NOW);
+      expect(u.ok).toBe(true);
+      expect(u.status).toBeUndefined();
+      expect(u.five_hour_pct).toBe(0);
+      expect(u.seven_day_pct).toBe(0);
+    });
+
+    it('does not mark missing raw utilization as a subset impossible read', () => {
+      const missingFiveHour = parseUsageResponse('missing-5h', {
+        five_hour: { resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: '2026-06-15T00:00:00Z' },
+      }, NOW);
+      const missingSevenDay = parseUsageResponse('missing-7d', {
+        five_hour: { utilization: 100, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { resets_at: '2026-06-15T00:00:00Z' },
+      }, NOW);
+
+      expect(missingFiveHour.ok).toBe(true);
+      expect(missingFiveHour.status).toBeUndefined();
+      expect(missingSevenDay.ok).toBe(true);
+      expect(missingSevenDay.status).toBeUndefined();
+    });
+
+    it('joins reset metadata and subset impossible-read reasons distinctly', () => {
+      const u = parseUsageResponse('double-impossible', {
+        five_hour: { utilization: 100, resets_at: null },
+        seven_day: { utilization: 0, resets_at: '2026-06-15T00:00:00Z' },
+      }, NOW);
+      expect(u.ok).toBe(false);
+      expect(u.status).toBe('impossible-read');
+      expect(u.error).toBe(
+        'impossible-read: five_hour utilization without resets_at; five_hour>=100 with seven_day==0 (subset-invariant violation)',
+      );
     });
 
     it('treats zero utilization with null reset as a VALID IDLE window (not impossible)', () => {

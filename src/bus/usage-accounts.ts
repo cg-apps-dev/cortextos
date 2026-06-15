@@ -507,13 +507,23 @@ export function parseUsageResponse(account: string, data: unknown, now: string):
   if (typeof d.seven_day?.utilization === 'number' && d.seven_day.utilization > 0 && d.seven_day.resets_at == null) {
     invalidWindows.push('seven_day');
   }
+  const subsetInvariantViolated =
+    typeof d.five_hour?.utilization === 'number' &&
+    typeof d.seven_day?.utilization === 'number' &&
+    d.five_hour.utilization >= 100 &&
+    d.seven_day.utilization === 0;
+  const impossible = invalidWindows.length > 0 || subsetInvariantViolated;
+  const impossibleReasons = [
+    ...(invalidWindows.length > 0 ? [`${invalidWindows.join('+')} utilization without resets_at`] : []),
+    ...(subsetInvariantViolated ? ['five_hour>=100 with seven_day==0 (subset-invariant violation)'] : []),
+  ];
   const usage: AccountUsage = {
     account,
-    ok: invalidWindows.length === 0,
-    ...(invalidWindows.length > 0
+    ok: !impossible,
+    ...(impossible
       ? {
           status: 'impossible-read' as const,
-          error: `impossible-read: ${invalidWindows.join('+')} utilization without resets_at`,
+          error: `impossible-read: ${impossibleReasons.join('; ')}`,
         }
       : {}),
     five_hour_pct: pct(d.five_hour?.utilization),
