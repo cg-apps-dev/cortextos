@@ -24,6 +24,7 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
   haiku: { inputPerMillion: 0.8, outputPerMillion: 4, cacheWritePerMillion: 1.00, cacheReadPerMillion: 0.08 },
   // gpt-5-codex: OpenAI list pricing as of 2026-01. cache write n/a (no separate
   // write cost on cached input). Update when codex pricing changes upstream.
+  'gpt-5.5': { inputPerMillion: 5, outputPerMillion: 30, cacheWritePerMillion: 0, cacheReadPerMillion: 0.50 },
   'gpt-5-codex': { inputPerMillion: 1.25, outputPerMillion: 10, cacheWritePerMillion: 0, cacheReadPerMillion: 0.125 },
 };
 
@@ -32,10 +33,11 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
  * opus/sonnet/haiku; gpt-5-codex (and bare "codex" / "gpt-5" variants) map to
  * gpt-5-codex pricing rather than silently defaulting to sonnet.
  */
-function resolvePricingKey(model: string): string {
+export function resolvePricingKey(model: string): string {
   const lower = model.toLowerCase();
   if (lower.includes('opus')) return 'opus';
   if (lower.includes('haiku')) return 'haiku';
+  if (lower.includes('gpt-5.5')) return 'gpt-5.5';
   if (lower.includes('codex') || lower.includes('gpt-5')) return 'gpt-5-codex';
   // Default to sonnet for all other claude models
   return 'sonnet';
@@ -253,7 +255,7 @@ interface CodexTokenEntry {
  * written by CodexAppServerPTY.appendCodexTokenLog.
  */
 function parseCodexJsonlFile(filePath: string, agent: string, org: string): CostEntry[] {
-  const entries: CostEntry[] = [];
+  const latestBySession = new Map<string, CodexTokenEntry>();
   let content: string;
   try {
     content = fs.readFileSync(filePath, 'utf-8');
@@ -262,9 +264,34 @@ function parseCodexJsonlFile(filePath: string, agent: string, org: string): Cost
   }
 
   const lines = content.split('\n').filter((l) => l.trim());
-  for (const line of lines) {
+  lines.forEach((line, lineIndex) => {
     try {
       const raw = JSON.parse(line) as CodexTokenEntry;
+      const model = raw.model;
+      if (!model) return;
+
+      const inputTokens = raw.input_tokens ?? 0;
+      const outputTokens = raw.output_tokens ?? 0;
+      const cacheReadTokens = raw.cache_read_tokens ?? 0;
+      const cacheWriteTokens = raw.cache_write_tokens ?? 0;
+      if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0) return;
+
+      const sessionKey =
+        typeof raw.session_id === 'string' && raw.session_id.trim()
+          ? raw.session_id
+          : `__noid__:${lineIndex}`;
+      const existing = latestBySession.get(sessionKey);
+      if (!existing || inputTokens >= (existing.input_tokens ?? 0)) {
+        latestBySession.set(sessionKey, raw);
+      }
+    } catch {
+      // Skip malformed lines
+    }
+  });
+
+  const entries: CostEntry[] = [];
+  for (const raw of latestBySession.values()) {
+    try {
       const model = raw.model;
       if (!model) continue;
 
@@ -274,8 +301,9 @@ function parseCodexJsonlFile(filePath: string, agent: string, org: string): Cost
       const cacheWriteTokens = raw.cache_write_tokens ?? 0;
       if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0) continue;
 
-      const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
-      const costUsd = calculateCost(model, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens);
+      const nonCachedInputTokens = Math.max(0, inputTokens - cacheReadTokens);
+      const totalTokens = inputTokens + outputTokens + cacheWriteTokens;
+      const costUsd = calculateCost(model, nonCachedInputTokens, outputTokens, cacheWriteTokens, cacheReadTokens);
       const timestamp = raw.timestamp ?? new Date().toISOString();
 
       entries.push({

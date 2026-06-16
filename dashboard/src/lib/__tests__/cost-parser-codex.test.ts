@@ -25,11 +25,13 @@ process.env.CTX_ROOT = tmpDir;
 process.env.CTX_FRAMEWORK_ROOT = tmpDir;
 
 let calculateCost: typeof import('../cost-parser')['calculateCost'];
+let resolvePricingKey: typeof import('../cost-parser')['resolvePricingKey'];
 let scanCodexLogsCosts: typeof import('../cost-parser')['scanCodexLogsCosts'];
 
 beforeAll(async () => {
   const mod = await import('../cost-parser');
   calculateCost = mod.calculateCost;
+  resolvePricingKey = mod.resolvePricingKey;
   scanCodexLogsCosts = mod.scanCodexLogsCosts;
 
   const cfgDir = path.join(tmpDir, 'config');
@@ -74,6 +76,12 @@ describe('codex pricing — gpt-5-codex pricing key resolution', () => {
     expect(calculateCost('gpt-5', 1_000_000, 0)).toBeCloseTo(1.25, 5);
   });
 
+  it('gpt-5.5 resolves before legacy gpt-5-codex pricing', () => {
+    expect(calculateCost('gpt-5.5', 1_000_000, 0)).toBeCloseTo(5, 5);
+    expect(calculateCost('gpt-5.5', 0, 1_000_000)).toBeCloseTo(30, 5);
+    expect(calculateCost('gpt-5.5', 0, 0, 0, 1_000_000)).toBeCloseTo(0.5, 5);
+  });
+
   it('output token pricing applies $10/M (10× input)', () => {
     const cost = calculateCost('gpt-5-codex', 0, 100_000);
     expect(cost).toBeCloseTo(1.0, 5);
@@ -94,6 +102,16 @@ describe('codex pricing — gpt-5-codex pricing key resolution', () => {
     // = 0.125 + 0.50 + 0.025 = 0.65
     const cost = calculateCost('gpt-5-codex', 100_000, 50_000, 0, 200_000);
     expect(cost).toBeCloseTo(0.65, 5);
+  });
+
+  it('resolvePricingKey maps codex and claude models without collisions', () => {
+    expect(resolvePricingKey('gpt-5.5')).toBe('gpt-5.5');
+    expect(resolvePricingKey('gpt-5-codex')).toBe('gpt-5-codex');
+    expect(resolvePricingKey('gpt-5')).toBe('gpt-5-codex');
+    expect(resolvePricingKey('codex')).toBe('gpt-5-codex');
+    expect(resolvePricingKey('claude-opus-4-8')).toBe('opus');
+    expect(resolvePricingKey('sonnet')).toBe('sonnet');
+    expect(resolvePricingKey('claude-3-5-haiku')).toBe('haiku');
   });
 });
 
@@ -121,7 +139,7 @@ describe('codex JSONL parsing — flat schema shape', () => {
     expect(e.timestamp).toBe('2026-05-08T01:00:00Z');
     expect(e.input_tokens).toBe(1_000);
     expect(e.output_tokens).toBe(500);
-    expect(e.total_tokens).toBe(1_600);
+    expect(e.total_tokens).toBe(1_500);
     expect(e.source_file).toContain('codex-tokens.jsonl');
   });
 
@@ -138,13 +156,87 @@ describe('codex JSONL parsing — flat schema shape', () => {
     }
   });
 
-  it('multi-turn JSONL emits one CostEntry per turn (no aggregation)', () => {
+  it('dedupes cumulative snapshots to one CostEntry per session', () => {
     writeCodexLog('codex-alpha', [
-      { timestamp: '2026-05-08T01:00:00Z', model: 'gpt-5-codex', input_tokens: 100, output_tokens: 50, turn_id: 'turn-1' },
-      { timestamp: '2026-05-08T01:01:00Z', model: 'gpt-5-codex', input_tokens: 200, output_tokens: 75, turn_id: 'turn-2' },
-      { timestamp: '2026-05-08T01:02:00Z', model: 'gpt-5-codex', input_tokens: 300, output_tokens: 100, turn_id: 'turn-3' },
+      {
+        timestamp: '2026-05-08T01:00:00Z',
+        model: 'gpt-5-codex',
+        input_tokens: 100_000_000,
+        output_tokens: 10_000_000,
+        session_id: 'thread-A',
+        turn_id: 'turn-1',
+      },
+      {
+        timestamp: '2026-05-08T01:01:00Z',
+        model: 'gpt-5-codex',
+        input_tokens: 250_000_000,
+        output_tokens: 20_000_000,
+        session_id: 'thread-A',
+        turn_id: 'turn-2',
+      },
+      {
+        timestamp: '2026-05-08T01:02:00Z',
+        model: 'gpt-5-codex',
+        input_tokens: 400_000_000,
+        output_tokens: 30_000_000,
+        session_id: 'thread-A',
+        turn_id: 'turn-3',
+      },
     ]);
-    expect(scanCodexLogsCosts()).toHaveLength(3);
+    const entries = scanCodexLogsCosts();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].timestamp).toBe('2026-05-08T01:02:00Z');
+    expect(entries[0].input_tokens).toBe(400_000_000);
+    expect(entries[0].output_tokens).toBe(30_000_000);
+    expect(entries[0].cost_usd).toBeCloseTo(800, 5);
+    expect(entries[0].cost_usd).not.toBeCloseTo(1_237.5, 5);
+  });
+
+  it('keeps separate final snapshots for two sessions', () => {
+    writeCodexLog('codex-alpha', [
+      {
+        timestamp: '2026-05-08T01:00:00Z',
+        model: 'gpt-5-codex',
+        input_tokens: 100,
+        output_tokens: 10,
+        session_id: 'thread-A',
+      },
+      {
+        timestamp: '2026-05-08T01:01:00Z',
+        model: 'gpt-5-codex',
+        input_tokens: 200,
+        output_tokens: 20,
+        session_id: 'thread-A',
+      },
+      {
+        timestamp: '2026-05-08T02:00:00Z',
+        model: 'gpt-5-codex',
+        input_tokens: 300,
+        output_tokens: 30,
+        session_id: 'thread-B',
+      },
+      {
+        timestamp: '2026-05-08T02:01:00Z',
+        model: 'gpt-5-codex',
+        input_tokens: 400,
+        output_tokens: 40,
+        session_id: 'thread-B',
+      },
+    ]);
+    const entries = scanCodexLogsCosts().sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    expect(entries).toHaveLength(2);
+    expect(entries.map((e) => e.input_tokens)).toEqual([200, 400]);
+    expect(entries.map((e) => e.timestamp)).toEqual(['2026-05-08T01:01:00Z', '2026-05-08T02:01:00Z']);
+  });
+
+  it('does not collapse records with missing session_id', () => {
+    writeCodexLog('codex-alpha', [
+      { timestamp: '2026-05-08T01:00:00Z', model: 'gpt-5-codex', input_tokens: 100, output_tokens: 50 },
+      { timestamp: '2026-05-08T01:01:00Z', model: 'gpt-5-codex', input_tokens: 200, output_tokens: 75 },
+    ]);
+    const entries = scanCodexLogsCosts().sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    expect(entries).toHaveLength(2);
+    expect(entries.map((e) => e.input_tokens)).toEqual([100, 200]);
   });
 
   it('multi-agent walk produces entries for every codex agent with logs', () => {
@@ -179,6 +271,59 @@ describe('codex JSONL parsing — flat schema shape', () => {
     const e = scanCodexLogsCosts()[0];
     expect(e.cost_usd).toBeCloseTo(2.25, 5);
     expect(e.cost_usd).toBeCloseTo(calculateCost(e.model, e.input_tokens, e.output_tokens), 5);
+  });
+
+  it('decomposes gpt-5.5 cache reads without double-counting input', () => {
+    writeCodexLog('codex-alpha', [
+      {
+        timestamp: '2026-05-08T01:00:00Z',
+        model: 'gpt-5.5',
+        input_tokens: 296_000_000,
+        output_tokens: 333_000,
+        cache_read_tokens: 291_000_000,
+        cache_write_tokens: 0,
+        session_id: 'thread-A',
+      },
+    ]);
+    const e = scanCodexLogsCosts()[0];
+    expect(e.input_tokens).toBe(296_000_000);
+    expect(e.total_tokens).toBe(296_333_000);
+    expect(e.cost_usd).toBeCloseTo(180.49, 5);
+    expect(e.cost_usd).not.toBeCloseTo(1_635.49, 5);
+    expect(e.cost_usd).not.toBeCloseTo(1_489.99, 5);
+  });
+
+  it('decomposes legacy gpt-5-codex cache reads with legacy rates', () => {
+    writeCodexLog('codex-alpha', [
+      {
+        timestamp: '2026-05-08T01:00:00Z',
+        model: 'gpt-5-codex',
+        input_tokens: 10_000_000,
+        output_tokens: 1_000_000,
+        cache_read_tokens: 8_000_000,
+        cache_write_tokens: 500_000,
+        session_id: 'thread-A',
+      },
+    ]);
+    const e = scanCodexLogsCosts()[0];
+    expect(e.cost_usd).toBeCloseTo(13.5, 5);
+    expect(e.total_tokens).toBe(11_500_000);
+  });
+
+  it('excludes cache_read from total_tokens because it is a subset of input', () => {
+    writeCodexLog('codex-alpha', [
+      {
+        timestamp: '2026-05-08T01:00:00Z',
+        model: 'gpt-5.5',
+        input_tokens: 1_000,
+        output_tokens: 500,
+        cache_read_tokens: 800,
+        cache_write_tokens: 25,
+        session_id: 'thread-A',
+      },
+    ]);
+    const e = scanCodexLogsCosts()[0];
+    expect(e.total_tokens).toBe(1_525);
   });
 });
 

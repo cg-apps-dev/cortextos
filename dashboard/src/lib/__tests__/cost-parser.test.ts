@@ -70,6 +70,11 @@ describe('calculateCost — gpt-5-codex pricing', () => {
     expect(cost).toBeCloseTo(1.25, 5);
   });
 
+  it('uses gpt-5.5 pricing before legacy gpt-5-codex matching', () => {
+    const cost = calculateCost('gpt-5.5', 1_000_000, 100_000);
+    expect(cost).toBeCloseTo(8, 5);
+  });
+
   it('still maps opus correctly (no regression)', () => {
     const cost = calculateCost('claude-3-opus-20240229', 1_000_000, 0);
     expect(cost).toBeCloseTo(15, 5);
@@ -116,7 +121,7 @@ describe('scanCodexLogsCosts', () => {
     expect(entries[0].source_file).toContain('codex-tokens.jsonl');
   });
 
-  it('parses multiple turns from one file', () => {
+  it('dedupes cumulative codex snapshots from one session', () => {
     writeCodexJsonl('codex-agent-1', [
       {
         timestamp: '2026-05-08T01:00:00Z',
@@ -139,7 +144,11 @@ describe('scanCodexLogsCosts', () => {
         turn_id: 'turn-2',
       },
     ]);
-    expect(scanCodexLogsCosts()).toHaveLength(2);
+    const entries = scanCodexLogsCosts();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].timestamp).toBe('2026-05-08T01:01:00Z');
+    expect(entries[0].input_tokens).toBe(200);
+    expect(entries[0].output_tokens).toBe(75);
   });
 
   it('walks logs from multiple agents', () => {
