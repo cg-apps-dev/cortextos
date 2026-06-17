@@ -214,6 +214,36 @@ function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_messages_org ON messages(org);
     CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
   `);
+
+  migrateCostEntriesUniqueIndex(db);
+}
+
+export function migrateCostEntriesUniqueIndex(db: Database.Database): void {
+  const existingIndex = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_cost_entries_unique'",
+    )
+    .get();
+
+  if (existingIndex) return;
+
+  const migrate = db.transaction(() => {
+    db.prepare("DELETE FROM cost_entries WHERE source_file LIKE '%codex-tokens%'").run();
+    db.prepare(`
+      DELETE FROM cost_entries
+      WHERE id NOT IN (
+        SELECT MIN(id)
+        FROM cost_entries
+        GROUP BY agent, model, source_file, timestamp
+      )
+    `).run();
+    db.prepare(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_cost_entries_unique
+      ON cost_entries(agent, model, source_file, timestamp)
+    `).run();
+  });
+
+  migrate();
 }
 
 // globalThis singleton survives Next.js hot reload
