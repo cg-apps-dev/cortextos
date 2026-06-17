@@ -52,3 +52,10 @@ npm test
 - The authoritative ABI check is an instantiate test under that child node: `require("better-sqlite3")`, `new Database(":memory:")`, then a simple query. A bare require is not enough.
 - Use `scripts/check-native-abi.sh --child` to lsof the live Next child and run the instantiate test under its node. Use `scripts/check-native-abi.sh --fix` only when you intentionally want to rebuild for the current shell node.
 - 2026-06-13 incident note: treating the Node-22 parent as the dashboard runtime led to an ABI-127 rebuild that crashed the dashboard. The child process was Node 25.
+
+## Dashboard cost data (cost_entries) - unique index is REQUIRED
+
+- The dashboard SQLite DB lives OUTSIDE the repo, under the instance state dir: `~/.cortextos/<instance>/dashboard/cortextos-default.db` (e.g. `default`).
+- `cost_entries` dedups ingestion via `INSERT OR IGNORE`, which is a NO-OP without a UNIQUE constraint. The required index is `idx_cost_entries_unique(agent,model,source_file,timestamp)`, created by `migrateCostEntriesUniqueIndex` in `dashboard/src/lib/db.ts` (guarded, idempotent, wired into `initializeSchema`).
+- WITHOUT that index, every `syncCosts` re-inserts all rows -> millions of duplicate rows -> all cost aggregations (`getDailyCosts`/`getCostByModel`/`getCostByAgent`/fleet) SUM raw and inflate ~147x. Incident 2026-06-16: `cost_entries` reached 6.03M rows / $7.42M total before the dedup (true distinct ~$50.6K).
+- Do NOT remove the migration call or recreate `cost_entries` via a bare schema reset without restoring the index. Codex token logs are CUMULATIVE-per-session (parser dedups to the last snapshot); Claude transcripts are per-turn/additive.

@@ -144,6 +144,12 @@ function initializeSchema(db: Database.Database): void {
       uptime_seconds INTEGER
     );
 
+    -- REQUIRES the unique index idx_cost_entries_unique(agent,model,source_file,
+    -- timestamp), created by migrateCostEntriesUniqueIndex below. Cost ingestion
+    -- dedups via INSERT OR IGNORE, which is a NO-OP without that unique constraint
+    -- -> every syncCosts re-inserts all rows -> millions of duplicates -> the cost
+    -- analytics inflate ~147x (incident 2026-06-16). DO NOT remove the migration
+    -- call or recreate this table without ensuring the index is restored.
     CREATE TABLE IF NOT EXISTS cost_entries (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp TEXT NOT NULL,
@@ -218,6 +224,16 @@ function initializeSchema(db: Database.Database): void {
   migrateCostEntriesUniqueIndex(db);
 }
 
+/**
+ * REQUIRED data-integrity migration for cost_entries. The unique index
+ * idx_cost_entries_unique(agent,model,source_file,timestamp) is what makes the
+ * INSERT OR IGNORE in cost ingestion actually dedup; without it, every syncCosts
+ * re-inserts all rows and the table grows without bound (incident 2026-06-16:
+ * 6.03M rows / cost analytics inflated ~147x). Guarded one-time (skips once the
+ * index exists), idempotent. Must stay wired into initializeSchema so a schema
+ * reset re-establishes the index. Do NOT drop this without replacing the dedup
+ * mechanism.
+ */
 export function migrateCostEntriesUniqueIndex(db: Database.Database): void {
   const existingIndex = db
     .prepare(
