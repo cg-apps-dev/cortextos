@@ -72,7 +72,7 @@ export interface LastGoodUsage {
 export interface AccountUsage {
   account: string;
   ok: boolean;
-  status?: 'impossible-read' | 'suspect';
+  status?: 'impossible-read' | 'suspect' | 'benched';
   suspect?: boolean;
   error?: string;              // status/short reason only - never a token
   five_hour_pct?: number;      // 0-100
@@ -1196,8 +1196,9 @@ export function setAccountBenched(ctxRoot: string, accountName: string, benched:
 }
 
 /**
- * Fetch usage for EVERY account that has a usage_credential, evaluate alerts,
- * persist extra-usage state. Accounts without a credential are reported
+ * Fetch usage for every active account that has a usage_credential, evaluate
+ * alerts, persist extra-usage state. Benched accounts are inactive and do not
+ * perform live reads. Active accounts without a credential are reported
  * (visible gap) rather than silently skipped.
  */
 export async function checkAllUsage(
@@ -1210,12 +1211,29 @@ export async function checkAllUsage(
   const priorUsage = loadPriorUsage(ctxRoot);
   const usages: AccountUsage[] = [];
   for (const name of names) {
-    const usage = store.accounts[name].usage_credential
+    const account = store.accounts[name];
+    const isBenched = account.benched === true;
+    if (isBenched) {
+      const lastGood = priorUsage.get(name)?.last_good;
+      usages.push({
+        account: name,
+        ok: true,
+        benched: true,
+        status: 'benched',
+        fetched_at: now,
+        ...(lastGood?.five_hour_pct !== undefined ? { five_hour_pct: lastGood.five_hour_pct } : {}),
+        ...(lastGood?.seven_day_pct !== undefined ? { seven_day_pct: lastGood.seven_day_pct } : {}),
+        ...(lastGood ? { last_good: lastGood } : {}),
+      });
+      continue;
+    }
+
+    const usage = account.usage_credential
       ? await fetchAccountUsage(ctxRoot, name, blobReader)
       : { account: name, ok: false, error: 'no usage_credential', fetched_at: now };
     // Surface the account's benched flag onto the usage so the (pure) alert
     // evaluator can suppress threshold edges by DATA, not a code const.
-    usage.benched = store.accounts[name].benched === true;
+    usage.benched = false;
     usages.push(usage);
   }
   const guardedUsages = applyUsageGuards(usages, priorUsage);

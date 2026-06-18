@@ -649,10 +649,10 @@ describe('usage-accounts', () => {
   });
 
   describe('usage monitor hardening', () => {
-    function seedAccounts(accounts: Record<string, { source: 'keychain-capture' | 'pkce-authorize'; token: string; benched?: boolean }>) {
+    function seedAccounts(accounts: Record<string, { source?: 'keychain-capture' | 'pkce-authorize'; token?: string; benched?: boolean }>) {
       const shaped: Record<string, unknown> = {};
       for (const [name, account] of Object.entries(accounts)) {
-        shaped[name] = {
+        const row: Record<string, unknown> = {
           label: name,
           access_token: '',
           refresh_token: '',
@@ -661,15 +661,18 @@ describe('usage-accounts', () => {
           five_hour_utilization: 0,
           seven_day_utilization: 0,
           benched: account.benched,
-          usage_credential: {
+        };
+        if (account.token && account.source) {
+          row.usage_credential = {
             access_token: account.token,
             refresh_token: 'rt',
             expires_at: Date.now() + 3600_000,
             scopes: ['user:profile'],
             source: account.source,
             captured_at: NOW,
-          },
-        };
+          };
+        }
+        shaped[name] = row;
       }
       atomicWriteSync(join(ctxRoot, 'state', 'oauth', 'accounts.json'), JSON.stringify({
         active: Object.keys(accounts)[0],
@@ -695,6 +698,10 @@ describe('usage-accounts', () => {
 
     function diagnosticsPath(): string {
       return join(ctxRoot, 'state', 'usage', 'diagnostics.jsonl');
+    }
+
+    function multiAccountUsagePath(): string {
+      return join(ctxRoot, 'state', 'usage', 'multi-account-usage.json');
     }
 
     function readDiagnostics(): Array<Record<string, unknown>> {
@@ -754,13 +761,168 @@ describe('usage-accounts', () => {
       expect(JSON.stringify(snapshot)).not.toContain('sk-ant');
     });
 
+    it('skips live fetches for benched accounts even when a keychain credential exists', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-11T03:05:00.000Z'));
+      seedAccounts({
+        'moonlight-max': { source: 'keychain-capture', token: 'sk-ant-oat01-MOONOLDSECRETwTOK', benched: true },
+      });
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      const blobReader = vi.fn(() => ({
+        accessToken: 'sk-ant-oat01-MOONLIVESECRETwTOK',
+        refreshToken: 'rt-live',
+        expiresAt: Date.now() + 3600_000,
+        scopes: ['user:profile'],
+      }));
+
+      const result = await checkAllUsage(ctxRoot, blobReader);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(blobReader).not.toHaveBeenCalled();
+      expect(result.accounts).toEqual([{
+        account: 'moonlight-max',
+        ok: true,
+        benched: true,
+        status: 'benched',
+        fetched_at: '2026-06-11T03:05:00.000Z',
+      }]);
+      expect(result.alerts).toEqual([]);
+    });
+
+    it('treats a benched account without a usage credential as ok inactive, not a fetch failure', async () => {
+      seedAccounts({
+        'moonlight-max': { benched: true },
+      });
+      const blobReader = vi.fn(() => null);
+
+      const result = await checkAllUsage(ctxRoot, blobReader);
+
+      expect(blobReader).not.toHaveBeenCalled();
+      expect(result.accounts[0]).toMatchObject({
+        account: 'moonlight-max',
+        ok: true,
+        benched: true,
+        status: 'benched',
+      });
+      expect(result.accounts[0].error).toBeUndefined();
+      expect(result.alerts).toEqual([]);
+      expect(existsSync(diagnosticsPath())).toBe(false);
+    });
+
+    it('does not emit USAGE-FETCH-FAIL for a benched no-credential account across confirmed-failure cycles', async () => {
+      seedAccounts({
+        'moonlight-max': { benched: true },
+      });
+      const alerts: string[] = [];
+
+      for (let i = 0; i < 4; i++) {
+        alerts.push(...(await checkAllUsage(ctxRoot)).alerts);
+      }
+
+      expect(alerts.some((alert) => alert.includes('USAGE-FETCH-FAIL moonlight-max'))).toBe(false);
+      const alertState = readJson(join(ctxRoot, 'state', 'usage', 'alert-state.json')) as {
+        'moonlight-max': { fail_consecutive: number; fetch_fail_alerted: boolean; fetch_failing: boolean };
+      };
+      expect(alertState['moonlight-max'].fail_consecutive).toBe(0);
+      expect(alertState['moonlight-max'].fetch_fail_alerted).toBe(false);
+      expect(alertState['moonlight-max'].fetch_failing).toBe(false);
+    });
+
+    it('carries stored last_good percentages onto a benched inactive row', async () => {
+      seedAccounts({
+        'moonlight-max': { benched: true },
+      });
+      atomicWriteSync(multiAccountUsagePath(), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'moonlight-max',
+          ok: false,
+          error: 'HTTP 403',
+          fetched_at: '2026-06-11T03:00:00.000Z',
+          last_good: {
+            five_hour_pct: 44,
+            seven_day_pct: 12,
+            fetched_at: '2026-06-11T02:45:00.000Z',
+          },
+        }],
+      }, null, 2));
+
+      const row = (await checkAllUsage(ctxRoot)).accounts[0];
+
+      expect(row).toMatchObject({
+        account: 'moonlight-max',
+        ok: true,
+        benched: true,
+        status: 'benched',
+        five_hour_pct: 44,
+        seven_day_pct: 12,
+        last_good: {
+          five_hour_pct: 44,
+          seven_day_pct: 12,
+          fetched_at: '2026-06-11T02:45:00.000Z',
+        },
+      });
+    });
+
+    it('omits live usage percentages on a benched inactive row when no last_good exists', async () => {
+      seedAccounts({
+        'moonlight-max': { benched: true },
+      });
+
+      const row = (await checkAllUsage(ctxRoot)).accounts[0];
+
+      expect(row.ok).toBe(true);
+      expect(row.status).toBe('benched');
+      expect(row.five_hour_pct).toBeUndefined();
+      expect(row.seven_day_pct).toBeUndefined();
+      expect(row.last_good).toBeUndefined();
+    });
+
+    it('still fetches non-benched accounts with credentials', async () => {
+      seedAccounts({
+        'icloud-max-20x': { source: 'pkce-authorize', token: 'sk-ant-oat01-PKCESECRETwTOK' },
+      });
+      const fetchMock = stubUsageResponses([{
+        five_hour: { utilization: 11, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 22, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      const row = (await checkAllUsage(ctxRoot)).accounts[0];
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(row).toMatchObject({
+        account: 'icloud-max-20x',
+        ok: true,
+        benched: false,
+        five_hour_pct: 11,
+        seven_day_pct: 22,
+      });
+      expect(row.status).toBeUndefined();
+    });
+
+    it('still reports non-benched accounts without credentials as fetch failures', async () => {
+      seedAccounts({
+        'icloud-max-20x': {},
+      });
+
+      const row = (await checkAllUsage(ctxRoot)).accounts[0];
+
+      expect(row).toMatchObject({
+        account: 'icloud-max-20x',
+        ok: false,
+        benched: false,
+        error: 'no usage_credential',
+      });
+    });
+
     it('keeps last_good when an impossible read replaces a prior good row', async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2026-06-11T03:05:00.000Z'));
       seedAccounts({
         'cg-team-seat': { source: 'pkce-authorize', token: 'sk-ant-oat01-PKCESECRETwTOK' },
       });
-      atomicWriteSync(join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'), JSON.stringify({
+      atomicWriteSync(multiAccountUsagePath(), JSON.stringify({
         generated_at: '2026-06-11T03:00:00.000Z',
         accounts: [{
           account: 'cg-team-seat',
