@@ -113,7 +113,7 @@ GUM_AMBIG_ALPHA = [
 # set (it's adam_accepted_risk) so it never flags. The copy-gate uses surface_handling.copy = HARD-REMOVE.
 # On any load failure, fall back to LAST_KNOWN_DECODE. The brain clone path is the per-run /tmp/brain default.
 LAST_KNOWN_DECODE = [
- r"\b(ships?|shipping|available|delivery)\b[^.\n]{0,20}\b(eligible|select|certain|legal)\s+states\b|\beligible states\b|\bstate list\b|\bwhere (it'?s )?legal\b",
+ r"\b(ships?|shipping|available|delivery|sold|sells?|buy|buys|order(s|ing)?|gets?|purchas\w+)\b[^.\n]{0,20}\b(eligible|select|certain|legal)\s+states\b|\beligible states\b|\bstate list\b|\bwhere (it'?s )?legal\b",
  r"\b(lab[- ]?tested|test results|third[- ]?party tested|independently tested|tested before it ships|certificate of analysis|\bcoa\b)\b",
  r"\bfarm[- ]?direct\b",
 ]

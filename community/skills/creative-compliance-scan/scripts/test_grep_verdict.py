@@ -25,12 +25,12 @@ CASES = [
     ("Family-grown quality, delivered.",   "PASS"),
     # clean
     ("Real quality delivered. 20% off.",   "PASS"),
-    # KNOWN-CURRENT-BEHAVIOR (orch-accepted 2026-06-23, NOT a miss): a de-code geo-framing with a
-    # NON-ship verb is NOT masked - mc's de_code_hard_remove keys "legal states" to ship/available/
-    # delivery verbs, so "sold in" leaves bare "legal" exposed -> hard-FAIL. Compliance-safe
-    # (over-enforce: FAIL-surfaced > PASS-missed). TODO(§-7 mc round): when mc widens the de-code
-    # verb set (sold/sells/buy/order/get), this FLIPS to "UNCLEAR" - update the expected value then.
-    ("Sold in legal states.",              "FAIL"),
+    # §-7 FIRED (brain #161 -> cannabis-coding-signals v1.1.4, 2026-06-23): mc WIDENED the de-code
+    # eligible-states verb set to include sold/sells/buy/buys/order/gets/purchas. So "sold in legal
+    # states" is now a MASKED de-code geo-framing -> UNCLEAR-for-Adam-review (was FAIL pre-widening).
+    # This case FLIPPED FAIL->UNCLEAR exactly as the prior TODO anticipated; LAST_KNOWN_DECODE[0]
+    # mirrors brain v1.1.4 (verb-widened, tail kept it'?s per brain-canonical).
+    ("Sold in legal states.",              "UNCLEAR"),
     # SPAN-LOCAL make-or-break (claude-dev review, 2026-06-23): a de-code span ("ships to legal
     # states" -> UNCLEAR/masked) CO-OCCURRING with a STANDALONE hard claim ("100% legal") in ONE
     # creative MUST still FAIL the row. The standalone legal sits OUTSIDE the masked de-code span,
