@@ -21,7 +21,7 @@ Extraction record fields:
   row, fileid, asset, product ("flower"|"gummies"), meta,
   vision_text, [vision_text2 optional], ocr_text, bud_plant, leaf_icon, low_conf
 """
-import json, re, sys
+import json, os, re, sys
 
 LEET = str.maketrans({'0':'o','1':'i','3':'e','4':'a','5':'s','@':'a','$':'s'})
 
@@ -53,12 +53,16 @@ HARD_ALPHA = [
  ("M-2 preroll/handroll", re.compile(r'\b(pre[- ]?rolls?|hands?[- ]?roll(s|ed|ing|er)?)\b')),
  ("M-2 strain", re.compile(r'\bstrains?\b')),
  ("M-2 dispensary", re.compile(r'\bdispensar(y|ies)\b')),
- ("M-2 legality", re.compile(r'\b(illegal(ly)?|legal(ly|ity)|federally compliant|farm bill|agriculture act|package seizure|dea)\b')),
+ # bare "legal" included (banned-terms.json M-2 hard-bans \blegal\b); de-code framings ("where it's
+ # legal" / "legal states") are MASKED before this grep, so bare-legal only fires on a standalone claim.
+ ("M-2 legality", re.compile(r'\b(illegal(ly)?|legal(ly|ity)?|federally compliant|farm bill|agriculture act|package seizure|dea)\b')),
  ("M-2 no-medical-card", re.compile(r'no medical card')),
  ("M-2 plain-box/mail", re.compile(r'plain (box|mail|packaging|billing)')),
  ("M-2 discreet", re.compile(r'\bdiscree?t(ly)?\b')),
  ("M-2 medical(bare)", re.compile(r'\bmedical\b')),
- ("M-2/M-7 lab-claim", re.compile(r'lab[- ]?tested|third[- ]?party tested|certificate of analysis|\bcoa\b|no chemicals')),
+ # lab-tested/3rd-party/COA MOVED to de-code UNCLEAR set (surface_handling.creative, #154 2026-06-22):
+ # on-CREATIVE de-code = UNCLEAR-for-Adam-review, NOT hard-FAIL. "no chemicals" is M-2 (not de-code) -> stays HARD.
+ ("M-2 no-chemicals", re.compile(r'no chemicals')),
  ("M-25 scam/fake", re.compile(r'\b(scam(med|my)?|rip[- ]?off|ripped off|fakes?|faking|faked|fraud(ulent)?|counterfeit|knock[- ]?off|bogus|hoax|swindle[ds]?|swindling|illegitimate)\b|too good to be true')),
  # mc banked ruling (video batch 2026-06-10, flower 833 2026-06-11): clear-morning class = M-5 side-effect-absence claim
  ("M-5 morning-clarity", re.compile(r'mornings? (are|were|feel) clear|clear mornings?|clear[- ]headed (morning|day)|wake up clear')),
@@ -102,6 +106,48 @@ GUM_AMBIG_ALPHA = [
  ("M-13? melatonin mention", re.compile(r'(?<!no )(?<!no-)(?<!free )(?<!without )(?<!zero )melatonin\b(?![ -]?free)')),
 ]
 
+# ---- DE-CODE on-CREATIVE -> UNCLEAR-for-Adam-review (NOT FAIL) ----
+# LIVE-SOURCED from cannabis-coding-signals.json de_code_hard_remove.patterns (single source, mc owns it).
+# surface_handling.creative (#154 2026-06-22) = UNCLEAR-Adam-review: Adam owns the on-image de-code call
+# (accepted-risk framing), so the creative-grep FLAGS UNCLEAR, never hard-FAIL. family-grown is NOT in this
+# set (it's adam_accepted_risk) so it never flags. The copy-gate uses surface_handling.copy = HARD-REMOVE.
+# On any load failure, fall back to LAST_KNOWN_DECODE. The brain clone path is the per-run /tmp/brain default.
+LAST_KNOWN_DECODE = [
+ r"\b(ships?|shipping|available|delivery)\b[^.\n]{0,20}\b(eligible|select|certain|legal)\s+states\b|\beligible states\b|\bstate list\b|\bwhere (it'?s )?legal\b",
+ r"\b(lab[- ]?tested|test results|third[- ]?party tested|independently tested|tested before it ships|certificate of analysis|\bcoa\b)\b",
+ r"\bfarm[- ]?direct\b",
+]
+def _load_decode_creative():
+    # Production sources cannabis-coding-signals.json from the per-run FRESH brain clone (SKILL.md:
+    # `cd /tmp && rm -rf brain && gh repo clone CLEAN-APPS-DEV/clean-green-marketing-brain brain`).
+    # Resolve robustly across candidate paths; on a total miss fall back to LAST_KNOWN_DECODE LOUDLY
+    # so an absent/failed clone can NEVER silently serve a stale de-code set (orch hardening 2026-06-23).
+    candidates = [p for p in (
+        os.environ.get("CODING_SIGNALS_JSON"),
+        "/tmp/brain/agents/meta-compliance-agent/data/cannabis-coding-signals.json",
+    ) if p]
+    for path in candidates:
+        try:
+            d = json.load(open(path, encoding="utf-8"))
+            pats = [p["pattern"] for p in d["de_code_hard_remove"]["patterns"]
+                    if isinstance(p.get("pattern"), str) and p["pattern"]]
+            if not pats:
+                raise ValueError("de_code_hard_remove.patterns empty")
+            return re.compile("|".join(f"(?:{p})" for p in pats), re.IGNORECASE)
+        except Exception as e:
+            print(f"WARNING: de-code signals load failed for {path} ({e})", file=sys.stderr)
+    # No live source resolved -> LOUD fallback (never silent). LAST_KNOWN_DECODE mirrors the live
+    # de_code_hard_remove set; verify it against the brain on any miss (it can drift if brain adds patterns).
+    for line in ("=" * 72,
+                 "WARNING: creative-grep de-code signals NOT loaded from a live source.",
+                 "  Using built-in LAST_KNOWN_DECODE fallback - may be STALE if the brain",
+                 "  added de-code patterns. Ensure the fresh /tmp/brain clone exists or set",
+                 "  CODING_SIGNALS_JSON to cannabis-coding-signals.json before the scan.",
+                 "=" * 72):
+        print(line, file=sys.stderr)
+    return re.compile("|".join(f"(?:{p})" for p in LAST_KNOWN_DECODE), re.IGNORECASE)
+DECODE_CREATIVE_RE = _load_decode_creative()
+
 def find_all(text, pats):
     hits=[]
     for label, rx in pats:
@@ -123,6 +169,18 @@ def verdict_for(rec):
     sources = {"vision": vis, "vision2": vis2, "ocr": ocr}
     union_raw_l  = flat(raw_norm(vis+"\n"+vis2+"\n"+ocr))
     union_leet_l = flat(leet_norm(vis+"\n"+vis2+"\n"+ocr))
+
+    # DE-CODE on-creative (surface_handling.creative #154) -> UNCLEAR-for-Adam-review, SPAN-LOCAL.
+    # Capture the de-code phrases, then MASK their spans (blank them) OUT of the text BEFORE the hard
+    # grep. This way a de-code phrase cannot trip a broader HARD rule (e.g. M-2 legality "legal" living
+    # inside "where it's legal"), yet a STANDALONE hard claim - cannabis noun, Agriculture Act legality,
+    # enforcement, or a SEPARATE "100% legal" - sits OUTSIDE every de-code span, survives the mask, and
+    # correctly FAILs. The suppression is span-local (overlap-only), NOT row-scoped: only the de-code
+    # span itself becomes UNCLEAR; co-occurring standalone hard violations still FAIL the row.
+    decode_hits = [m.group(0) for m in DECODE_CREATIVE_RE.finditer(union_raw_l)]
+    _blank = lambda m: " " * len(m.group(0))
+    union_raw_l  = DECODE_CREATIVE_RE.sub(_blank, union_raw_l)
+    union_leet_l = DECODE_CREATIVE_RE.sub(_blank, union_leet_l)
 
     fails=[]; unclears=[]
 
@@ -169,6 +227,12 @@ def verdict_for(rec):
 
     for label, val in find_all(union_leet_l, AMBIG_ALPHA): unclears.append(f"{label}:'{val}'")
     for label, val in find_all(union_raw_l,  AMBIG_DIGIT): unclears.append(f"{label}:'{val}'")
+
+    # DE-CODE on-creative -> UNCLEAR-for-Adam-review (surface_handling.creative). The de-code spans
+    # were masked out of the text above BEFORE the hard grep, so these flags are span-local and never
+    # suppress a co-occurring standalone hard violation. family-grown never matches (not in the set).
+    for dv in dict.fromkeys(decode_hits):
+        unclears.append(f"M-19f de-code on-creative (Adam review):'{dv}'")
 
     if rec.get("low_conf"): unclears.append("low-confidence read")
 
