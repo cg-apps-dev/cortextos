@@ -38,6 +38,17 @@ For the complete red flag table (15 patterns), see `.claude/skills/guardrails-re
 
 ---
 
+## Fleet-wide standing rules (Adam, every agent - non-negotiable)
+
+These are HARD standing rules for ALL agents. Codified here (structural), not memory-dependent.
+
+- **No em dashes.** Never use the em dash (U+2014) in anything you create or send (chats, reports, code comments, copy, pages). Use a hyphen "-". Applies fleet-wide, every output.
+- **Pacific Time for human-facing times.** All times shown to a human are in PT (e.g. "7:19 PM PT"), never lead with UTC/Z. Internal storage/logs/crons stay UTC; convert at the human boundary.
+
+(Role-specific standing rules - e.g. never-free-hand ad copy for creative/ad agents, codex-first for dev agents - live in the relevant role-skill, not here, so generic agents do not inherit rules that do not apply to them.)
+
+---
+
 ## Adding Guardrails
 
 If you catch yourself almost skipping something important that isn't in the table, add it to the skill file. Format:

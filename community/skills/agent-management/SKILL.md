@@ -20,6 +20,7 @@ external_calls: ["api.telegram.org"]
 5. **NEVER share bot tokens between agents.** Each agent gets its own bot from @BotFather.
 6. **NEVER hardcode chat IDs.** Get them from the actual user via Telegram getUpdates.
 7. **ALWAYS ask the user which runtime** (claude-code vs codex-app-server) before scaffolding a new agent. Default to claude-code only if the user has no preference. Never silently pick.
+8. **ALWAYS back-propagate a fleet-wide fix to the SOURCE in the SAME change.** When you land a fix that should apply to every agent (a `.claude/settings.json` hook/permission, a GUARDRAILS standing rule, a universal skill, a protocol fix), update `templates/agent/` (new agents inherit it) AND the relevant `community/skills/` catalog entry IN THE SAME change - not "later". A live-only fix silently drifts: new agents never inherit it and the template/community source rots. (Role-specific fixes go to the role-skill/variant, not the generic template, so generic agents do not inherit rules that do not apply.) This is the root cause of template-drift; do not leave a fleet fix live-only.
 
 ---
 

@@ -25,6 +25,16 @@ Phases. PHASE 1 is the v2 DETERMINISTIC creative scan -> a verdict in the **`Met
 
 ---
 
+## COPY SOURCE HARD RULE (Adam, 2026-06-16 - read FIRST, non-negotiable, never free-hand)
+**NEVER free-hand ad copy.** Every headline, primary text, ad description, and variation MUST be written to the LIVE brain copywriting spec - pulled fresh per run, never from memory or improvisation:
+- `agents/meta-ads-agent/meta-ad-copy-agent/references/copy-framework.md` (5 hook-typed headlines, 5 body angles + shapes, §5.5 visual format contract, §4.1 clarity gate, per-product proof banks)
+- `.../references/brand-voice.md` (tone/voice/DO-DON'T)
+- `.../references/avatars.md`, `.../references/funnel-stage.md` (dropdown values + extraction)
+- the brain copywriting skills (`copywriter-agent`, `meta-ad-copy-agent/SKILL.md`)
+Process: run copy through the copywriter pipeline (parallel copywriter subagents, each READING the framework + the actual creative -> 5+5 to spec) -> central deterministic grep gate -> meta-compliance-agent sign-off -> write. Inline/freehand copy is a VIOLATION even if it looks good (origin: 2026-06-16, Adam caught a freehand flower rewrite that ignored the framework). The compliance source rule below is the same principle for the M-code rules.
+
+---
+
 ## COLUMN RESOLUTION RULE (read first - applies to EVERY column, every run)
 **Never hardcode a column letter. Resolve every column by its HEADER NAME from row 1 on each run.** The sheet gains and loses columns over time (it has had multiple structural inserts - ClickUp Status, Meta Compliance Agent, sister-winner cols), so any letter in this skill is a **point-in-time snapshot, not a constant**.
 - The verdict column is the one whose **row-1 header == `Meta Compliance Agent`** - it happens to be col B today, but if a column is inserted/removed it moves, and you must follow the header, not the letter. The SAME applies to the conditional-formatting range (it must target wherever that header currently is) and to every other column you touch: `1x1`, `9x16`, `Code`, `ClickUp Card ID`, `Customer Avatar`, `FUNNEL STAGE`, and the copy block (`Headline` ... `Primary Var. 4`).
