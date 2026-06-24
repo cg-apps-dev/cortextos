@@ -129,6 +129,14 @@ Build the write-plan: each cell starts with `PASS` / `FAIL` / `UNCLEAR` then ` (
 ### Step 8 - Report
 PASS/FAIL/UNCLEAR counts + FAIL-driver breakdown + **the UNCLEAR list explicitly (these need a human eye)** + any Meta-disagreements found. Complete task; log event.
 
+### Direct-launch scan requests
+When `meta-media-buyer-agent` or the launch tracker sends `DIRECT-LAUNCH CREATIVE/VO SCAN REQUIRED`, treat it as a mandatory narrow Phase 1 / Phase 1-V run:
+- Scan ONLY the requested tab rows. Do not expand to the whole tab unless explicitly asked.
+- Use Phase 1 for `IMAGES` tabs and Phase 1-V for `VIDEOS` tabs.
+- Write the normal PASS / FAIL / UNCLEAR / SCAN ERROR verdict into `Meta Compliance Agent`.
+- Include a recognizable marker in the cell, e.g. `[direct-launch scan: creative/VO <YYYY-MM-DD>]`, so the launch tracker can distinguish a creative/VO verdict from a copy-only PASS.
+- Report the result back to `meta-media-buyer-agent` and the requesting thread. FAIL / UNCLEAR / SCAN ERROR means `DO-NOT-UNPAUSE`; PASS means scan-clear from the creative/VO gate, while Adam still owns the manual unpause.
+
 ### SUBAGENT DISCIPLINE (mandatory - these are the two bugs that bit this pipeline)
 - **REAL ROW IDS:** subagents tend to write LOCAL 1..N indices instead of the sheet row. Require each to echo the row from column 1 of its input file AND, before ANY write, VALIDATE that the jsonl row-set == the input row-set; if mismatched, remap positionally (input-file line order) and re-validate. Never write verdicts whose rows you have not reconciled.
 - **NO RANGE-GENERALIZATION:** every verdict must carry per-row EVIDENCE (the exact text quoted / the specific imagery seen on THAT image). A reason copy-pasted across a consecutive range is invalid - it is how clean rows get false-FAILed. One creative = one independent look.
