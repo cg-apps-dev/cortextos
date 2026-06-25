@@ -21,6 +21,8 @@ triggers: ["compliance scan", "scan creatives", "scan the images", "image compli
 
 Phases. PHASE 1 is the v2 DETERMINISTIC creative scan -> a verdict in the **`Meta Compliance Agent`** column (header-resolved each run - currently col B), with **three outcomes: PASS (green) / FAIL (red) / UNCLEAR (light blue)**. It extracts on-image text from THREE sources (2 native-vision tiled passes + tesseract OCR), runs a deterministic banned-word grep, judges bud/leaf imagery with 2 agreeing vision passes, cross-checks Meta's own review status, and routes anything uncertain to UNCLEAR instead of guessing. PHASE 1-V is the VIDEO variant (whisper audio transcript + tiled+OCR frame text + same grep + same 3 outcomes). PHASE 2 (only when Adam asks) rewrites the ad COPY on image-PASS rows. All are gated through the **meta-compliance-agent** (running fleet agent - loop via the bus) + the deterministic grep. Native vision + tesseract OCR are the trustworthy text readers; the Composio workbench `invoke_llm` FABRICATES - never let it judge or write copy.
 
+> **CREATION CADENCE (Adam 2026-06-25):** run the gate at EACH creation stage - brief -> script -> ad - failing specific social-proof counts (M-16a) early = compliant-as-we-build, not just a post-hoc sheet scan. The creation lane (brief-writer / script / copy-gen) invokes the compliance gate at every stage so a banned count never reaches the upload sheet.
+
 **No em dashes anywhere (fleet rule). Files are NOT public - download via authed Composio Drive.**
 
 ---
