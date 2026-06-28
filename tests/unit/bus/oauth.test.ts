@@ -116,6 +116,24 @@ describe('checkUsageApi', () => {
     expect(result.seven_day_utilization).toBeCloseTo(0.18);
   });
 
+  it('stores undefined (never NaN or a misleading 0) when the API returns no utilization', async () => {
+    // Regression: a no-data read used to coerce to 0 / a missing stored field rendered "NaN%".
+    // An unread/no-data account must store undefined so list-oauth-accounts renders n/a, not 0%.
+    writeStore();
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({}), // API returned no utilization fields
+    });
+
+    await checkUsageApi(tmpDir, { force: true });
+
+    const store = loadAccounts(tmpDir)!;
+    const active = store.accounts[store.active];
+    expect(active.five_hour_utilization).toBeUndefined();
+    expect(active.seven_day_utilization).toBeUndefined();
+    expect(Number.isNaN(active.five_hour_utilization as unknown as number)).toBe(false);
+  });
+
   it('returns cached result within TTL', async () => {
     writeStore();
     mockFetch.mockResolvedValueOnce({

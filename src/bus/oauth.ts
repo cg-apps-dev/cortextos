@@ -32,8 +32,8 @@ export interface OAuthAccount {
   refresh_token: string;
   expires_at: number; // Unix ms
   last_refreshed: string; // ISO 8601
-  five_hour_utilization: number; // 0.0–1.0
-  seven_day_utilization: number; // 0.0–1.0
+  five_hour_utilization?: number; // 0.0-1.0; absent = never successfully read (renders n/a, not 0%)
+  seven_day_utilization?: number; // 0.0-1.0; absent = never successfully read (renders n/a, not 0%)
   /** Per-account usage-API credential (login-class, user:profile scope).
    *  Managed by usage-accounts.ts; NEVER written to agent .envs. */
   usage_credential?: import('./usage-accounts.js').UsageCredential;
@@ -302,8 +302,8 @@ export async function checkUsageApi(
   };
 
   // Normalize 0–100 → 0.0–1.0 if needed
-  const normalize = (v: number | undefined) => {
-    if (v === undefined) return 0;
+  const normalize = (v: number | undefined): number | undefined => {
+    if (v === undefined || !Number.isFinite(v)) return undefined;
     return v > 1 ? v / 100 : v;
   };
 
@@ -317,8 +317,10 @@ export async function checkUsageApi(
 
   const snapshot: UsageSnapshot = {
     account: accountName,
-    five_hour_utilization: fiveHour,
-    seven_day_utilization: sevenDay,
+    // Snapshot/cache floors a no-data read to 0; the per-account store below keeps
+    // the raw undefined (unread) so list-oauth-accounts can render it as n/a, not 0%.
+    five_hour_utilization: fiveHour ?? 0,
+    seven_day_utilization: sevenDay ?? 0,
     fetched_at: fetchedAt,
   };
 
@@ -496,9 +498,11 @@ export async function rotateOAuth(
   if (!current) return { rotated: false, reason: `Active account "${currentName}" not found` };
 
   // Check utilization thresholds (or force flag)
+  // Unread (undefined) util is treated as 0 here: you cannot make a rotation decision
+  // on unknown utilization, so an unread active account does not auto-trigger rotation.
   const needsRotation = opts.force ||
-    current.five_hour_utilization >= THRESHOLD_5H ||
-    current.seven_day_utilization >= THRESHOLD_7D;
+    (current.five_hour_utilization ?? 0) >= THRESHOLD_5H ||
+    (current.seven_day_utilization ?? 0) >= THRESHOLD_7D;
 
   if (!needsRotation) {
     return {
@@ -510,7 +514,7 @@ export async function rotateOAuth(
   // Find the next account with lowest 5h utilization
   const candidates = Object.entries(store.accounts)
     .filter(([name]) => name !== currentName)
-    .sort(([, a], [, b]) => a.five_hour_utilization - b.five_hour_utilization);
+    .sort(([, a], [, b]) => (a.five_hour_utilization ?? 0) - (b.five_hour_utilization ?? 0));
 
   if (candidates.length === 0) {
     return { rotated: false, reason: 'No alternate accounts available for rotation' };
@@ -549,8 +553,8 @@ export async function rotateOAuth(
     from: currentName,
     to: nextName,
     reason: opts.reason || buildRotationReason(current),
-    five_hour_util: current.five_hour_utilization,
-    seven_day_util: current.seven_day_utilization,
+    five_hour_util: current.five_hour_utilization ?? 0,
+    seven_day_util: current.seven_day_utilization ?? 0,
   };
   reloaded.rotation_log = [logEntry, ...reloaded.rotation_log].slice(0, ROTATION_LOG_MAX);
   saveAccounts(ctxRoot, reloaded);
@@ -571,13 +575,14 @@ export async function rotateOAuth(
 // --- Helpers ---
 
 function buildRotationReason(account: OAuthAccount): string {
-  if (account.five_hour_utilization >= THRESHOLD_5H) {
+  if ((account.five_hour_utilization ?? 0) >= THRESHOLD_5H) {
     return `5h utilization at ${pct(account.five_hour_utilization)} (threshold: ${pct(THRESHOLD_5H)})`;
   }
   return `7d utilization at ${pct(account.seven_day_utilization)} (threshold: ${pct(THRESHOLD_7D)})`;
 }
 
-function pct(v: number): string {
+function pct(v: number | undefined): string {
+  if (v === undefined || !Number.isFinite(v)) return 'n/a';
   return `${Math.round(v * 100)}%`;
 }
 

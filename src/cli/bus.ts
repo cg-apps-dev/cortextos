@@ -2681,8 +2681,8 @@ busCommand
     for (const [name, acct] of Object.entries(store.accounts)) {
       const active = name === store.active ? ' (active)' : '';
       const expiry = new Date(acct.expires_at).toISOString();
-      const warn5h = acct.five_hour_utilization >= ALERT_5H ? ' ⚠️' : '';
-      const warn7d = acct.seven_day_utilization >= ALERT_7D ? ' ⚠️' : '';
+      const warn5h = (acct.five_hour_utilization ?? 0) >= ALERT_5H ? ' ⚠️' : '';
+      const warn7d = (acct.seven_day_utilization ?? 0) >= ALERT_7D ? ' ⚠️' : '';
       console.log(`${name}${active}`);
       console.log(`  5h: ${pct(acct.five_hour_utilization)}${warn5h}  7d: ${pct(acct.seven_day_utilization)}${warn7d}  expires: ${expiry}`);
       if (acct.usage_credential) {
@@ -3080,6 +3080,7 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function pct(v: number): string {
+function pct(v: number | undefined): string {
+  if (v === undefined || !Number.isFinite(v)) return 'n/a';
   return `${Math.round(v * 100)}%`;
 }
