@@ -1,6 +1,6 @@
 # Tools Quick Reference
 
-All cortextOS commands: `cortextos bus <command>`. Full docs in skill files — load the relevant skill when you need details on a workflow.
+All cortextOS commands: `cortextos bus <command>`. Full docs in skill files - load the relevant skill when you need details on a workflow.
 
 ---
 
@@ -23,7 +23,7 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 
 ## Command Index
 
-### Tasks — full docs: `.claude/skills/tasks/SKILL.md`
+### Tasks - full docs: `.claude/skills/tasks/SKILL.md`
 | Command | What it does |
 |---|---|
 | `create-task "<title>" --desc "<desc>"` | Create a task (visible on dashboard) |
@@ -34,7 +34,7 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 | `check-human-tasks` | Check for stale human-assigned tasks |
 | `archive-tasks [--dry-run] [--all-orgs]` | Archive completed tasks >7d |
 
-### Messages — full docs: `.claude/skills/comms/SKILL.md`
+### Messages - full docs: `.claude/skills/comms/SKILL.md`
 | Command | What it does |
 |---|---|
 | `send-message <agent> <priority> '<text>' [reply_to]` | Send to another agent |
@@ -42,7 +42,7 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 | `ack-inbox "<msg_id>"` | ACK a message (un-ACK'd re-deliver after 5 min) |
 | `notify-agent <agent> "<msg>"` | Urgently signal agent's fast-checker |
 
-### Telegram — full docs: `.claude/skills/comms/SKILL.md`
+### Telegram - full docs: `.claude/skills/comms/SKILL.md`
 | Command | What it does |
 |---|---|
 | `send-telegram <chat_id> "<msg>"` | Message the user |
@@ -52,7 +52,7 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 | `answer-callback <query_id> [toast]` | Dismiss button loading state |
 | `post-activity "<msg>"` | Post to org activity channel |
 
-### Events & Heartbeat — full docs: `.claude/skills/heartbeat/SKILL.md`
+### Events & Heartbeat - full docs: `.claude/skills/heartbeat/SKILL.md`
 | Command | What it does |
 |---|---|
 | `log-event <category> <name> <severity> --meta '<json>'` | Log structured event |
@@ -61,14 +61,14 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 | `recall-facts [--days 3]` | Recall session facts extracted at compaction (cross-session memory) |
 | `tui-stream [--session <name>] [--telegram] [--dry-run]` | Stream TUI tool activity to event log and Telegram |
 
-### Approvals — full docs: `.claude/skills/approvals/SKILL.md`
+### Approvals - full docs: `.claude/skills/approvals/SKILL.md`
 | Command | What it does |
 |---|---|
 | `create-approval "<title>" <category> "[context]"` | Request human approval |
 | `update-approval <id> <approved\|rejected> "[note]"` | Resolve an approval |
 | `list-approvals [--status S] [--all-orgs]` | List approvals |
 
-### Knowledge Base — full docs: `.claude/skills/knowledge-base/SKILL.md`
+### Knowledge Base - full docs: `.claude/skills/knowledge-base/SKILL.md`
 | Command | What it does |
 |---|---|
 | `kb-query "<question>" --org $CTX_ORG` | Semantic search |
@@ -95,7 +95,7 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 |---|---|
 | `cortextos goals generate-md --agent <name> --org <org>` | Rebuild GOALS.md from goals.json |
 
-### Experiments (Theta Wave) — full docs: `.claude/skills/autoresearch/SKILL.md`
+### Experiments (Theta Wave) - full docs: `.claude/skills/autoresearch/SKILL.md`
 | Command | What it does |
 |---|---|
 | `create-experiment <metric> "<hypothesis>"` | Propose a new experiment |
@@ -112,7 +112,7 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 | `ack-reminder <id>` | Acknowledge a fired reminder |
 | `prune-reminders [--days N]` | Clean up old acked reminders |
 
-### OAuth Token Rotation — full docs: `.claude/skills/oauth-rotation/SKILL.md`
+### OAuth Token Rotation - full docs: `.claude/skills/oauth-rotation/SKILL.md`
 | Command | What it does |
 |---|---|
 | `check-usage-api [--force]` | Fetch 5h/7d utilization (3-min cache) |
@@ -120,7 +120,7 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 | `rotate-oauth [--force] [--agent A] [--reason R]` | Rotate active account if thresholds met |
 | `list-oauth-accounts` | Show all accounts with utilization + expiry |
 
-### Worker Sessions — full docs: `.claude/skills/worker-agents/SKILL.md`
+### Worker Sessions - full docs: `.claude/skills/worker-agents/SKILL.md`
 | Command | What it does |
 |---|---|
 | `cortextos spawn-worker <name> --dir <path> --prompt "<text>"` | Spawn ephemeral Claude Code session |
@@ -137,7 +137,7 @@ git worktree. Full design: `docs/architecture/dev-worktree-isolation.md`.
 |---|---|
 | `cortextos dev-worktree <ticket>` | Create an isolated worktree + free preview port for a ticket (branch off `main`, dir under `<repo>-worktrees/<agent>/`) |
 | `cortextos dev-worktree <ticket> --base <b> --prefix fix --port 3005` | Same, with explicit base branch / branch prefix / pinned preview port |
-| `cortextos worktree-guard` | Warn (non-zero exit) if the served `:3000` tree has drifted off `main` — wire into a heartbeat or git hook |
+| `cortextos worktree-guard` | Warn (non-zero exit) if the served `:3000` tree has drifted off `main` - wire into a heartbeat or git hook |
 
 ### Community Ecosystem
 | Command | What it does |
@@ -151,14 +151,14 @@ git worktree. Full design: `docs/architecture/dev-worktree-isolation.md`.
 
 ## Tools Available in This Session
 
-### agent-browser (Browser Automation — replaces Playwright)
+### agent-browser (Browser Automation - replaces Playwright)
 - `agent-browser` CLI (Rust binary, npm-installed globally) drives Chrome via CDP
 - Snapshot-then-ref interaction pattern: `agent-browser snapshot` returns an a11y tree with refs (e1, e2, ...), then `agent-browser click @e1` / `fill @e2 "text"` operate by ref
-- Loaded via `.claude/skills/agent-browser/SKILL.md` — that skill says to run `agent-browser skills get <name>` for current command syntax (workflow docs are versioned with the binary, so always fetch fresh)
+- Loaded via `.claude/skills/agent-browser/SKILL.md` - that skill says to run `agent-browser skills get <name>` for current command syntax (workflow docs are versioned with the binary, so always fetch fresh)
 - Quick verify: `agent-browser open https://example.com && agent-browser get title && agent-browser close`
-- Dashboard E2E tests still use Playwright DIRECTLY (different surface) — agent-browser only replaces the agent-facing browser MCP layer that was previously `mcp__plugin_playwright_*`
+- Dashboard E2E tests still use Playwright DIRECTLY (different surface) - agent-browser only replaces the agent-facing browser MCP layer that was previously `mcp__plugin_playwright_*`
 
-### Codex (gpt-5-codex) — peer coding/debugging tool
+### Codex (gpt-5-codex) - peer coding/debugging tool
 - `codex` CLI (npm `@openai/codex`); auth via ChatGPT login (`codex login`, creds in `~/.codex`, no key in repo)
 - Invoke as an equal peer to Claude Code via the skill wrapper: `.claude/skills/codex/codex-peer.sh "<prompt>"` (FAST default, ~4s, paste context in the prompt), `... --deep` (repo-aware, slower), or `... --review` (adversarial cross-check)
 - Use for: second opinion on a gnarly bug, cross-checking a fix before shipping, a different model's architectural take
@@ -175,7 +175,7 @@ git worktree. Full design: `docs/architecture/dev-worktree-isolation.md`.
 - Accounts: configure your Google accounts in your agent's `.env` or org `secrets.env`
 - `gog gmail search "query" --max 10 -a you@gmail.com`
 - `gog calendar ls -a you@gmail.com --max 5`
-- Use `gog` instead of Gmail/Calendar MCP — more capable (send, archive, labels)
+- Use `gog` instead of Gmail/Calendar MCP - more capable (send, archive, labels)
 
 ### web-browse (general web) - full docs: `.claude/skills/web-browse/SKILL.md`
 - Browse the general web via Playwright/Chromium headless (installed). Fetch a public page's TEXT + optional screenshot.
