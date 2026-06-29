@@ -203,7 +203,7 @@ _merge_codex() {
   codex=$(_codex_json)
   RESP_JSON="$resp" CODEX_JSON="$codex" python3 -c "
 import json, os
-d = json.loads(os.environ['RESP_JSON'])
+d = json.loads(os.environ['RESP_JSON'] or '{}')
 d['codex'] = json.loads(os.environ['CODEX_JSON'])
 print(json.dumps(d))
 " 2>/dev/null || echo "$resp"
@@ -275,34 +275,47 @@ except Exception as e:
   fi
 fi
 
+# DECOUPLE (2026-06-29): the Claude usage probe and the Codex monitoring below are
+# INDEPENDENT. This bash probe resolves a RUNTIME token (accounts.json access_token /
+# keychain), which is the WRONG cred for /api/oauth/usage (that endpoint needs the PKCE
+# usage_credential) and 403s -> empty RESPONSE. Claude usage ALERTING is now owned by the
+# TS check-all-usage path (correct cred, all accounts). So a Claude-side failure here is
+# NON-FATAL: set CLAUDE_OK=false, skip Claude alerting, but STILL run the Codex monitoring
+# (conditions 5-8, own ~/.codex auth) below. Failure notes go to stderr only (launchd log),
+# NEVER Telegram - no Claude false-noise to the operator.
+CLAUDE_OK=true
+RESPONSE=""
+
 if [[ -z "$ACCESS_TOKEN" ]]; then
-  echo '{"error":"No OAuth token available (no active accounts.json account, CLAUDE_CODE_OAUTH_TOKEN not set, and no Claude Code Keychain credential). Provision a token via `claude setup-token` and set CLAUDE_CODE_OAUTH_TOKEN in the daemon/agent env."}' >&2
-  exit 1
+  echo '{"note":"no Claude OAuth token; Claude probe skipped (TS check-all-usage owns Claude alerting), continuing to Codex monitoring"}' >&2
+  CLAUDE_OK=false
 fi
 
-# ── Call usage API ───────────────────────────────────────────────────────────
-RESPONSE=$(curl -sf "https://api.anthropic.com/api/oauth/usage" \
-  -H "anthropic-beta: oauth-2025-04-20" \
-  --max-time 10 -K - 2>/dev/null <<<"header = \"Authorization: Bearer ${ACCESS_TOKEN}\"" || true)
+if [[ "$CLAUDE_OK" == true ]]; then
+  # ── Call usage API ───────────────────────────────────────────────────────────
+  RESPONSE=$(curl -sf "https://api.anthropic.com/api/oauth/usage" \
+    -H "anthropic-beta: oauth-2025-04-20" \
+    --max-time 10 -K - 2>/dev/null <<<"header = \"Authorization: Bearer ${ACCESS_TOKEN}\"" || true)
 
-if [[ -z "$RESPONSE" ]]; then
-  echo '{"error":"Usage API request failed or timed out"}' >&2
-  exit 1
+  if [[ -z "$RESPONSE" ]]; then
+    echo '{"note":"Claude usage API failed/timed out (expected: bash probe uses the runtime token = wrong cred for /api/oauth/usage; Claude alerting is owned by TS check-all-usage). Continuing to Codex monitoring."}' >&2
+    CLAUDE_OK=false
+  elif ! echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'five_hour' in d or 'seven_day' in d" 2>/dev/null; then
+    echo '{"note":"Claude usage API unexpected response; skipping Claude alerting, continuing to Codex monitoring."}' >&2
+    CLAUDE_OK=false
+  else
+    # Cache the result
+    echo "$RESPONSE" > "$CACHE_FILE"
+  fi
 fi
-
-# Validate it's JSON with expected fields
-if ! echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'five_hour' in d or 'seven_day' in d" 2>/dev/null; then
-  echo "{\"error\":\"Unexpected API response\",\"raw\":$(echo "$RESPONSE" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' 2>/dev/null || echo '""')}" >&2
-  exit 1
-fi
-
-# Cache the result
-echo "$RESPONSE" > "$CACHE_FILE"
 
 # ── Threshold checks + Telegram alerts ──────────────────────────────────────
 ALERT_SENT=false
 
 if [[ -n "$CHAT_ID" ]]; then
+  # Claude alerting only when the Claude probe succeeded (TS owns Claude alerting anyway).
+  # The Codex monitoring block further below runs REGARDLESS of the Claude outcome.
+  if [[ "$CLAUDE_OK" == true ]]; then
   FIVE_H=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); v=d.get('five_hour',{}).get('utilization'); print(v if v is not None else -1)" 2>/dev/null || echo -1)
   SEVEN_D=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); v=d.get('seven_day',{}).get('utilization'); print(v if v is not None else -1)" 2>/dev/null || echo -1)
   SEVEN_D_RESET=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('seven_day',{}).get('resets_at','unknown'))" 2>/dev/null || echo "unknown")
@@ -388,6 +401,7 @@ sys.exit(0 if v >= warn else 1)
     fi
     echo "$SEND_MSG" >&2
   fi
+  fi  # end Claude-alerting guard (CLAUDE_OK); Codex monitoring below runs regardless of the Claude outcome
 
   # Codex token expiry warning (< 24h)
   CODEX_EXPIRES=$(CODEX_AUTH="$HOME/.codex/auth.json" python3 -c "
