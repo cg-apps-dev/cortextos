@@ -146,7 +146,9 @@ describe('scanCodexLogsCosts', () => {
     ]);
     const entries = scanCodexLogsCosts();
     expect(entries).toHaveLength(1);
-    expect(entries[0].timestamp).toBe('2026-05-08T01:01:00Z');
+    // Delta parser emits a stable synthetic per-(session,model,day) timestamp,
+    // not the raw last-snapshot timestamp; assert the day, not the exact value.
+    expect(entries[0].timestamp.startsWith('2026-05-08T')).toBe(true);
     expect(entries[0].input_tokens).toBe(200);
     expect(entries[0].output_tokens).toBe(75);
   });

@@ -222,6 +222,7 @@ function initializeSchema(db: Database.Database): void {
   `);
 
   migrateCostEntriesUniqueIndex(db);
+  migrateCodexCumulativeCostRows(db);
 }
 
 /**
@@ -257,6 +258,31 @@ export function migrateCostEntriesUniqueIndex(db: Database.Database): void {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_cost_entries_unique
       ON cost_entries(agent, model, source_file, timestamp)
     `).run();
+  });
+
+  migrate();
+}
+
+/**
+ * One-time cleanup for the codex cumulative-row incident (2026-06-20). Older
+ * parser versions wrote cumulative codex-tokens.jsonl snapshots on every sync,
+ * so SUM aggregations inflated all codex agents. The delta parser rebuilds the
+ * correct rows from source logs after this delete. Scope is deliberately only
+ * source files ending in codex-tokens.jsonl, across all codex agents; Claude
+ * project rows are never matched. Guarded by sync_meta so restarts do not keep
+ * deleting rebuilt delta rows.
+ */
+export function migrateCodexCumulativeCostRows(db: Database.Database): void {
+  const marker = '__migration__:cost_entries_codex_cumulative_to_delta_v1';
+  const existing = db.prepare('SELECT file_path FROM sync_meta WHERE file_path = ?').get(marker);
+  if (existing) return;
+
+  const migrate = db.transaction(() => {
+    db.prepare("DELETE FROM cost_entries WHERE source_file LIKE '%codex-tokens.jsonl'").run();
+    db.prepare(
+      `INSERT OR REPLACE INTO sync_meta (file_path, mtime, last_synced)
+       VALUES (?, 0, datetime('now'))`,
+    ).run(marker);
   });
 
   migrate();

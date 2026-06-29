@@ -5,23 +5,6 @@ import { AreaChart } from '@/components/charts/area-chart';
 import { BarChart } from '@/components/charts/bar-chart';
 import { CHART_GOLD, MODEL_COLORS } from '@/components/charts/chart-theme';
 
-interface UsageMetric {
-  used_pct: number;
-  resets?: string;
-}
-
-interface PlanUsageData {
-  account?: string;
-  // Live Claude Max plan limits (OAuth usage API) — primary.
-  five_hour?: UsageMetric;
-  seven_day?: UsageMetric;
-  // Legacy Claude Code /usage (scrape-usage) — optional.
-  session?: UsageMetric;
-  week_all_models?: UsageMetric;
-  week_sonnet?: { used_pct: number };
-  timestamp: string;
-}
-
 interface UsageHistoryPoint {
   timestamp: string;
   session_pct: number;
@@ -44,7 +27,6 @@ interface CostTrackingProps {
   dailyCostByModel: Array<Record<string, unknown>>;
   currentMonthCost: number;
   projectedMonthly: number;
-  planUsage?: PlanUsageData | null;
   usageHistory?: UsageHistoryPoint[];
   costByAgent?: AgentUsage[];
 }
@@ -76,14 +58,13 @@ export function CostTracking({
   dailyCostByModel,
   currentMonthCost,
   projectedMonthly,
-  planUsage,
   usageHistory,
   costByAgent,
 }: CostTrackingProps) {
   const modelKeys = Object.keys(MODEL_COLORS); // opus, sonnet, haiku
   const modelColorValues = modelKeys.map((k) => MODEL_COLORS[k]);
 
-  const hasPlanData = !!planUsage || (usageHistory && usageHistory.length > 0);
+  const hasPlanData = !!(usageHistory && usageHistory.length > 0);
   const agentRows = (costByAgent ?? []).filter(a => a.tokens > 0);
   // Share-of-fleet: bars are a proportion of total agent token use (sum ~100%),
   // not scaled-to-the-biggest-agent (which made the top agent always look full).
@@ -92,70 +73,6 @@ export function CostTracking({
 
   return (
     <div className="space-y-6">
-      {/* Plan Usage — primary metric, always shown */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
-            Max Plan Usage
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {planUsage ? (
-            <div className="space-y-4">
-              {/* Live Claude Max plan limits (OAuth usage API) — primary */}
-              {planUsage.five_hour && (
-                <UsageBar
-                  pct={planUsage.five_hour.used_pct}
-                  label="5-Hour Window"
-                  sublabel={planUsage.five_hour.resets ? `Resets ${planUsage.five_hour.resets}` : undefined}
-                />
-              )}
-              {planUsage.seven_day && (
-                <UsageBar
-                  pct={planUsage.seven_day.used_pct}
-                  label="7-Day Window"
-                  sublabel={planUsage.seven_day.resets ? `Resets ${planUsage.seven_day.resets}` : undefined}
-                />
-              )}
-              {/* Legacy Claude Code /usage (scrape-usage) — shown if present */}
-              {planUsage.week_all_models && (
-                <UsageBar
-                  pct={planUsage.week_all_models.used_pct}
-                  label="Weekly (All Models)"
-                  sublabel={planUsage.week_all_models.resets ? `Resets ${planUsage.week_all_models.resets}` : undefined}
-                />
-              )}
-              {planUsage.session && (
-                <UsageBar
-                  pct={planUsage.session.used_pct}
-                  label="Current Session"
-                  sublabel={planUsage.session.resets ? `Resets ${planUsage.session.resets}` : undefined}
-                />
-              )}
-              {planUsage.week_sonnet && (
-                <UsageBar
-                  pct={planUsage.week_sonnet.used_pct}
-                  label="Weekly (Sonnet Only)"
-                />
-              )}
-              <p className="text-[10px] text-muted-foreground">
-                {planUsage.account ? `${planUsage.account} · ` : ''}Last updated: {new Date(planUsage.timestamp).toLocaleString()}
-              </p>
-            </div>
-          ) : (
-            <div className="py-6 text-center space-y-2">
-              <p className="text-sm font-medium">Plan usage tracking not configured</p>
-              <p className="text-xs text-muted-foreground">
-                Live Claude Max plan usage (5-hour &amp; 7-day) appears here once the usage refresh runs.
-              </p>
-              <code className="text-xs bg-muted px-2 py-1 rounded block w-fit mx-auto mt-2">
-                cortextos bus refresh-usage
-              </code>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
       {/* Per-Agent Token Usage (last 7 days — matches the Max 7-day limit window) */}
       {agentRows.length > 0 && (
         <Card>

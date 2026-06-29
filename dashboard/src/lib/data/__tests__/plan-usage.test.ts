@@ -9,9 +9,11 @@ process.env.CTX_ROOT = root;
 
 type Reports = typeof import('../reports');
 let reports: Reports;
+let dashboardDb: typeof import('../../db').db;
 
 beforeAll(async () => {
   reports = await import('../reports');
+  dashboardDb = (await import('../../db')).db;
 });
 
 afterAll(() => {
@@ -22,42 +24,7 @@ const usageDir = path.join(root, 'state', 'usage');
 beforeEach(() => {
   fs.rmSync(usageDir, { recursive: true, force: true });
   fs.mkdirSync(usageDir, { recursive: true });
-});
-
-describe('getPlanUsage (live 5h/7d shape)', () => {
-  it('returns null when latest.json is absent', () => {
-    expect(reports.getPlanUsage()).toBeNull();
-  });
-
-  it('reads the live 5h/7d snapshot written by refresh-usage', () => {
-    fs.writeFileSync(path.join(usageDir, 'latest.json'), JSON.stringify({
-      account: 'keychain',
-      timestamp: '2026-06-01T12:00:00.000Z',
-      five_hour: { used_pct: 43, resets: '2026-06-01T17:00:00Z' },
-      seven_day: { used_pct: 80, resets: '2026-06-08T00:00:00Z' },
-    }));
-
-    const usage = reports.getPlanUsage();
-    expect(usage?.account).toBe('keychain');
-    expect(usage?.five_hour?.used_pct).toBe(43);
-    expect(usage?.seven_day?.used_pct).toBe(80);
-    expect(usage?.seven_day?.resets).toBe('2026-06-08T00:00:00Z');
-    // Legacy fields are optional and absent here.
-    expect(usage?.session).toBeUndefined();
-  });
-
-  it('still reads a legacy scrape-usage snapshot (session/week)', () => {
-    fs.writeFileSync(path.join(usageDir, 'latest.json'), JSON.stringify({
-      agent: 'the-analyst',
-      timestamp: '2026-06-01T12:00:00.000Z',
-      session: { used_pct: 12, resets: '5pm' },
-      week_all_models: { used_pct: 34, resets: 'Sun' },
-      week_sonnet: { used_pct: 7 },
-    }));
-    const usage = reports.getPlanUsage();
-    expect(usage?.session?.used_pct).toBe(12);
-    expect(usage?.five_hour).toBeUndefined();
-  });
+  dashboardDb.prepare('DELETE FROM cost_entries').run();
 });
 
 describe('getUsageHistory (5h/7d series)', () => {
@@ -125,6 +92,30 @@ describe('getMultiAccountUsage (3-account subscription panel)', () => {
     expect(ic.error).toBe('HTTP 403');
   });
 
+  it('carries last_good usage through failed rows for stale rendering', () => {
+    writeSnapshot([
+      {
+        account: 'me-com-max',
+        ok: false,
+        error: 'HTTP 403',
+        last_good: {
+          five_hour_pct: 0,
+          seven_day_pct: 42,
+          five_hour_resets: '2026-06-11T20:00:00.000Z',
+          seven_day_resets: '2026-06-15T20:00:00.000Z',
+          fetched_at: '2026-06-11T18:00:00.000Z',
+        },
+      },
+    ]);
+
+    const me = reports.getMultiAccountUsage()!.accounts[0];
+    expect(me.ok).toBe(false);
+    expect(me.error).toBe('HTTP 403');
+    expect(me.last_good?.five_hour_pct).toBe(0);
+    expect(me.last_good?.seven_day_pct).toBe(42);
+    expect(me.last_good?.fetched_at).toBe('2026-06-11T18:00:00.000Z');
+  });
+
   it('renders an unknown account with a fallback label instead of dropping it', () => {
     writeSnapshot([{ account: 'future-acct', ok: true, five_hour_pct: 1 }]);
     const r = reports.getMultiAccountUsage()!;
@@ -152,5 +143,58 @@ describe('getCodexUsage (read-only codex card)', () => {
     expect(c.secondary!.used_pct).toBe(88);
     expect(c.plan_type).toBe('pro');
     expect(c.as_of).toBe('2026-06-11T00:44:38.391Z');
+  });
+});
+
+describe('getCodexActivity (7-day cost_entries window)', () => {
+  function insertCostEntry(entry: {
+    timestamp: string;
+    agent: string;
+    model: string;
+    totalTokens: number;
+    costUsd: number;
+    sourceFile: string;
+  }) {
+    dashboardDb.prepare(`
+      INSERT INTO cost_entries (
+        timestamp, agent, org, model, input_tokens, output_tokens,
+        total_tokens, cost_usd, source_file
+      ) VALUES (?, ?, '', ?, 0, 0, ?, ?, ?)
+    `).run(entry.timestamp, entry.agent, entry.model, entry.totalTokens, entry.costUsd, entry.sourceFile);
+  }
+
+  it('sums only codex token rows inside the requested window', () => {
+    const now = Date.now();
+    const inside = new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const outside = new Date(now - 10 * 24 * 60 * 60 * 1000).toISOString();
+
+    insertCostEntry({
+      timestamp: inside,
+      agent: 'codex-dev-agent',
+      model: 'gpt-5-codex',
+      totalTokens: 1_500_000,
+      costUsd: 1.23,
+      sourceFile: '/tmp/codex-dev-agent/codex-tokens.jsonl',
+    });
+    insertCostEntry({
+      timestamp: outside,
+      agent: 'codex-dev-agent',
+      model: 'gpt-5-codex',
+      totalTokens: 2_000_000,
+      costUsd: 2.5,
+      sourceFile: '/tmp/codex-dev-agent/codex-tokens.jsonl',
+    });
+    insertCostEntry({
+      timestamp: inside,
+      agent: 'claude-dev-agent',
+      model: 'claude-sonnet',
+      totalTokens: 9_000_000,
+      costUsd: 9.99,
+      sourceFile: '/tmp/claude-dev-agent/usage.jsonl',
+    });
+
+    const activity = reports.getCodexActivity(7);
+    expect(activity.tokens).toBe(1_500_000);
+    expect(activity.cost).toBeCloseTo(1.23, 6);
   });
 });
