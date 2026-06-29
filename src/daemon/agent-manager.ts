@@ -1183,6 +1183,7 @@ export class AgentManager {
         ctxRoot: this.ctxRoot,
         stdoutLogPath: join(this.ctxRoot, 'logs', agentName, 'stdout.log'),
         isPtyAlive: () => entry.process.isAlive(),
+        isAgentActive: () => this.agents.get(agentName)?.checker?.isAgentActive() ?? true,
         write: (data) => entry.process.write(data),
         operatorAlert: (message) => {
           const cliPath = join(this.frameworkRoot, 'dist', 'cli.js');

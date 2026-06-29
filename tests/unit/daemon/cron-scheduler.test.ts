@@ -1085,6 +1085,8 @@ describe('CronScheduler', () => {
     function watchdogScheduler(opts: {
       agentName?: string;
       isAlive?: () => boolean;
+      isAgentActive?: () => boolean;
+      lastIdleMs?: () => number | null;
       stdoutMtimeMs?: () => number | null;
       recentStdout?: () => string;
       gate?: (cron: CronDefinition) => { defer: boolean; reason?: string };
@@ -1101,10 +1103,12 @@ describe('CronScheduler', () => {
           ctxRoot: tmpRoot,
           stdoutLogPath: join(tmpRoot, 'logs', agentName, 'stdout.log'),
           isPtyAlive: opts.isAlive ?? (() => true),
+          isAgentActive: opts.isAgentActive ?? (() => false),
           write: (data) => { writes.push(data); },
           operatorAlert: opts.alert,
           readStdoutMtimeMs: opts.stdoutMtimeMs ?? (() => Date.now() - 120_000),
           readRecentStdout: opts.recentStdout ?? (() => ''),
+          readLastIdleFlagMs: opts.lastIdleMs ?? (() => null),
         },
         logger: (msg) => { logs.push(msg); },
       });
@@ -1119,11 +1123,43 @@ describe('CronScheduler', () => {
       });
     }
 
-    it('stale heartbeat + alive PTY + idle stdout re-injects once', async () => {
+    const throttleAbortTerminal = [
+      '❯ [CRON FIRED 2026-06-29T00:00:00.000Z] heartbeat: Read HEARTBEAT.md and follow its instructions.',
+      '⏺API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited',
+      '✻ Cooked for 4s',
+      '❯ ',
+    ].join('\n');
+
+    const realForensicTerminalTail = [
+      '❯ [CRON FIRED 2026-06-21T19:39:38.976Z] heartbeat: Read HEARTBEAT.md. Update your heartbeat + check inbox for an Adam trigger or orchestrator dispatch.',
+      'I turned the campaigns on, run the tracker',
+      '✳ Initialize agent system and notify user',
+      '⏺API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited',
+      '✻Worked for 5s',
+      '────────────────────────────────────────────────────────────────────────────────',
+      '❯ ',
+      '────────────────────────────────────────────────────────────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+    ].join('\r');
+
+    const realForensicRecoveredTail = [
+      '❯ [CRON FIRED 2026-06-21T23:39:43.089Z] heartbeat: Read HEARTBEAT.md. Update your heartbeat.',
+      '✳ Initialize agent system and notify user',
+      '⏺API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited',
+      '✻Cogitated for 2s',
+      '●How is Claude doing this session? (optional)',
+      '  1: Bad    2: Fine   3: Good   0: Dismiss',
+      '❯ ',
+      '⏺Adam is asking me to verify the VIDEOS (Flower) CG-AGY-1 stamps specifically.',
+      '⏺ Bash(cortextos bus send-telegram 6991789266 "Yes - both CG-AGY-1 video stamps are correct")',
+      '  ⎿  Messagesent',
+    ].join('\n');
+
+    it('A1 positive: real throttle abort after latest turn marker re-injects once', async () => {
       const writes: string[] = [];
       writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
       mockReadCrons.mockReturnValue([heartbeatCron()]);
-      const s = watchdogScheduler({ writes });
+      const s = watchdogScheduler({ writes, recentStdout: () => throttleAbortTerminal });
 
       s.start();
       await vi.advanceTimersByTimeAsync(TICK);
@@ -1135,13 +1171,39 @@ describe('CronScheduler', () => {
       s.stop();
     });
 
+    it('A1 fixture: real captured terminal-abort tail re-injects', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({ writes, recentStdout: () => realForensicTerminalTail });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes.join('')).toContain('[WATCHDOG REINJECT');
+      s.stop();
+    });
+
+    it('A1 fixture: recovered real capture after abort does not re-inject', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({ writes, recentStdout: () => realForensicRecoveredTail });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
     it('reads last_functional_beat for staleness even when last_heartbeat is fresh', async () => {
       const writes: string[] = [];
       writeHeartbeat('test-agent', Date.now(), {
         lastFunctionalBeatMs: Date.now() - 2 * 60 * 60_000,
       });
       mockReadCrons.mockReturnValue([heartbeatCron()]);
-      const s = watchdogScheduler({ writes });
+      const s = watchdogScheduler({ writes, recentStdout: () => throttleAbortTerminal });
 
       s.start();
       await vi.advanceTimersByTimeAsync(TICK);
@@ -1187,6 +1249,7 @@ describe('CronScheduler', () => {
       mockReadCrons.mockReturnValue([heartbeatCron()]);
       const s = watchdogScheduler({
         writes,
+        recentStdout: () => throttleAbortTerminal,
         gate: () => ({ defer: true, reason: 'account capped' }),
       });
 
@@ -1198,12 +1261,304 @@ describe('CronScheduler', () => {
       s.stop();
     });
 
+    it('A1 false-positive guard: discussed or quoted throttle text does not re-inject', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        recentStdout: () => [
+          '[CRON FIRED 2026-06-29T00:00:00.000Z] heartbeat: Read HEARTBEAT.md and follow its instructions.',
+          'The previous log said "API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited".',
+          'I am summarizing the incident and still working.',
+        ].join('\n'),
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
+    it('A1 false-positive guard: message ending in verbatim abort quote then idle does not re-inject', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        recentStdout: () => [
+          '❯ [CRON FIRED 2026-06-29T00:00:00.000Z] heartbeat: Read HEARTBEAT.md and follow its instructions.',
+          '⏺The exact failure was "API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited"',
+          '✻ Worked for 2s',
+          '❯ ',
+        ].join('\n'),
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
+    it('A1 false-positive guard: stale abort before a newer turn marker does not re-inject', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        recentStdout: () => [
+          '[CRON FIRED 2026-06-29T00:00:00.000Z] heartbeat: Read HEARTBEAT.md and follow its instructions.',
+          '⏺API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited',
+          '✻ Cooked for 4s',
+          '=== TELEGRAM from [USER: Adam] (chat_id:123) ===',
+          'new request',
+        ].join('\n'),
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
+    it('A1 fail-safe: real abort without a locatable turn marker does not re-inject', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        recentStdout: () => [
+          '⏺API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited',
+          '✻ Cooked for 4s',
+          '❯ ',
+        ].join('\n'),
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
+    it('long active turn without abort and with older last_idle does not re-inject', async () => {
+      const writes: string[] = [];
+      const wake = Date.now() - 30_000;
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        lastIdleMs: () => wake - 5_000,
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
+    it('isAgentActive true suppresses a non-abort stale heartbeat', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        isAgentActive: () => true,
+        lastIdleMs: () => Date.now(),
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
+    it('A2 secondary: last_idle newer than max wake re-injects without abort text', async () => {
+      const writes: string[] = [];
+      const wake = Date.now() - 10_000;
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([
+        makeCron({
+          name: 'heartbeat',
+          schedule: '1h',
+          prompt: 'Read HEARTBEAT.md and follow its instructions.',
+          last_fire_attempted_at: new Date(wake).toISOString(),
+        }),
+      ]);
+      const s = watchdogScheduler({
+        writes,
+        lastIdleMs: () => wake + 2_000,
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes.join('')).toContain('[WATCHDOG REINJECT');
+      s.stop();
+    });
+
+    it('A2 max-wake includes every cron last_fired_at and suppresses an active non-heartbeat turn', async () => {
+      const writes: string[] = [];
+      const lastIdle = Date.now() - 30_000;
+      const nonHeartbeatWake = Date.now() - 10_000;
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([
+        heartbeatCron(),
+        makeCron({
+          name: 'coding-task-monitor',
+          schedule: '30m',
+          last_fired_at: new Date(nonHeartbeatWake).toISOString(),
+        }),
+      ]);
+      const s = watchdogScheduler({
+        writes,
+        lastIdleMs: () => lastIdle,
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
+    it('A2 treats same-second last_idle as idle with seconds-ms tolerance', async () => {
+      const writes: string[] = [];
+      const wake = Math.floor(Date.now() / 1000) * 1000 + 900;
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([
+        makeCron({
+          name: 'heartbeat',
+          schedule: '1h',
+          prompt: 'Read HEARTBEAT.md and follow its instructions.',
+          last_fire_attempted_at: new Date(wake).toISOString(),
+        }),
+      ]);
+      const s = watchdogScheduler({
+        writes,
+        lastIdleMs: () => Math.floor(wake / 1000) * 1000,
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes.join('')).toContain('[WATCHDOG REINJECT');
+      s.stop();
+    });
+
+    it('A1 overrides isAgentActive when the current terminal state is a throttle abort', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        isAgentActive: () => true,
+        recentStdout: () => throttleAbortTerminal,
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes.join('')).toContain('[WATCHDOG REINJECT');
+      s.stop();
+    });
+
+    it('out-of-scope non-429 TTY-blocked hang does not re-inject', async () => {
+      const writes: string[] = [];
+      const wake = Date.now() - 10_000;
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([
+        makeCron({
+          name: 'heartbeat',
+          schedule: '1h',
+          prompt: 'Read HEARTBEAT.md and follow its instructions.',
+          last_fire_attempted_at: new Date(wake).toISOString(),
+        }),
+      ]);
+      const s = watchdogScheduler({
+        writes,
+        recentStdout: () => 'Usage limit reached. Press enter to continue.',
+        lastIdleMs: () => wake - 10_000,
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
+    it('watchdog exceptions are contained and the next tick still runs', async () => {
+      const writes: string[] = [];
+      let reads = 0;
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        recentStdout: () => {
+          reads += 1;
+          if (reads === 1) throw new Error('stdout read failed');
+          return throttleAbortTerminal;
+        },
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(logs.some(l => l.includes('[cron-scheduler][watchdog] error: stdout read failed'))).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(writes.join('')).toContain('[WATCHDOG REINJECT');
+      s.stop();
+    });
+
+    it('capacity-defer alert is time-based and fires once, then resets on a non-deferred tick', async () => {
+      const writes: string[] = [];
+      const alerts: string[] = [];
+      let defer = true;
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        alert: (message) => alerts.push(message),
+        recentStdout: () => throttleAbortTerminal,
+        gate: () => defer ? { defer: true, reason: 'account capped' } : { defer: false },
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+      await vi.advanceTimersByTimeAsync(CronScheduler.HEARTBEAT_DEFER_ALERT_MS - TICK);
+      expect(alerts).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]).toContain('capacity-deferred');
+
+      await vi.advanceTimersByTimeAsync(CronScheduler.HEARTBEAT_REINJECT_INTERVAL_MS + TICK);
+      expect(alerts).toHaveLength(1);
+
+      defer = false;
+      await vi.advanceTimersByTimeAsync(CronScheduler.HEARTBEAT_REINJECT_INTERVAL_MS + TICK);
+      expect(writes.join('')).toContain('[WATCHDOG REINJECT');
+
+      defer = true;
+      await vi.advanceTimersByTimeAsync(CronScheduler.HEARTBEAT_REINJECT_INTERVAL_MS + TICK);
+      await vi.advanceTimersByTimeAsync(CronScheduler.HEARTBEAT_DEFER_ALERT_MS);
+      expect(alerts).toHaveLength(2);
+      s.stop();
+    });
+
     it('dead PTY suppresses watchdog re-inject', async () => {
       const writes: string[] = [];
       writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
       mockReadCrons.mockReturnValue([heartbeatCron()]);
       const s = watchdogScheduler({
         writes,
+        recentStdout: () => throttleAbortTerminal,
         isAlive: () => false,
       });
 
@@ -1243,7 +1598,7 @@ describe('CronScheduler', () => {
       const s = watchdogScheduler({
         writes,
         alert: (message) => alerts.push(message),
-        recentStdout: () => 'API Error: Server is temporarily limiting requests (not your usage limit) - Rate limited',
+        recentStdout: () => throttleAbortTerminal,
       });
 
       s.start();
@@ -1264,7 +1619,7 @@ describe('CronScheduler', () => {
       const alerts: string[] = [];
       writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
       mockReadCrons.mockReturnValue([heartbeatCron()]);
-      const s = watchdogScheduler({ writes, alert: (message) => alerts.push(message) });
+      const s = watchdogScheduler({ writes, alert: (message) => alerts.push(message), recentStdout: () => throttleAbortTerminal });
 
       s.start();
       await vi.advanceTimersByTimeAsync(TICK);
@@ -1287,8 +1642,8 @@ describe('CronScheduler', () => {
       writeHeartbeat('agent-a', Date.now() - 2 * 60 * 60_000);
       writeHeartbeat('agent-b', Date.now() - 2 * 60 * 60_000);
       mockReadCrons.mockReturnValue([heartbeatCron()]);
-      const a = watchdogScheduler({ agentName: 'agent-a', writes: writesA });
-      const b = watchdogScheduler({ agentName: 'agent-b', writes: writesB });
+      const a = watchdogScheduler({ agentName: 'agent-a', writes: writesA, recentStdout: () => throttleAbortTerminal });
+      const b = watchdogScheduler({ agentName: 'agent-b', writes: writesB, recentStdout: () => throttleAbortTerminal });
 
       a.start();
       b.start();

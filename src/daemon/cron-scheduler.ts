@@ -175,16 +175,20 @@ interface HeartbeatWatchdogState {
   lastReinjectAt?: number;
   reinjectCount: number;
   alertSent: boolean;
+  firstDeferAt?: number;
+  deferAlertSent: boolean;
 }
 
 export interface HeartbeatWatchdogOptions {
   ctxRoot: string;
   stdoutLogPath: string;
   isPtyAlive: () => boolean;
+  isAgentActive?: () => boolean;
   write: (data: string) => void;
   operatorAlert?: (message: string) => void;
   readStdoutMtimeMs?: (path: string) => number | null;
   readRecentStdout?: (path: string, maxBytes: number) => string;
+  readLastIdleFlagMs?: (ctxRoot: string, agentName: string) => number | null;
 }
 
 function changeKeyFor(c: CronDefinition): string {
@@ -324,10 +328,12 @@ export class CronScheduler {
   static readonly HEARTBEAT_IDLE_QUIET_MS = 60_000;
   static readonly HEARTBEAT_REINJECT_INTERVAL_MS = 10 * 60_000;
   static readonly HEARTBEAT_MAX_REINJECTS = 3;
+  static readonly HEARTBEAT_DEFER_ALERT_MS = 60 * 60_000;
 
   private heartbeatWatchdogState: HeartbeatWatchdogState = {
     reinjectCount: 0,
     alertSent: false,
+    deferAlertSent: false,
   };
 
   private static lastWatchdogReinjectAt: number | null = null;
@@ -389,7 +395,7 @@ export class CronScheduler {
       this.tickHandle = null;
     }
     this.scheduled.clear();
-    this.heartbeatWatchdogState = { reinjectCount: 0, alertSent: false };
+    this.heartbeatWatchdogState = { reinjectCount: 0, alertSent: false, deferAlertSent: false };
     this.logger(`[cron-scheduler] stopped for agent "${this.agentName}"`);
   }
 
@@ -680,7 +686,11 @@ export class CronScheduler {
       sc.firing = false;
     }
 
-    this.checkHeartbeatWatchdog(now, dispatchedCronNames);
+    try {
+      this.checkHeartbeatWatchdog(now, dispatchedCronNames);
+    } catch (err) {
+      this.logger(`[cron-scheduler][watchdog] error: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private checkHeartbeatWatchdog(now: number, dispatchedCronNames: Set<string>): void {
@@ -706,24 +716,22 @@ export class CronScheduler {
           `${this.heartbeatWatchdogState.reinjectCount} re-inject(s)`
         );
       }
-      this.heartbeatWatchdogState = { reinjectCount: 0, alertSent: false };
+      this.heartbeatWatchdogState = { reinjectCount: 0, alertSent: false, deferAlertSent: false };
       return;
     }
 
     if (!this.stdoutQuiet(watchdog, now)) return;
 
-    if (this.gate) {
-      let decision: GateDecision | undefined;
-      try {
-        decision = this.gate(heartbeat.definition);
-      } catch {
-        decision = undefined;
-      }
-      if (decision?.defer) {
-        this.logger(
-          `[cron-scheduler][watchdog] capacity-deferred heartbeat re-inject for "${this.agentName}" - ` +
-          `${decision.reason ?? 'capped'}`
-        );
+    const recentStdout = this.readRecentStdout(watchdog);
+    const terminalState = currentThrottleAbortTerminalState(recentStdout);
+    const maxWakeMs = this.maxKnownWakeMs(watchdog);
+    const lastIdleMs = this.readLastIdleFlagMs(watchdog);
+    const idleSinceWake = lastIdleMs !== null && lastIdleMs + 1_000 >= maxWakeMs;
+
+    if (!terminalState.isThrottleTerminal) {
+      const isActive = watchdog.isAgentActive?.() ?? true;
+      if (isActive || !idleSinceWake) {
+        this.clearWatchdogDeferState();
         return;
       }
     }
@@ -731,7 +739,7 @@ export class CronScheduler {
     const state = this.heartbeatWatchdogState;
     if (state.reinjectCount >= CronScheduler.HEARTBEAT_MAX_REINJECTS) {
       if (!state.alertSent) {
-        const attribution = this.watchdogAttribution(watchdog);
+        const attribution = this.watchdogAttributionFromStdout(recentStdout);
         const hours = Number.isFinite(heartbeatAgeMs) ? Math.round((heartbeatAgeMs / 3_600_000) * 10) / 10 : 'unknown';
         const message =
           `agent ${this.agentName} alive but heartbeat-wedged ${hours}h, ` +
@@ -747,6 +755,7 @@ export class CronScheduler {
       state.lastReinjectAt !== undefined &&
       now - state.lastReinjectAt < CronScheduler.HEARTBEAT_REINJECT_INTERVAL_MS
     ) {
+      this.clearWatchdogDeferState();
       return;
     }
 
@@ -755,17 +764,37 @@ export class CronScheduler {
       now - CronScheduler.lastWatchdogReinjectAt < CronScheduler.TICK_INTERVAL_MS
     ) {
       this.logger(`[cron-scheduler][watchdog] staggered heartbeat re-inject for "${this.agentName}" to avoid herd`);
+      this.clearWatchdogDeferState();
       return;
     }
+
+    if (this.gate) {
+      let decision: GateDecision | undefined;
+      try {
+        decision = this.gate(heartbeat.definition);
+      } catch {
+        decision = undefined;
+      }
+      if (decision?.defer) {
+        this.logger(
+          `[cron-scheduler][watchdog] capacity-deferred heartbeat re-inject for "${this.agentName}" - ` +
+          `${decision.reason ?? 'capped'}`
+        );
+        this.trackWatchdogDefer(now, heartbeatAgeMs, watchdog, recentStdout);
+        return;
+      }
+    }
+    this.clearWatchdogDeferState();
 
     const prompt = heartbeat.definition.prompt ?? `[cron] ${heartbeat.definition.name} fired`;
     injectMessage(watchdog.write, `[WATCHDOG REINJECT ${new Date(now).toISOString()}] heartbeat: ${prompt}`);
     state.reinjectCount += 1;
     state.lastReinjectAt = now;
+    this.clearWatchdogDeferState();
     CronScheduler.lastWatchdogReinjectAt = now;
     this.logger(
       `[cron-scheduler][watchdog] re-injected heartbeat for "${this.agentName}" ` +
-      `(${state.reinjectCount}/${CronScheduler.HEARTBEAT_MAX_REINJECTS}) - ${this.watchdogAttribution(watchdog)}`
+      `(${state.reinjectCount}/${CronScheduler.HEARTBEAT_MAX_REINJECTS}) - ${this.watchdogAttributionFromStdout(recentStdout)}`
     );
   }
 
@@ -803,12 +832,127 @@ export class CronScheduler {
     return now - mtime > CronScheduler.HEARTBEAT_IDLE_QUIET_MS;
   }
 
-  private watchdogAttribution(watchdog: HeartbeatWatchdogOptions): string {
-    const readRecent = watchdog.readRecentStdout ?? defaultReadRecentStdout;
-    return THROTTLE_ABORT_RE.test(readRecent(watchdog.stdoutLogPath, 64 * 1024))
+  private watchdogAttributionFromStdout(recentStdout: string): string {
+    return THROTTLE_ABORT_RE.test(recentStdout)
       ? 'throttle-abort'
       : 'unknown-cause';
   }
+
+  private readRecentStdout(watchdog: HeartbeatWatchdogOptions): string {
+    const readRecent = watchdog.readRecentStdout ?? defaultReadRecentStdout;
+    return readRecent(watchdog.stdoutLogPath, 64 * 1024);
+  }
+
+  private readLastIdleFlagMs(watchdog: HeartbeatWatchdogOptions): number | null {
+    const readFlag = watchdog.readLastIdleFlagMs ?? defaultReadLastIdleFlagMs;
+    return readFlag(watchdog.ctxRoot, this.agentName);
+  }
+
+  private maxKnownWakeMs(watchdog: HeartbeatWatchdogOptions): number {
+    const wakes: number[] = [];
+    for (const sc of this.scheduled.values()) {
+      const attempted = parseOptionalIsoMs(sc.definition.last_fire_attempted_at);
+      const fired = parseOptionalIsoMs(sc.definition.last_fired_at);
+      if (attempted !== null) wakes.push(attempted);
+      if (fired !== null) wakes.push(fired);
+    }
+    if (this.heartbeatWatchdogState.lastReinjectAt !== undefined) {
+      wakes.push(this.heartbeatWatchdogState.lastReinjectAt);
+    }
+    return wakes.length > 0 ? Math.max(...wakes) : 0;
+  }
+
+  private trackWatchdogDefer(now: number, heartbeatAgeMs: number, watchdog: HeartbeatWatchdogOptions, recentStdout: string): void {
+    const state = this.heartbeatWatchdogState;
+    state.firstDeferAt ??= now;
+    if (!state.deferAlertSent && now - state.firstDeferAt >= CronScheduler.HEARTBEAT_DEFER_ALERT_MS) {
+      const minutes = Math.round((now - state.firstDeferAt) / 60_000);
+      const hours = Number.isFinite(heartbeatAgeMs) ? Math.round((heartbeatAgeMs / 3_600_000) * 10) / 10 : 'unknown';
+      const message =
+        `agent ${this.agentName} alive but heartbeat-wedged ${hours}h and capacity-deferred ` +
+        `for ${minutes}min, ${this.watchdogAttributionFromStdout(recentStdout)}`;
+      this.logger(`[cron-scheduler][watchdog] ${message}`);
+      watchdog.operatorAlert?.(`WATCHDOG: ${message}`);
+      state.deferAlertSent = true;
+    }
+  }
+
+  private clearWatchdogDeferState(): void {
+    const state = this.heartbeatWatchdogState;
+    state.firstDeferAt = undefined;
+    state.deferAlertSent = false;
+  }
+}
+
+const ANSI_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+const STRICT_THROTTLE_ABORT_RE = /⏺\s*API Error:\s*Server is temporarily limiting requests\b[\s\S]{0,200}?\bRate limited\b[\s\S]{0,200}?[✻✶]\s*\S+\s+for\s+\d+s/g;
+const TURN_START_MARKER_RE = /\[CRON FIRED [^\]]+\]|\[CRON: [^\]]+\]|\[WATCHDOG REINJECT [^\]]+\]|\[CONTEXT HANDOFF REQUIRED\]|\[CONTEXT\] Window\b|=== TELEGRAM\b|=== REACTION\b|=== AGENT MESSAGE\b|SESSION CONTINUATION:|CONTEXT HANDOFF:/g;
+const PROMPT_OR_UI_NOISE_RE = [
+  /[❯›]\s*/g,
+  /[─━]{3,}/g,
+  /\(B/g,
+  /⏵⏵\s*bypass permissions on[^\n]*/g,
+  /new task\?\s*\/clear[^\n]*/g,
+  /← for agents/g,
+  /●?\s*How is Claude doing this session\? \(optional\)[\s\S]*?0:\s*Dismiss/g,
+  /✳\s*Initialize agent system and notify user/g,
+  /[✻✶⠐✳]\s*[^\n]*(?:for\s+\d+s|…)/g,
+];
+
+function currentThrottleAbortTerminalState(stdout: string): { isThrottleTerminal: boolean; markerFound: boolean } {
+  const normalized = normalizeStdout(stdout);
+  const latestMarker = latestMatchStart(TURN_START_MARKER_RE, normalized);
+  if (latestMarker === -1) return { isThrottleTerminal: false, markerFound: false };
+
+  let abortStart = -1;
+  let abortEnd = -1;
+  for (const match of normalized.matchAll(STRICT_THROTTLE_ABORT_RE)) {
+    const start = match.index ?? -1;
+    if (start > latestMarker) {
+      abortStart = start;
+      abortEnd = start + match[0].length;
+    }
+  }
+  if (abortStart === -1) return { isThrottleTerminal: false, markerFound: true };
+
+  const afterAbort = normalized.slice(abortEnd);
+  if (hasTurnMarker(afterAbort)) return { isThrottleTerminal: false, markerFound: true };
+  if (hasSubstantivePostAbortText(afterAbort)) return { isThrottleTerminal: false, markerFound: true };
+
+  return { isThrottleTerminal: true, markerFound: true };
+}
+
+function normalizeStdout(stdout: string): string {
+  return stdout
+    .replace(ANSI_RE, '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\r/g, '\n');
+}
+
+function latestMatchStart(re: RegExp, value: string): number {
+  re.lastIndex = 0;
+  let latest = -1;
+  for (const match of value.matchAll(re)) latest = match.index ?? latest;
+  return latest;
+}
+
+function hasTurnMarker(value: string): boolean {
+  TURN_START_MARKER_RE.lastIndex = 0;
+  return TURN_START_MARKER_RE.test(value);
+}
+
+function hasSubstantivePostAbortText(value: string): boolean {
+  let stripped = value;
+  for (const re of PROMPT_OR_UI_NOISE_RE) {
+    stripped = stripped.replace(re, '');
+  }
+  return stripped.trim().length > 0;
+}
+
+function parseOptionalIsoMs(value: string | undefined): number | null {
+  if (typeof value !== 'string') return null;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : ms;
 }
 
 function defaultStdoutMtimeMs(path: string): number | null {
@@ -827,5 +971,15 @@ function defaultReadRecentStdout(path: string, maxBytes: number): string {
     return content.slice(-maxBytes);
   } catch {
     return '';
+  }
+}
+
+function defaultReadLastIdleFlagMs(ctxRoot: string, agentName: string): number | null {
+  try {
+    const content = readFileSync(join(ctxRoot, 'state', agentName, 'last_idle.flag'), 'utf-8').trim();
+    const seconds = Number.parseInt(content, 10);
+    return Number.isNaN(seconds) ? null : seconds * 1000;
+  } catch {
+    return null;
   }
 }
