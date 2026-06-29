@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs';
+import { execFile } from 'child_process';
 import { join, relative } from 'path';
 import type { AgentConfig, AgentStatus, CtxEnv, BusPaths, WorkerStatus, TelegramMessage } from '../types/index.js';
 import { AgentProcess } from './agent-process.js';
@@ -1178,6 +1179,18 @@ export class AgentManager {
         ctxRoot: this.ctxRoot,
         logger: (msg) => console.log(`[daemon] ${msg}`),
       }),
+      heartbeatWatchdog: {
+        ctxRoot: this.ctxRoot,
+        stdoutLogPath: join(this.ctxRoot, 'logs', agentName, 'stdout.log'),
+        isPtyAlive: () => entry.process.isAlive(),
+        write: (data) => entry.process.write(data),
+        operatorAlert: (message) => {
+          const cliPath = join(this.frameworkRoot, 'dist', 'cli.js');
+          execFile(process.execPath, [cliPath, 'bus', 'notify-agent', 'the-orchestrator', message], (err) => {
+            if (err) console.log('[daemon] Watchdog operator alert notify failed');
+          });
+        },
+      },
       logger: (msg) => console.log(`[daemon] ${msg}`),
     });
 

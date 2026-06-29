@@ -24,7 +24,7 @@
  * New or modified crons get a freshly computed nextFireAt.
  */
 
-import { existsSync, statSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { parseDurationMs, readCronState } from '../bus/cron-state.js';
@@ -33,6 +33,8 @@ import type { CronDefinition } from '../types/index.js';
 import { GATE_RECHECK_MS } from './cron-capacity-gate.js';
 import type { GateDecision } from './cron-capacity-gate.js';
 import { appendExecutionLog } from './cron-execution-log.js';
+import { injectMessage } from '../pty/inject.js';
+import { THROTTLE_ABORT_RE } from '../utils/throttle.js';
 
 const CRON_TZ = process.env.CTX_TIMEZONE || 'America/Los_Angeles';
 const DAEMON_STOP_MARKER = '.daemon-stop';
@@ -169,6 +171,22 @@ interface ScheduledCron {
   firing?: boolean;
 }
 
+interface HeartbeatWatchdogState {
+  lastReinjectAt?: number;
+  reinjectCount: number;
+  alertSent: boolean;
+}
+
+export interface HeartbeatWatchdogOptions {
+  ctxRoot: string;
+  stdoutLogPath: string;
+  isPtyAlive: () => boolean;
+  write: (data: string) => void;
+  operatorAlert?: (message: string) => void;
+  readStdoutMtimeMs?: (path: string) => number | null;
+  readRecentStdout?: (path: string, maxBytes: number) => string;
+}
+
 function changeKeyFor(c: CronDefinition): string {
   return `${c.name}|${c.schedule}`;
 }
@@ -291,6 +309,7 @@ export interface CronSchedulerOptions {
   onFire: (cron: CronDefinition) => Promise<void> | void;
   logger?: (msg: string) => void;
   gate?: (cron: CronDefinition) => GateDecision;
+  heartbeatWatchdog?: HeartbeatWatchdogOptions;
 }
 
 export class CronScheduler {
@@ -298,6 +317,20 @@ export class CronScheduler {
   private readonly onFire: (cron: CronDefinition) => Promise<void> | void;
   private readonly logger: (msg: string) => void;
   private readonly gate?: (cron: CronDefinition) => GateDecision;
+  private readonly heartbeatWatchdog?: HeartbeatWatchdogOptions;
+
+  static readonly HEARTBEAT_MIN_STALE_MS = 90 * 60_000;
+  static readonly HEARTBEAT_STALE_MULTIPLIER = 1.5;
+  static readonly HEARTBEAT_IDLE_QUIET_MS = 60_000;
+  static readonly HEARTBEAT_REINJECT_INTERVAL_MS = 10 * 60_000;
+  static readonly HEARTBEAT_MAX_REINJECTS = 3;
+
+  private heartbeatWatchdogState: HeartbeatWatchdogState = {
+    reinjectCount: 0,
+    alertSent: false,
+  };
+
+  private static lastWatchdogReinjectAt: number | null = null;
 
   /** In-memory schedule, keyed by cron name. */
   private scheduled: Map<string, ScheduledCron> = new Map();
@@ -326,6 +359,7 @@ export class CronScheduler {
     this.onFire    = opts.onFire;
     this.logger    = opts.logger ?? ((msg: string) => process.stdout.write(msg + '\n'));
     this.gate      = opts.gate;
+    this.heartbeatWatchdog = opts.heartbeatWatchdog;
   }
 
   // -------------------------------------------------------------------------
@@ -355,6 +389,7 @@ export class CronScheduler {
       this.tickHandle = null;
     }
     this.scheduled.clear();
+    this.heartbeatWatchdogState = { reinjectCount: 0, alertSent: false };
     this.logger(`[cron-scheduler] stopped for agent "${this.agentName}"`);
   }
 
@@ -378,6 +413,10 @@ export class CronScheduler {
       name: sc.definition.name,
       nextFireAt: sc.nextFireAt,
     }));
+  }
+
+  static resetWatchdogGlobalStateForTests(): void {
+    CronScheduler.lastWatchdogReinjectAt = null;
   }
 
   // -------------------------------------------------------------------------
@@ -530,6 +569,7 @@ export class CronScheduler {
 
   private async tick(): Promise<void> {
     const now = Date.now();
+    const dispatchedCronNames = new Set<string>();
 
     for (const [name, sc] of this.scheduled) {
       if (sc.nextFireAt > now) {
@@ -565,6 +605,7 @@ export class CronScheduler {
       }
 
       sc.firing = true;
+      dispatchedCronNames.add(name);
       const cron = sc.definition;
       this.logger(`[cron-scheduler] firing cron "${name}" (was due ${new Date(sc.nextFireAt).toISOString()})`);
 
@@ -638,5 +679,153 @@ export class CronScheduler {
       }
       sc.firing = false;
     }
+
+    this.checkHeartbeatWatchdog(now, dispatchedCronNames);
+  }
+
+  private checkHeartbeatWatchdog(now: number, dispatchedCronNames: Set<string>): void {
+    const watchdog = this.heartbeatWatchdog;
+    if (!watchdog) return;
+
+    const heartbeat = this.scheduled.get('heartbeat');
+    if (!heartbeat) return;
+
+    if (dispatchedCronNames.has('heartbeat')) return;
+
+    if ([...this.scheduled.values()].some(sc => sc.firing)) return;
+
+    if (!watchdog.isPtyAlive()) return;
+
+    const lastHeartbeatAt = this.readHeartbeatMs(watchdog.ctxRoot);
+    const staleThresholdMs = this.heartbeatStaleThresholdMs(heartbeat.definition);
+    const heartbeatAgeMs = lastHeartbeatAt === null ? Number.POSITIVE_INFINITY : now - lastHeartbeatAt;
+    if (heartbeatAgeMs <= staleThresholdMs) {
+      if (this.heartbeatWatchdogState.reinjectCount > 0) {
+        this.logger(
+          `[cron-scheduler][watchdog] stale heartbeat for ${this.agentName} cleared after ` +
+          `${this.heartbeatWatchdogState.reinjectCount} re-inject(s)`
+        );
+      }
+      this.heartbeatWatchdogState = { reinjectCount: 0, alertSent: false };
+      return;
+    }
+
+    if (!this.stdoutQuiet(watchdog, now)) return;
+
+    if (this.gate) {
+      let decision: GateDecision | undefined;
+      try {
+        decision = this.gate(heartbeat.definition);
+      } catch {
+        decision = undefined;
+      }
+      if (decision?.defer) {
+        this.logger(
+          `[cron-scheduler][watchdog] capacity-deferred heartbeat re-inject for "${this.agentName}" - ` +
+          `${decision.reason ?? 'capped'}`
+        );
+        return;
+      }
+    }
+
+    const state = this.heartbeatWatchdogState;
+    if (state.reinjectCount >= CronScheduler.HEARTBEAT_MAX_REINJECTS) {
+      if (!state.alertSent) {
+        const attribution = this.watchdogAttribution(watchdog);
+        const hours = Number.isFinite(heartbeatAgeMs) ? Math.round((heartbeatAgeMs / 3_600_000) * 10) / 10 : 'unknown';
+        const message =
+          `agent ${this.agentName} alive but heartbeat-wedged ${hours}h, ` +
+          `${state.reinjectCount} re-injects failed, ${attribution}`;
+        this.logger(`[cron-scheduler][watchdog] ${message}`);
+        watchdog.operatorAlert?.(`WATCHDOG: ${message}`);
+        state.alertSent = true;
+      }
+      return;
+    }
+
+    if (
+      state.lastReinjectAt !== undefined &&
+      now - state.lastReinjectAt < CronScheduler.HEARTBEAT_REINJECT_INTERVAL_MS
+    ) {
+      return;
+    }
+
+    if (
+      CronScheduler.lastWatchdogReinjectAt !== null &&
+      now - CronScheduler.lastWatchdogReinjectAt < CronScheduler.TICK_INTERVAL_MS
+    ) {
+      this.logger(`[cron-scheduler][watchdog] staggered heartbeat re-inject for "${this.agentName}" to avoid herd`);
+      return;
+    }
+
+    const prompt = heartbeat.definition.prompt ?? `[cron] ${heartbeat.definition.name} fired`;
+    injectMessage(watchdog.write, `[WATCHDOG REINJECT ${new Date(now).toISOString()}] heartbeat: ${prompt}`);
+    state.reinjectCount += 1;
+    state.lastReinjectAt = now;
+    CronScheduler.lastWatchdogReinjectAt = now;
+    this.logger(
+      `[cron-scheduler][watchdog] re-injected heartbeat for "${this.agentName}" ` +
+      `(${state.reinjectCount}/${CronScheduler.HEARTBEAT_MAX_REINJECTS}) - ${this.watchdogAttribution(watchdog)}`
+    );
+  }
+
+  private heartbeatStaleThresholdMs(cron: CronDefinition): number {
+    const intervalMs = parseDurationMs(cron.schedule);
+    if (Number.isNaN(intervalMs)) return CronScheduler.HEARTBEAT_MIN_STALE_MS;
+    return Math.max(
+      CronScheduler.HEARTBEAT_MIN_STALE_MS,
+      intervalMs * CronScheduler.HEARTBEAT_STALE_MULTIPLIER,
+    );
+  }
+
+  private readHeartbeatMs(ctxRoot: string): number | null {
+    const p = join(ctxRoot, 'state', this.agentName, 'heartbeat.json');
+    try {
+      const parsed = JSON.parse(readFileSync(p, 'utf-8')) as {
+        last_heartbeat?: unknown;
+        last_functional_beat?: unknown;
+      };
+      const timestamp = typeof parsed.last_functional_beat === 'string'
+        ? parsed.last_functional_beat
+        : parsed.last_heartbeat;
+      if (typeof timestamp !== 'string') return null;
+      const ms = Date.parse(timestamp);
+      return Number.isNaN(ms) ? null : ms;
+    } catch {
+      return null;
+    }
+  }
+
+  private stdoutQuiet(watchdog: HeartbeatWatchdogOptions, now: number): boolean {
+    const readMtime = watchdog.readStdoutMtimeMs ?? defaultStdoutMtimeMs;
+    const mtime = readMtime(watchdog.stdoutLogPath);
+    if (mtime === null) return true;
+    return now - mtime > CronScheduler.HEARTBEAT_IDLE_QUIET_MS;
+  }
+
+  private watchdogAttribution(watchdog: HeartbeatWatchdogOptions): string {
+    const readRecent = watchdog.readRecentStdout ?? defaultReadRecentStdout;
+    return THROTTLE_ABORT_RE.test(readRecent(watchdog.stdoutLogPath, 64 * 1024))
+      ? 'throttle-abort'
+      : 'unknown-cause';
+  }
+}
+
+function defaultStdoutMtimeMs(path: string): number | null {
+  try {
+    if (!existsSync(path)) return null;
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+function defaultReadRecentStdout(path: string, maxBytes: number): string {
+  try {
+    if (!existsSync(path)) return '';
+    const content = readFileSync(path, 'utf-8');
+    return content.slice(-maxBytes);
+  } catch {
+    return '';
   }
 }

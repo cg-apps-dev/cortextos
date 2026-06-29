@@ -262,6 +262,7 @@ describe('CronScheduler', () => {
   let logs: string[];
   let fired: CronDefinition[];
   let scheduler: CronScheduler;
+  let tmpRoot: string;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -269,6 +270,8 @@ describe('CronScheduler', () => {
     createTempCtxRoot();
     logs   = [];
     fired  = [];
+    tmpRoot = mkdtempSync(join(tmpdir(), 'cron-watchdog-'));
+    CronScheduler.resetWatchdogGlobalStateForTests();
     mockReadCrons.mockReset();
     mockUpdateCron.mockReset();
     mockAppendExecutionLog.mockReset();
@@ -289,6 +292,8 @@ describe('CronScheduler', () => {
 
   afterEach(() => {
     scheduler.stop();
+    rmSync(tmpRoot, { recursive: true, force: true });
+    CronScheduler.resetWatchdogGlobalStateForTests();
     vi.useRealTimers();
     if (originalCtxRoot === undefined) {
       delete process.env.CTX_ROOT;
@@ -1053,5 +1058,251 @@ describe('CronScheduler', () => {
     expect(names).toContain('a');
     expect(names).toContain('b');
     expect(names).not.toContain('c'); // disabled, not scheduled
+  });
+
+  describe('heartbeat stale-while-alive watchdog', () => {
+    function writeHeartbeat(
+      agentName: string,
+      lastHeartbeatMs: number,
+      opts: { lastFunctionalBeatMs?: number | null } = {},
+    ): void {
+      const stateDir = join(tmpRoot, 'state', agentName);
+      mkdirSync(stateDir, { recursive: true });
+      const heartbeat: Record<string, string> = {
+        agent: agentName,
+        last_heartbeat: new Date(lastHeartbeatMs).toISOString(),
+      };
+      if (opts.lastFunctionalBeatMs !== undefined && opts.lastFunctionalBeatMs !== null) {
+        heartbeat.last_functional_beat = new Date(opts.lastFunctionalBeatMs).toISOString();
+      }
+      writeFileSync(
+        join(stateDir, 'heartbeat.json'),
+        JSON.stringify(heartbeat),
+        'utf-8',
+      );
+    }
+
+    function watchdogScheduler(opts: {
+      agentName?: string;
+      isAlive?: () => boolean;
+      stdoutMtimeMs?: () => number | null;
+      recentStdout?: () => string;
+      gate?: (cron: CronDefinition) => { defer: boolean; reason?: string };
+      alert?: (message: string) => void;
+      writes?: string[];
+    } = {}): CronScheduler {
+      const agentName = opts.agentName ?? 'test-agent';
+      const writes = opts.writes ?? [];
+      return new CronScheduler({
+        agentName,
+        onFire: (cron) => { fired.push(cron); },
+        gate: opts.gate,
+        heartbeatWatchdog: {
+          ctxRoot: tmpRoot,
+          stdoutLogPath: join(tmpRoot, 'logs', agentName, 'stdout.log'),
+          isPtyAlive: opts.isAlive ?? (() => true),
+          write: (data) => { writes.push(data); },
+          operatorAlert: opts.alert,
+          readStdoutMtimeMs: opts.stdoutMtimeMs ?? (() => Date.now() - 120_000),
+          readRecentStdout: opts.recentStdout ?? (() => ''),
+        },
+        logger: (msg) => { logs.push(msg); },
+      });
+    }
+
+    function heartbeatCron(): CronDefinition {
+      return makeCron({
+        name: 'heartbeat',
+        schedule: '1h',
+        prompt: 'Read HEARTBEAT.md and follow its instructions.',
+        last_fired_at: new Date(Date.now()).toISOString(),
+      });
+    }
+
+    it('stale heartbeat + alive PTY + idle stdout re-injects once', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({ writes });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes.join('')).toContain('Read HEARTBEAT.md and follow its instructions.');
+      expect(writes.join('')).toContain('[WATCHDOG REINJECT');
+      expect(writes.join('')).toContain('] heartbeat: ');
+      expect(logs.some(l => l.includes('re-injected heartbeat'))).toBe(true);
+      s.stop();
+    });
+
+    it('reads last_functional_beat for staleness even when last_heartbeat is fresh', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now(), {
+        lastFunctionalBeatMs: Date.now() - 2 * 60 * 60_000,
+      });
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({ writes });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes.join('')).toContain('Read HEARTBEAT.md and follow its instructions.');
+      s.stop();
+    });
+
+    it('does not re-inject when last_functional_beat and last_heartbeat are both fresh', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now(), { lastFunctionalBeatMs: Date.now() });
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({ writes });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
+    it('busy stdout suppresses the watchdog re-inject', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now(), {
+        lastFunctionalBeatMs: Date.now() - 2 * 60 * 60_000,
+      });
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        stdoutMtimeMs: () => Date.now() - 10_000,
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
+    it('capacity-capped heartbeat suppresses watchdog re-inject', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        gate: () => ({ defer: true, reason: 'account capped' }),
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      expect(logs.some(l => l.includes('capacity-deferred heartbeat re-inject'))).toBe(true);
+      s.stop();
+    });
+
+    it('dead PTY suppresses watchdog re-inject', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        isAlive: () => false,
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
+    it('does not watchdog re-inject on the same tick as a natural heartbeat fire', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([
+        makeCron({
+          name: 'heartbeat',
+          schedule: '1h',
+          prompt: 'Read HEARTBEAT.md and follow its instructions.',
+          last_fired_at: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+        }),
+      ]);
+      const s = watchdogScheduler({ writes });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(fired.map(c => c.name)).toContain('heartbeat');
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
+    it('caps at 3 watchdog re-injects, escalates once, and does not inject a 4th', async () => {
+      const writes: string[] = [];
+      const alerts: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        alert: (message) => alerts.push(message),
+        recentStdout: () => 'API Error: Server is temporarily limiting requests (not your usage limit) - Rate limited',
+      });
+
+      s.start();
+      for (let i = 0; i < 4; i++) {
+        await vi.advanceTimersByTimeAsync(CronScheduler.HEARTBEAT_REINJECT_INTERVAL_MS + TICK);
+      }
+
+      const pasteWrites = writes.filter(w => w.includes('Read HEARTBEAT.md'));
+      expect(pasteWrites).toHaveLength(3);
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]).toContain('3 re-injects failed');
+      expect(alerts[0]).toContain('throttle-abort');
+      s.stop();
+    });
+
+    it('fresh heartbeat resets watchdog counters after prior re-injects', async () => {
+      const writes: string[] = [];
+      const alerts: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({ writes, alert: (message) => alerts.push(message) });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(writes.filter(w => w.includes('Read HEARTBEAT.md'))).toHaveLength(1);
+
+      writeHeartbeat('test-agent', Date.now());
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(logs.some(l => l.includes('cleared after 1 re-inject'))).toBe(true);
+
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(writes.filter(w => w.includes('Read HEARTBEAT.md'))).toHaveLength(2);
+      expect(alerts).toEqual([]);
+      s.stop();
+    });
+
+    it('anti-herd stagger prevents two stale agents from re-injecting in the same tick window', async () => {
+      const writesA: string[] = [];
+      const writesB: string[] = [];
+      writeHeartbeat('agent-a', Date.now() - 2 * 60 * 60_000);
+      writeHeartbeat('agent-b', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const a = watchdogScheduler({ agentName: 'agent-a', writes: writesA });
+      const b = watchdogScheduler({ agentName: 'agent-b', writes: writesB });
+
+      a.start();
+      b.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writesA.filter(w => w.includes('Read HEARTBEAT.md'))).toHaveLength(1);
+      expect(writesB.filter(w => w.includes('Read HEARTBEAT.md'))).toHaveLength(0);
+      expect(logs.some(l => l.includes('staggered heartbeat re-inject'))).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(writesB.filter(w => w.includes('Read HEARTBEAT.md'))).toHaveLength(1);
+
+      a.stop();
+      b.stop();
+    });
   });
 });
