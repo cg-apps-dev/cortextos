@@ -1163,6 +1163,9 @@ describe('CronScheduler', () => {
 
       s.start();
       await vi.advanceTimersByTimeAsync(TICK);
+      expect(writes).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(TICK);
 
       expect(writes.join('')).toContain('Read HEARTBEAT.md and follow its instructions.');
       expect(writes.join('')).toContain('[WATCHDOG REINJECT');
@@ -1178,6 +1181,9 @@ describe('CronScheduler', () => {
       const s = watchdogScheduler({ writes, recentStdout: () => realForensicTerminalTail });
 
       s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(writes).toEqual([]);
+
       await vi.advanceTimersByTimeAsync(TICK);
 
       expect(writes.join('')).toContain('[WATCHDOG REINJECT');
@@ -1197,6 +1203,31 @@ describe('CronScheduler', () => {
       s.stop();
     });
 
+    it('A1 marker vocabulary: reminder turns are locatable for terminal aborts', async () => {
+      const writes: string[] = [];
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        recentStdout: () => [
+          '=== REMINDER FIRED [id: rem-123] (fire_at: 2026-09-09T20:00:00.000Z) ===',
+          'Handle it now, then run: cortextos bus ack-reminder rem-123',
+          '⏺API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited',
+          '✻ Cooked for 4s',
+          '❯ ',
+        ].join('\n'),
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(writes).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes.join('')).toContain('[WATCHDOG REINJECT');
+      s.stop();
+    });
+
     it('reads last_functional_beat for staleness even when last_heartbeat is fresh', async () => {
       const writes: string[] = [];
       writeHeartbeat('test-agent', Date.now(), {
@@ -1206,6 +1237,9 @@ describe('CronScheduler', () => {
       const s = watchdogScheduler({ writes, recentStdout: () => throttleAbortTerminal });
 
       s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(writes).toEqual([]);
+
       await vi.advanceTimersByTimeAsync(TICK);
 
       expect(writes.join('')).toContain('Read HEARTBEAT.md and follow its instructions.');
@@ -1255,9 +1289,32 @@ describe('CronScheduler', () => {
 
       s.start();
       await vi.advanceTimersByTimeAsync(TICK);
+      expect(writes).toEqual([]);
+      expect(logs.some(l => l.includes('capacity-deferred heartbeat re-inject'))).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(TICK);
 
       expect(writes).toEqual([]);
       expect(logs.some(l => l.includes('capacity-deferred heartbeat re-inject'))).toBe(true);
+      s.stop();
+    });
+
+    it('A1 stability: tail growth after candidate tick does not re-inject', async () => {
+      const writes: string[] = [];
+      let stdout = throttleAbortTerminal;
+      writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({
+        writes,
+        recentStdout: () => stdout,
+      });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+      stdout = `${throttleAbortTerminal}\n✶ Metamorphosing…`;
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
       s.stop();
     });
 
@@ -1463,6 +1520,9 @@ describe('CronScheduler', () => {
 
       s.start();
       await vi.advanceTimersByTimeAsync(TICK);
+      expect(writes).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(TICK);
 
       expect(writes.join('')).toContain('[WATCHDOG REINJECT');
       s.stop();
@@ -1512,6 +1572,9 @@ describe('CronScheduler', () => {
       expect(logs.some(l => l.includes('[cron-scheduler][watchdog] error: stdout read failed'))).toBe(true);
 
       await vi.advanceTimersByTimeAsync(TICK);
+      expect(writes).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(TICK);
       expect(writes.join('')).toContain('[WATCHDOG REINJECT');
       s.stop();
     });
@@ -1530,6 +1593,7 @@ describe('CronScheduler', () => {
       });
 
       s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
       await vi.advanceTimersByTimeAsync(TICK);
       await vi.advanceTimersByTimeAsync(CronScheduler.HEARTBEAT_DEFER_ALERT_MS - TICK);
       expect(alerts).toEqual([]);
@@ -1571,13 +1635,14 @@ describe('CronScheduler', () => {
 
     it('does not watchdog re-inject on the same tick as a natural heartbeat fire', async () => {
       const writes: string[] = [];
+      const now = Date.now();
       writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
       mockReadCrons.mockReturnValue([
         makeCron({
           name: 'heartbeat',
-          schedule: '1h',
+          schedule: '1m',
           prompt: 'Read HEARTBEAT.md and follow its instructions.',
-          last_fired_at: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+          last_fired_at: new Date(now - 59_000).toISOString(),
         }),
       ]);
       const s = watchdogScheduler({ writes });
@@ -1623,6 +1688,8 @@ describe('CronScheduler', () => {
 
       s.start();
       await vi.advanceTimersByTimeAsync(TICK);
+      expect(writes.filter(w => w.includes('Read HEARTBEAT.md'))).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(TICK);
       expect(writes.filter(w => w.includes('Read HEARTBEAT.md'))).toHaveLength(1);
 
       writeHeartbeat('test-agent', Date.now());
@@ -1630,6 +1697,8 @@ describe('CronScheduler', () => {
       expect(logs.some(l => l.includes('cleared after 1 re-inject'))).toBe(true);
 
       writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(writes.filter(w => w.includes('Read HEARTBEAT.md'))).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(TICK);
       expect(writes.filter(w => w.includes('Read HEARTBEAT.md'))).toHaveLength(2);
       expect(alerts).toEqual([]);
@@ -1647,6 +1716,10 @@ describe('CronScheduler', () => {
 
       a.start();
       b.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(writesA.filter(w => w.includes('Read HEARTBEAT.md'))).toHaveLength(0);
+      expect(writesB.filter(w => w.includes('Read HEARTBEAT.md'))).toHaveLength(0);
+
       await vi.advanceTimersByTimeAsync(TICK);
 
       expect(writesA.filter(w => w.includes('Read HEARTBEAT.md'))).toHaveLength(1);

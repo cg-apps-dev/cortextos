@@ -25,6 +25,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from 'fs';
+import { createHash } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
 import { parseDurationMs, readCronState } from '../bus/cron-state.js';
@@ -177,6 +178,8 @@ interface HeartbeatWatchdogState {
   alertSent: boolean;
   firstDeferAt?: number;
   deferAlertSent: boolean;
+  candidateTailHash?: string;
+  candidateTailLen?: number;
 }
 
 export interface HeartbeatWatchdogOptions {
@@ -729,11 +732,15 @@ export class CronScheduler {
     const idleSinceWake = lastIdleMs !== null && lastIdleMs + 1_000 >= maxWakeMs;
 
     if (!terminalState.isThrottleTerminal) {
+      this.clearThrottleCandidate();
       const isActive = watchdog.isAgentActive?.() ?? true;
       if (isActive || !idleSinceWake) {
         this.clearWatchdogDeferState();
         return;
       }
+    } else if (!this.confirmStableThrottleCandidate(recentStdout)) {
+      this.clearWatchdogDeferState();
+      return;
     }
 
     const state = this.heartbeatWatchdogState;
@@ -790,6 +797,7 @@ export class CronScheduler {
     injectMessage(watchdog.write, `[WATCHDOG REINJECT ${new Date(now).toISOString()}] heartbeat: ${prompt}`);
     state.reinjectCount += 1;
     state.lastReinjectAt = now;
+    this.clearThrottleCandidate();
     this.clearWatchdogDeferState();
     CronScheduler.lastWatchdogReinjectAt = now;
     this.logger(
@@ -882,11 +890,27 @@ export class CronScheduler {
     state.firstDeferAt = undefined;
     state.deferAlertSent = false;
   }
+
+  private confirmStableThrottleCandidate(recentStdout: string): boolean {
+    const state = this.heartbeatWatchdogState;
+    const hash = hashStdoutTail(recentStdout);
+    const len = Buffer.byteLength(recentStdout, 'utf-8');
+    const stable = state.candidateTailHash === hash && state.candidateTailLen === len;
+    state.candidateTailHash = hash;
+    state.candidateTailLen = len;
+    return stable;
+  }
+
+  private clearThrottleCandidate(): void {
+    const state = this.heartbeatWatchdogState;
+    state.candidateTailHash = undefined;
+    state.candidateTailLen = undefined;
+  }
 }
 
 const ANSI_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 const STRICT_THROTTLE_ABORT_RE = /⏺\s*API Error:\s*Server is temporarily limiting requests\b[\s\S]{0,200}?\bRate limited\b[\s\S]{0,200}?[✻✶]\s*\S+\s+for\s+\d+s/g;
-const TURN_START_MARKER_RE = /\[CRON FIRED [^\]]+\]|\[CRON: [^\]]+\]|\[WATCHDOG REINJECT [^\]]+\]|\[CONTEXT HANDOFF REQUIRED\]|\[CONTEXT\] Window\b|=== TELEGRAM\b|=== REACTION\b|=== AGENT MESSAGE\b|SESSION CONTINUATION:|CONTEXT HANDOFF:/g;
+const TURN_START_MARKER_RE = /\[CRON FIRED [^\]]+\]|\[CRON: [^\]]+\]|\[WATCHDOG REINJECT [^\]]+\]|\[CONTEXT HANDOFF REQUIRED\]|\[CONTEXT\] Window\b|=== TELEGRAM\b|=== REACTION\b|=== AGENT MESSAGE\b|=== REMINDER FIRED\b|SESSION CONTINUATION:|CONTEXT HANDOFF:/g;
 const PROMPT_OR_UI_NOISE_RE = [
   /[❯›]\s*/g,
   /[─━]{3,}/g,
@@ -953,6 +977,10 @@ function parseOptionalIsoMs(value: string | undefined): number | null {
   if (typeof value !== 'string') return null;
   const ms = Date.parse(value);
   return Number.isNaN(ms) ? null : ms;
+}
+
+function hashStdoutTail(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function defaultStdoutMtimeMs(path: string): number | null {

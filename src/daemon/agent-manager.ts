@@ -1182,7 +1182,7 @@ export class AgentManager {
       heartbeatWatchdog: {
         ctxRoot: this.ctxRoot,
         stdoutLogPath: join(this.ctxRoot, 'logs', agentName, 'stdout.log'),
-        isPtyAlive: () => entry.process.isAlive(),
+        isPtyAlive: () => entry.process.getStatus().status === 'running',
         isAgentActive: () => this.agents.get(agentName)?.checker?.isAgentActive() ?? true,
         write: (data) => entry.process.write(data),
         operatorAlert: (message) => {
