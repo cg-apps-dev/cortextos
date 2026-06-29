@@ -177,9 +177,9 @@ git worktree. Full design: `docs/architecture/dev-worktree-isolation.md`.
 - `gog calendar ls -a you@gmail.com --max 5`
 - Use `gog` instead of Gmail/Calendar MCP — more capable (send, archive, labels)
 
-### web-browse (general web) — full docs: `.claude/skills/web-browse/SKILL.md`
+### web-browse (general web) - full docs: `.claude/skills/web-browse/SKILL.md`
 - Browse the general web via Playwright/Chromium headless (installed). Fetch a public page's TEXT + optional screenshot.
 - `node "$CTX_FRAMEWORK_ROOT/scripts/web-browse.js" <url> [--screenshot <path>] [--selector "<css>"] [--html] [--wait networkidle]`
 - Quick visual: `playwright screenshot --browser chromium <url> out.png` · render PDF: `playwright pdf <url> out.pdf`
 - Multi-step (click/fill/flow): a short Node script with `require('playwright')` (see the skill).
-- SCOPE: GENERAL web only (competitor research, public pages, docs). NOT the live cleangreen.com store — it is bot-mitigated against Playwright; use `curl` / Microsoft Clarity / the Shopify Admin API for our store.
+- SCOPE: GENERAL web only (competitor research, public pages, docs). NOT the live cleangreen.com store - it is bot-mitigated against Playwright; use `curl` / Microsoft Clarity / the Shopify Admin API for our store.
