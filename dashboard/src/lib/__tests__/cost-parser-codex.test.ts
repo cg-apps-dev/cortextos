@@ -27,12 +27,18 @@ process.env.CTX_FRAMEWORK_ROOT = tmpDir;
 let calculateCost: typeof import('../cost-parser')['calculateCost'];
 let resolvePricingKey: typeof import('../cost-parser')['resolvePricingKey'];
 let scanCodexLogsCosts: typeof import('../cost-parser')['scanCodexLogsCosts'];
+let syncCosts: typeof import('../cost-parser')['syncCosts'];
+let getCostByAgent: typeof import('../cost-parser')['getCostByAgent'];
+let dashboardDb: typeof import('../db')['db'];
 
 beforeAll(async () => {
   const mod = await import('../cost-parser');
   calculateCost = mod.calculateCost;
   resolvePricingKey = mod.resolvePricingKey;
   scanCodexLogsCosts = mod.scanCodexLogsCosts;
+  syncCosts = mod.syncCosts;
+  getCostByAgent = mod.getCostByAgent;
+  dashboardDb = (await import('../db')).db;
 
   const cfgDir = path.join(tmpDir, 'config');
   fs.mkdirSync(cfgDir, { recursive: true });
@@ -53,6 +59,7 @@ beforeAll(async () => {
 beforeEach(() => {
   const logsDir = path.join(tmpDir, 'logs');
   if (fs.existsSync(logsDir)) fs.rmSync(logsDir, { recursive: true, force: true });
+  dashboardDb.prepare('DELETE FROM cost_entries').run();
 });
 
 function writeCodexLog(agent: string, lines: Array<Record<string, unknown>>): string {
@@ -136,7 +143,7 @@ describe('codex JSONL parsing — flat schema shape', () => {
     expect(e.agent).toBe('codex-alpha');
     expect(e.org).toBe('lifeos');
     expect(e.model).toBe('gpt-5-codex');
-    expect(e.timestamp).toBe('2026-05-08T01:00:00Z');
+    expect(e.timestamp.startsWith('2026-05-08T')).toBe(true);
     expect(e.input_tokens).toBe(1_000);
     expect(e.output_tokens).toBe(500);
     expect(e.total_tokens).toBe(1_500);
@@ -156,7 +163,7 @@ describe('codex JSONL parsing — flat schema shape', () => {
     }
   });
 
-  it('dedupes cumulative snapshots to one CostEntry per session', () => {
+  it('converts cumulative snapshots into additive buckets whose sum equals the latest cumulative', () => {
     writeCodexLog('codex-alpha', [
       {
         timestamp: '2026-05-08T01:00:00Z',
@@ -185,7 +192,7 @@ describe('codex JSONL parsing — flat schema shape', () => {
     ]);
     const entries = scanCodexLogsCosts();
     expect(entries).toHaveLength(1);
-    expect(entries[0].timestamp).toBe('2026-05-08T01:02:00Z');
+    expect(entries[0].timestamp.startsWith('2026-05-08T')).toBe(true);
     expect(entries[0].input_tokens).toBe(400_000_000);
     expect(entries[0].output_tokens).toBe(30_000_000);
     expect(entries[0].cost_usd).toBeCloseTo(800, 5);
@@ -223,10 +230,10 @@ describe('codex JSONL parsing — flat schema shape', () => {
         session_id: 'thread-B',
       },
     ]);
-    const entries = scanCodexLogsCosts().sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    const entries = scanCodexLogsCosts().sort((a, b) => a.input_tokens - b.input_tokens);
     expect(entries).toHaveLength(2);
     expect(entries.map((e) => e.input_tokens)).toEqual([200, 400]);
-    expect(entries.map((e) => e.timestamp)).toEqual(['2026-05-08T01:01:00Z', '2026-05-08T02:01:00Z']);
+    expect(entries.every((e) => e.timestamp.startsWith('2026-05-08T'))).toBe(true);
   });
 
   it('does not collapse records with missing session_id', () => {
@@ -237,6 +244,84 @@ describe('codex JSONL parsing — flat schema shape', () => {
     const entries = scanCodexLogsCosts().sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     expect(entries).toHaveLength(2);
     expect(entries.map((e) => e.input_tokens)).toEqual([100, 200]);
+  });
+
+  it('syncing the same cumulative codex log twice keeps totals at the latest cumulative, not 2x', () => {
+    writeCodexLog('codex-alpha', [
+      {
+        timestamp: '2026-05-08T01:00:00Z',
+        model: 'gpt-5.5',
+        input_tokens: 100,
+        output_tokens: 10,
+        session_id: 'thread-A',
+      },
+      {
+        timestamp: '2026-05-08T01:01:00Z',
+        model: 'gpt-5.5',
+        input_tokens: 250,
+        output_tokens: 20,
+        session_id: 'thread-A',
+      },
+      {
+        timestamp: '2026-05-08T01:02:00Z',
+        model: 'gpt-5.5',
+        input_tokens: 400,
+        output_tokens: 30,
+        session_id: 'thread-A',
+      },
+    ]);
+
+    expect(syncCosts()).toMatchObject({ scanned: 1, inserted: 1 });
+    expect(syncCosts()).toMatchObject({ scanned: 1, inserted: 0 });
+
+    const rows = getCostByAgent();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      agent: 'codex-alpha',
+      tokens: 430,
+      inputTokens: 400,
+      outputTokens: 30,
+    });
+    expect(dashboardDb.prepare('SELECT COUNT(*) as count FROM cost_entries').get()).toMatchObject({ count: 1 });
+  });
+
+  it('splits a model-mixing cumulative session into per-model additive buckets', () => {
+    writeCodexLog('codex-alpha', [
+      {
+        timestamp: '2026-05-08T01:00:00Z',
+        model: 'gpt-5.5',
+        input_tokens: 100,
+        output_tokens: 10,
+        session_id: 'thread-A',
+      },
+      {
+        timestamp: '2026-05-08T01:01:00Z',
+        model: 'gpt-5-codex',
+        input_tokens: 150,
+        output_tokens: 20,
+        session_id: 'thread-A',
+      },
+      {
+        timestamp: '2026-05-08T01:02:00Z',
+        model: 'gpt-5.5',
+        input_tokens: 250,
+        output_tokens: 40,
+        session_id: 'thread-A',
+      },
+    ]);
+
+    const byModel = new Map(scanCodexLogsCosts().map((entry) => [entry.model, entry]));
+    expect(byModel.size).toBe(2);
+    expect(byModel.get('gpt-5.5')).toMatchObject({
+      input_tokens: 200,
+      output_tokens: 30,
+      total_tokens: 230,
+    });
+    expect(byModel.get('gpt-5-codex')).toMatchObject({
+      input_tokens: 50,
+      output_tokens: 10,
+      total_tokens: 60,
+    });
   });
 
   it('multi-agent walk produces entries for every codex agent with logs', () => {

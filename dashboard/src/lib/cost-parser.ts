@@ -249,13 +249,57 @@ interface CodexTokenEntry {
   turn_id?: string;
 }
 
+type CodexSnapshot = Required<Pick<CodexTokenEntry, 'model'>> & {
+  timestamp: string;
+  sessionKey: string;
+  lineIndex: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+};
+
+type CodexDeltaBucket = {
+  timestamp: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+};
+
+function stableHash(value: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function stableCodexBucketTimestamp(day: string, sessionKey: string, model: string): string {
+  const hash = stableHash(`${sessionKey}\0${model}`);
+  const seconds = hash % 86_400;
+  const millis = Math.floor(hash / 86_400) % 1000;
+  const hour = Math.floor(seconds / 3600);
+  const minute = Math.floor((seconds % 3600) / 60);
+  const second = seconds % 60;
+  return `${day}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}.${String(millis).padStart(3, '0')}Z`;
+}
+
+function codexSnapshotDay(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '1970-01-01';
+  return date.toISOString().slice(0, 10);
+}
+
 /**
  * Parse a single codex-tokens.jsonl file. Schema differs from claude JSONL:
  * one record per `thread/tokenUsage/updated` notification with the shape
  * written by CodexAppServerPTY.appendCodexTokenLog.
  */
 function parseCodexJsonlFile(filePath: string, agent: string, org: string): CostEntry[] {
-  const latestBySession = new Map<string, CodexTokenEntry>();
+  const snapshotsBySession = new Map<string, CodexSnapshot[]>();
   let content: string;
   try {
     content = fs.readFileSync(filePath, 'utf-8');
@@ -280,49 +324,83 @@ function parseCodexJsonlFile(filePath: string, agent: string, org: string): Cost
         typeof raw.session_id === 'string' && raw.session_id.trim()
           ? raw.session_id
           : `__noid__:${lineIndex}`;
-      const existing = latestBySession.get(sessionKey);
-      if (!existing || inputTokens >= (existing.input_tokens ?? 0)) {
-        latestBySession.set(sessionKey, raw);
-      }
+      const timestamp = raw.timestamp ?? `1970-01-01T00:00:${String(lineIndex % 60).padStart(2, '0')}.000Z`;
+      const snapshot: CodexSnapshot = {
+        model,
+        timestamp,
+        sessionKey,
+        lineIndex,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+      };
+      const sessionSnapshots = snapshotsBySession.get(sessionKey) ?? [];
+      sessionSnapshots.push(snapshot);
+      snapshotsBySession.set(sessionKey, sessionSnapshots);
     } catch {
       // Skip malformed lines
     }
   });
 
-  const entries: CostEntry[] = [];
-  for (const raw of latestBySession.values()) {
-    try {
-      const model = raw.model;
-      if (!model) continue;
+  const buckets = new Map<string, CodexDeltaBucket>();
+  for (const snapshots of snapshotsBySession.values()) {
+    snapshots.sort((a, b) => {
+      const timeCmp = a.timestamp.localeCompare(b.timestamp);
+      return timeCmp === 0 ? a.lineIndex - b.lineIndex : timeCmp;
+    });
 
-      const inputTokens = raw.input_tokens ?? 0;
-      const outputTokens = raw.output_tokens ?? 0;
-      const cacheReadTokens = raw.cache_read_tokens ?? 0;
-      const cacheWriteTokens = raw.cache_write_tokens ?? 0;
-      if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0) continue;
+    let prior = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    for (const snapshot of snapshots) {
+      const inputDelta = Math.max(0, snapshot.inputTokens - prior.inputTokens);
+      const outputDelta = Math.max(0, snapshot.outputTokens - prior.outputTokens);
+      const cacheReadDelta = Math.max(0, snapshot.cacheReadTokens - prior.cacheReadTokens);
+      const cacheWriteDelta = Math.max(0, snapshot.cacheWriteTokens - prior.cacheWriteTokens);
 
-      const nonCachedInputTokens = Math.max(0, inputTokens - cacheReadTokens);
-      const totalTokens = inputTokens + outputTokens + cacheWriteTokens;
-      const costUsd = calculateCost(model, nonCachedInputTokens, outputTokens, cacheWriteTokens, cacheReadTokens);
-      const timestamp = raw.timestamp ?? new Date().toISOString();
+      prior = {
+        inputTokens: snapshot.inputTokens,
+        outputTokens: snapshot.outputTokens,
+        cacheReadTokens: snapshot.cacheReadTokens,
+        cacheWriteTokens: snapshot.cacheWriteTokens,
+      };
 
-      entries.push({
-        timestamp,
-        agent,
-        org,
-        model,
-        input_tokens: inputTokens,
-        output_tokens: outputTokens,
-        total_tokens: totalTokens,
-        cost_usd: costUsd,
-        source_file: filePath,
-      });
-    } catch {
-      // Skip malformed lines
+      if (inputDelta === 0 && outputDelta === 0 && cacheReadDelta === 0 && cacheWriteDelta === 0) continue;
+
+      const day = codexSnapshotDay(snapshot.timestamp);
+      const bucketTimestamp = stableCodexBucketTimestamp(day, snapshot.sessionKey, snapshot.model);
+      const key = `${snapshot.sessionKey}\0${snapshot.model}\0${day}`;
+      const bucket = buckets.get(key) ?? {
+        timestamp: bucketTimestamp,
+        model: snapshot.model,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      };
+      bucket.inputTokens += inputDelta;
+      bucket.outputTokens += outputDelta;
+      bucket.cacheReadTokens += cacheReadDelta;
+      bucket.cacheWriteTokens += cacheWriteDelta;
+      buckets.set(key, bucket);
     }
   }
 
-  return entries;
+  return Array.from(buckets.values()).map((bucket) => {
+    const nonCachedInputTokens = Math.max(0, bucket.inputTokens - bucket.cacheReadTokens);
+    const totalTokens = bucket.inputTokens + bucket.outputTokens + bucket.cacheWriteTokens;
+    const costUsd = calculateCost(bucket.model, nonCachedInputTokens, bucket.outputTokens, bucket.cacheWriteTokens, bucket.cacheReadTokens);
+    return {
+      timestamp: bucket.timestamp,
+      agent,
+      org,
+      model: bucket.model,
+      input_tokens: bucket.inputTokens,
+      output_tokens: bucket.outputTokens,
+      total_tokens: totalTokens,
+      cost_usd: costUsd,
+      source_file: filePath,
+    };
+  });
 }
 
 /**

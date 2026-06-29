@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { db } from '@/lib/db';
 
 // Resolve CTX_ROOT without importing from config (avoids turbopack chunk issues)
 const CTX_INSTANCE_ID = process.env.CTX_INSTANCE_ID ?? 'default';
@@ -258,46 +259,6 @@ function getFleetHealthFromHeartbeats(org: string): FleetHealth | null {
   };
 }
 
-// Plan Usage
-// ---------------------------------------------------------------------------
-// Two possible sources both write state/usage/latest.json:
-//   - Live Claude Max plan limits from the Anthropic OAuth usage API
-//     (five_hour / seven_day utilization) — automatable, the primary source.
-//   - Legacy Claude Code /usage text parsed via `scrape-usage`
-//     (session / week_all_models / week_sonnet) — manual.
-// All metric blocks are optional; the dashboard renders whichever are present.
-
-export interface UsageMetric {
-  used_pct: number;
-  resets?: string;
-}
-
-export interface PlanUsage {
-  /** Plan-level account label (live usage API). */
-  account?: string;
-  /** Legacy: agent that ran scrape-usage. */
-  agent?: string;
-  timestamp: string;
-  // Live Anthropic OAuth usage API (Claude Max plan limits) — primary.
-  five_hour?: UsageMetric;
-  seven_day?: UsageMetric;
-  // Legacy Claude Code /usage (scrape-usage) — optional.
-  session?: UsageMetric;
-  week_all_models?: UsageMetric;
-  week_sonnet?: { used_pct: number };
-}
-
-export function getPlanUsage(): PlanUsage | null {
-  const file = path.join(CTX_ROOT, 'state', 'usage', 'latest.json');
-  if (!fs.existsSync(file)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf-8'));
-  } catch {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Multi-account Claude subscription usage (3-account panel)
 // ---------------------------------------------------------------------------
 
@@ -336,6 +297,17 @@ export interface AccountUsagePanelEntry {
     used_usd: number;
     cap_usd?: number;
   };
+  last_good?: {
+    five_hour_pct?: number;
+    seven_day_pct?: number;
+    five_hour_resets?: string;
+    seven_day_resets?: string;
+    extra_usage?: {
+      is_enabled: boolean;
+      used_credits?: number;
+    };
+    fetched_at: string;
+  };
   fetched_at?: string;
 }
 
@@ -348,6 +320,14 @@ interface RawAccountUsage {
   five_hour_resets?: string;
   seven_day_resets?: string;
   extra_usage?: { is_enabled: boolean; used_credits?: number };
+  last_good?: {
+    five_hour_pct?: number;
+    seven_day_pct?: number;
+    five_hour_resets?: string;
+    seven_day_resets?: string;
+    extra_usage?: { is_enabled: boolean; used_credits?: number };
+    fetched_at: string;
+  };
   fetched_at?: string;
 }
 
@@ -385,6 +365,7 @@ export function getMultiAccountUsage(): { generatedAt: string; accounts: Account
       seven_day_pct: a.seven_day_pct,
       five_hour_resets: a.five_hour_resets,
       seven_day_resets: a.seven_day_resets,
+      last_good: a.last_good,
       fetched_at: a.fetched_at,
     };
     if (a.extra_usage) {
@@ -448,7 +429,7 @@ export function getAgentAccounts(): AgentAccounts | null {
 }
 
 // ---------------------------------------------------------------------------
-// Codex (OpenAI ChatGPT plan) usage - read-only, zero-token
+// Codex (OpenAI ChatGPT plan) usage - read-only
 // ---------------------------------------------------------------------------
 
 export interface CodexUsagePanel {
@@ -457,6 +438,31 @@ export interface CodexUsagePanel {
   plan_type?: string;
   rate_limit_reached?: boolean;
   as_of: string;
+}
+
+export interface CodexActivity {
+  tokens: number;
+  cost: number;
+}
+
+export function getCodexActivity(days: number = 7): CodexActivity {
+  try {
+    const row = db.prepare(`
+      SELECT
+        COALESCE(SUM(total_tokens), 0) AS tokens,
+        COALESCE(SUM(cost_usd), 0) AS cost
+      FROM cost_entries
+      WHERE source_file LIKE '%codex-tokens.jsonl'
+        AND timestamp >= DATE('now', ?)
+    `).get(`-${days} days`) as { tokens?: number | null; cost?: number | null } | undefined;
+
+    return {
+      tokens: row?.tokens ?? 0,
+      cost: row?.cost ?? 0,
+    };
+  } catch {
+    return { tokens: 0, cost: 0 };
+  }
 }
 
 /**
