@@ -20,6 +20,7 @@ import { nextFireFromCron } from '../daemon/cron-scheduler.js';
 import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/knowledge-base.js';
 import { refreshUsage, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D, type AccountsStore, type OAuthAccount } from '../bus/oauth.js';
 import { captureKeychainUsageCredential, beginUsageAuth, completeUsageAuth, checkAllUsage, setAccountBenched, fingerprint as ucFingerprint, loadMultiAccountUsage, type AccountUsage } from '../bus/usage-accounts.js';
+import { KNOWN_SECRET_KEYS, setAgentEnv, shredSucceeded } from '../bus/env-edit.js';
 import { resolveAgentAccount } from '../daemon/cron-capacity-gate.js';
 import { resolvePaths } from '../utils/paths.js';
 import { resolveEnv } from '../utils/env.js';
@@ -2937,6 +2938,47 @@ busCommand
       }
     } catch (err) {
       console.error(`Error: ${err}`);
+      process.exit(1);
+    }
+  });
+
+busCommand
+  .command('set-agent-env')
+  .description('Safely set agent .env keys using out-of-tree backup, atomic write, verify, and backup shredding')
+  .argument('<agent>', 'Agent name')
+  .argument('[assignments...]', 'KEY=VALUE assignments. Use --from-file for secrets.')
+  .option('--from-file <path>', 'Read KEY=VALUE lines from a file; values here win on collision')
+  .option('--org <org>', 'Org name (default: CTX_ORG)')
+  .action((agent: string, assignments: string[], opts: { fromFile?: string; org?: string }) => {
+    const env = resolveEnv();
+    try {
+      const argvSecretKeys = assignments
+        .map((arg) => {
+          const eqIdx = arg.indexOf('=');
+          return eqIdx > 0 ? arg.slice(0, eqIdx).trim() : '';
+        })
+        .filter((key) => KNOWN_SECRET_KEYS.has(key));
+      if (argvSecretKeys.length > 0) {
+        throw new Error(`set-agent-env: secret keys must be supplied via --from-file, not argv: ${argvSecretKeys.join(', ')}`);
+      }
+      const result = setAgentEnv({
+        agent,
+        org: opts.org ?? env.org,
+        frameworkRoot: env.frameworkRoot || env.projectRoot || process.cwd(),
+        ctxRoot: env.ctxRoot,
+        inlineAssignments: assignments,
+        fromFile: opts.fromFile,
+      });
+      console.log(`Updated ${result.org}/${result.agent} .env`);
+      console.log(`Keys: ${result.keys.join(', ')}`);
+      if (shredSucceeded(result)) {
+        console.log(`Backup removed after verification: ${result.backupPath}`);
+      }
+      for (const warning of result.warnings) {
+        console.error(warning);
+      }
+    } catch (err) {
+      console.error((err as Error).message);
       process.exit(1);
     }
   });
