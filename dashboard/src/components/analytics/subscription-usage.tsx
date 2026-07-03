@@ -51,6 +51,11 @@ type ResolvedUsageValue = {
   staleAsOf?: string;
 };
 
+type ResolvedScopedLimit = NonNullable<AccountUsagePanelEntry['scoped_limits']>[number] & {
+  stale: boolean;
+  staleAsOf?: string;
+};
+
 function resolveUsageValue(entry: AccountUsagePanelEntry, metric: UsageMetricKey): ResolvedUsageValue {
   const currentPct = metric === 'five_hour' ? entry.five_hour_pct : entry.seven_day_pct;
   const currentResets = metric === 'five_hour' ? entry.five_hour_resets : entry.seven_day_resets;
@@ -70,6 +75,17 @@ function resolveUsageValue(entry: AccountUsagePanelEntry, metric: UsageMetricKey
   }
 
   return { stale: false };
+}
+
+function resolveScopedLimits(entry: AccountUsagePanelEntry): ResolvedScopedLimit[] {
+  if (entry.scoped_limits && entry.scoped_limits.length > 0) {
+    return entry.scoped_limits.map((limit) => ({ ...limit, stale: false }));
+  }
+  return (entry.last_good?.scoped_limits ?? []).map((limit) => ({
+    ...limit,
+    stale: true,
+    staleAsOf: entry.last_good?.fetched_at,
+  }));
 }
 
 function UsageRow({ label, usage, note }: { label: string; usage: ResolvedUsageValue; note?: string }) {
@@ -102,6 +118,48 @@ function UsageRow({ label, usage, note }: { label: string; usage: ResolvedUsageV
       )}
       {note && <p className="text-[10px] text-muted-foreground">{note}</p>}
       {usage.resets && <ResetCountdown resets={usage.resets} fallback={`Resets ${ptTime(usage.resets)}`} />}
+    </div>
+  );
+}
+
+function ScopedLimitRow({ limit }: { limit: ResolvedScopedLimit }) {
+  const barColor = limit.stale
+    ? 'bg-muted-foreground/40'
+    : limit.severity === 'critical'
+      ? 'bg-red-500'
+      : limit.severity === 'warning'
+        ? 'bg-amber-500'
+        : 'bg-muted-foreground/50';
+  const badgeTone = limit.stale
+    ? 'bg-muted text-muted-foreground'
+    : limit.severity === 'critical'
+      ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+      : limit.severity === 'warning'
+        ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+        : 'bg-muted text-muted-foreground';
+  const label = limit.model === 'Fable' ? 'Fable weekly limit' : `${limit.model} weekly limit`;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-2 text-xs">
+        <span className="text-muted-foreground">{label}</span>
+        <div className="flex items-center gap-1">
+          <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${badgeTone}`}>
+            {limit.severity}
+          </span>
+          <span className={`font-medium tabular-nums ${limit.stale ? 'text-muted-foreground' : ''}`}>
+            {limit.percent}%
+          </span>
+        </div>
+      </div>
+      <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+        <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.min(100, Math.max(0, limit.percent))}%` }} />
+      </div>
+      {limit.stale && (
+        <span className="inline-flex rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          stale - as of {ptTime(limit.staleAsOf)}
+        </span>
+      )}
+      {limit.resets_at && <ResetCountdown resets={limit.resets_at} fallback={`Resets ${ptTime(limit.resets_at)}`} />}
     </div>
   );
 }
@@ -162,7 +220,8 @@ function AgentChips({ agents, warning = false }: { agents?: string[]; warning?: 
 function AccountCard({ entry, agents }: { entry: AccountUsagePanelEntry; agents?: string[] }) {
   const fiveHour = resolveUsageValue(entry, 'five_hour');
   const sevenDay = resolveUsageValue(entry, 'seven_day');
-  const hasUsageValue = typeof fiveHour.value === 'number' || typeof sevenDay.value === 'number';
+  const scopedLimits = resolveScopedLimits(entry);
+  const hasUsageValue = typeof fiveHour.value === 'number' || typeof sevenDay.value === 'number' || scopedLimits.length > 0;
   const showUnavailable = !entry.ok && !hasUsageValue;
   const isMetered = entry.extra_usage?.is_enabled;
   return (
@@ -179,6 +238,9 @@ function AccountCard({ entry, agents }: { entry: AccountUsagePanelEntry; agents?
             usage={sevenDay}
             note={isMetered ? 'subscription window only - under-reads overage burn' : undefined}
           />
+          {scopedLimits.map((limit) => (
+            <ScopedLimitRow key={limit.model} limit={limit} />
+          ))}
           {entry.extra_usage && <ExtraUsage extra={entry.extra_usage} />}
         </div>
       ) : (

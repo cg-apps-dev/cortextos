@@ -281,6 +281,14 @@ const ACCOUNT_ORDER = ['cg-team-seat', 'me-com-max', 'icloud-max-20x', 'moonligh
 const CREDITS_PER_USD = 100;
 const EXTRA_USAGE_CAP_USD: Record<string, number> = { 'me-com-max': 10000 };
 
+export interface ScopedLimit {
+  model: string;
+  percent: number;
+  severity: 'normal' | 'warning' | 'critical';
+  resets_at?: string;
+  is_active: boolean;
+}
+
 export interface AccountUsagePanelEntry {
   account: string;
   email: string;
@@ -297,6 +305,7 @@ export interface AccountUsagePanelEntry {
     used_usd: number;
     cap_usd?: number;
   };
+  scoped_limits?: ScopedLimit[];
   last_good?: {
     five_hour_pct?: number;
     seven_day_pct?: number;
@@ -306,6 +315,7 @@ export interface AccountUsagePanelEntry {
       is_enabled: boolean;
       used_credits?: number;
     };
+    scoped_limits?: ScopedLimit[];
     fetched_at: string;
   };
   fetched_at?: string;
@@ -320,12 +330,14 @@ interface RawAccountUsage {
   five_hour_resets?: string;
   seven_day_resets?: string;
   extra_usage?: { is_enabled: boolean; used_credits?: number };
+  scoped_limits?: ScopedLimit[];
   last_good?: {
     five_hour_pct?: number;
     seven_day_pct?: number;
     five_hour_resets?: string;
     seven_day_resets?: string;
     extra_usage?: { is_enabled: boolean; used_credits?: number };
+    scoped_limits?: ScopedLimit[];
     fetched_at: string;
   };
   fetched_at?: string;
@@ -365,6 +377,7 @@ export function getMultiAccountUsage(): { generatedAt: string; accounts: Account
       seven_day_pct: a.seven_day_pct,
       five_hour_resets: a.five_hour_resets,
       seven_day_resets: a.seven_day_resets,
+      scoped_limits: a.scoped_limits,
       last_good: a.last_good,
       fetched_at: a.fetched_at,
     };

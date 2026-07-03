@@ -58,12 +58,21 @@ export interface ExtraUsage {
   used_credits?: number;
 }
 
+export interface ScopedLimit {
+  model: string;
+  percent: number;
+  severity: 'normal' | 'warning' | 'critical';
+  resets_at?: string;
+  is_active: boolean;
+}
+
 export interface LastGoodUsage {
   five_hour_pct?: number;
   seven_day_pct?: number;
   five_hour_resets?: string;
   seven_day_resets?: string;
   extra_usage?: ExtraUsage;
+  scoped_limits?: ScopedLimit[];
   fetched_at: string;
   credential_source?: UsageCredentialSource;
   credential_fingerprint?: string;
@@ -80,6 +89,7 @@ export interface AccountUsage {
   five_hour_resets?: string;
   seven_day_resets?: string;
   extra_usage?: ExtraUsage;
+  scoped_limits?: ScopedLimit[];
   credential_source?: UsageCredentialSource;
   credential_fingerprint?: string;
   last_good?: LastGoodUsage;
@@ -490,11 +500,35 @@ export function parseUsageResponse(account: string, data: unknown, now: string):
     five_hour?: { utilization?: number; resets_at?: string | null };
     seven_day?: { utilization?: number; resets_at?: string | null };
     extra_usage?: { is_enabled?: boolean; used_credits?: number };
+    limits?: Array<{
+      kind?: string;
+      percent?: number;
+      severity?: string;
+      resets_at?: string | null;
+      is_active?: boolean;
+      scope?: { model?: { display_name?: string } | null } | null;
+    }>;
   };
   const pct = (v: number | undefined): number | undefined => {
     if (v === undefined) return undefined;
     return Math.round(Math.min(100, Math.max(0, v)));
   };
+  const scopedLimits: ScopedLimit[] = [];
+  for (const limit of d.limits ?? []) {
+    if (limit.kind !== 'weekly_scoped') continue;
+    const model = limit.scope?.model?.display_name?.trim();
+    if (!model) continue;
+    const severity = limit.severity === 'warning' || limit.severity === 'critical'
+      ? limit.severity
+      : 'normal';
+    scopedLimits.push({
+      model,
+      percent: pct(limit.percent) ?? 0,
+      severity,
+      ...(limit.resets_at ? { resets_at: limit.resets_at } : {}),
+      is_active: limit.is_active === true,
+    });
+  }
   // Impossible-read: a window reporting USAGE (>0) with no resets_at - you
   // cannot be at >0% with no active rolling window. utilization:0 + null
   // resets_at is a VALID IDLE window (no recent usage -> no rolling window ->
@@ -530,6 +564,7 @@ export function parseUsageResponse(account: string, data: unknown, now: string):
     seven_day_pct: pct(d.seven_day?.utilization),
     ...(d.five_hour?.resets_at ? { five_hour_resets: d.five_hour.resets_at } : {}),
     ...(d.seven_day?.resets_at ? { seven_day_resets: d.seven_day.resets_at } : {}),
+    ...(scopedLimits.length > 0 ? { scoped_limits: scopedLimits } : {}),
     fetched_at: now,
   };
   if (d.extra_usage && typeof d.extra_usage.is_enabled === 'boolean') {
@@ -925,6 +960,7 @@ interface AccountAlertState {
   seven_d_pending: boolean; // saw ONE over-read; awaiting a 2nd consecutive to confirm
   extra_enabled: boolean;   // last-seen: extra-usage meter enabled
   extra_credits: number;    // last-seen: credits (for rise detection)
+  scoped_limits?: Record<string, ScopedLimit['severity']>; // last-seen model-scoped weekly severity
   fetch_failing: boolean;   // last-seen: fetch failing (monitoring blind)
   fail_consecutive?: number; // consecutive ok:false reads in the current episode
   fetch_fail_alerted?: boolean; // FAIL alert sent for the current episode
@@ -962,6 +998,7 @@ function lastGoodFrom(prior: AccountUsage | undefined): LastGoodUsage | undefine
     ...(prior.five_hour_resets ? { five_hour_resets: prior.five_hour_resets } : {}),
     ...(prior.seven_day_resets ? { seven_day_resets: prior.seven_day_resets } : {}),
     ...(prior.extra_usage ? { extra_usage: prior.extra_usage } : {}),
+    ...(prior.scoped_limits ? { scoped_limits: prior.scoped_limits } : {}),
     fetched_at: prior.fetched_at,
     ...(prior.credential_source ? { credential_source: prior.credential_source } : {}),
     ...(prior.credential_fingerprint ? { credential_fingerprint: safeStoredFingerprint(prior.credential_fingerprint) } : {}),
@@ -1175,6 +1212,24 @@ export function evaluateAlerts(
     next.extra_enabled = enabled;
     next.extra_credits = enabled ? credits : prev.extra_credits;
 
+    // Model-scoped weekly limits (Fable today): Anthropic supplies native
+    // severity, so warning/critical fire immediately on severity edges.
+    const scopedNext: Record<string, ScopedLimit['severity']> = {};
+    for (const limit of u.scoped_limits ?? []) {
+      const priorSeverity = prev.scoped_limits?.[limit.model] ?? 'normal';
+      const currentSeverity = limit.severity;
+      scopedNext[limit.model] = currentSeverity;
+      const resetText = limit.resets_at ? ` resets ${ptTime(limit.resets_at)}` : '';
+      if (currentSeverity === 'warning' || currentSeverity === 'critical') {
+        if (currentSeverity !== priorSeverity && !benched) {
+          alerts.push(`${limit.model.toUpperCase()}-LIMIT ${who}: ${limit.percent}% ${currentSeverity}${resetText}`);
+        }
+      } else if ((priorSeverity === 'warning' || priorSeverity === 'critical') && !benched) {
+        alerts.push(`RECOVERED ${who}: ${limit.model} weekly limit back to normal (now ${limit.percent}%)`);
+      }
+    }
+    next.scoped_limits = scopedNext;
+
     nextState[u.account] = next;
   }
   return { alerts, nextState };
@@ -1223,6 +1278,7 @@ export async function checkAllUsage(
         fetched_at: now,
         ...(lastGood?.five_hour_pct !== undefined ? { five_hour_pct: lastGood.five_hour_pct } : {}),
         ...(lastGood?.seven_day_pct !== undefined ? { seven_day_pct: lastGood.seven_day_pct } : {}),
+        ...(lastGood?.scoped_limits ? { scoped_limits: lastGood.scoped_limits } : {}),
         ...(lastGood ? { last_good: lastGood } : {}),
       });
       continue;

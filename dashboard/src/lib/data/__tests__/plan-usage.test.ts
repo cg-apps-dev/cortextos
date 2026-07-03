@@ -116,6 +116,55 @@ describe('getMultiAccountUsage (3-account subscription panel)', () => {
     expect(me.last_good?.fetched_at).toBe('2026-06-11T18:00:00.000Z');
   });
 
+  it('passes scoped weekly limits and last_good scoped limits through for dashboard rendering', () => {
+    writeSnapshot([
+      {
+        account: 'me-com-max',
+        ok: true,
+        scoped_limits: [{
+          model: 'Fable',
+          percent: 100,
+          severity: 'critical',
+          resets_at: '2026-07-05T08:59:59.905554+00:00',
+          is_active: true,
+        }],
+      },
+      {
+        account: 'icloud-max-20x',
+        ok: false,
+        error: 'HTTP 403',
+        last_good: {
+          scoped_limits: [{
+            model: 'Fable',
+            percent: 4,
+            severity: 'normal',
+            resets_at: '2026-07-05T08:59:59.905554+00:00',
+            is_active: true,
+          }],
+          fetched_at: '2026-06-11T18:00:00.000Z',
+        },
+      },
+    ]);
+
+    const r = reports.getMultiAccountUsage()!;
+    const me = r.accounts.find((a) => a.account === 'me-com-max')!;
+    const icloud = r.accounts.find((a) => a.account === 'icloud-max-20x')!;
+    expect(me.scoped_limits).toEqual([{
+      model: 'Fable',
+      percent: 100,
+      severity: 'critical',
+      resets_at: '2026-07-05T08:59:59.905554+00:00',
+      is_active: true,
+    }]);
+    expect(icloud.last_good?.scoped_limits).toEqual([{
+      model: 'Fable',
+      percent: 4,
+      severity: 'normal',
+      resets_at: '2026-07-05T08:59:59.905554+00:00',
+      is_active: true,
+    }]);
+  });
+
   it('renders an unknown account with a fallback label instead of dropping it', () => {
     writeSnapshot([{ account: 'future-acct', ok: true, five_hour_pct: 1 }]);
     const r = reports.getMultiAccountUsage()!;

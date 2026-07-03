@@ -21,6 +21,20 @@ import {
 import { atomicWriteSync } from '../../../src/utils/atomic';
 
 const NOW = '2026-06-11T03:00:00.000Z';
+const FABLE_LIMIT_CRITICAL = {
+  kind: 'weekly_scoped',
+  group: 'weekly',
+  percent: 100,
+  severity: 'critical',
+  resets_at: '2026-07-05T08:59:59.905554+00:00',
+  scope: { model: { id: null, display_name: 'Fable' }, surface: null },
+  is_active: true,
+};
+const FABLE_LIMIT_NORMAL = {
+  ...FABLE_LIMIT_CRITICAL,
+  percent: 4,
+  severity: 'normal',
+};
 
 function hash8(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 8);
@@ -119,6 +133,86 @@ describe('usage-accounts', () => {
       const u = parseUsageResponse('seat', { five_hour: { utilization: 10, resets_at: '2026-06-11T05:00:00Z' } }, NOW);
       expect(u.ok).toBe(true);
       expect(u.extra_usage).toBeUndefined();
+    });
+
+    it('parses real weekly_scoped Fable limits[] entries', () => {
+      const u = parseUsageResponse('me-com-max', {
+        five_hour: { utilization: 1, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 2, resets_at: '2026-06-15T00:00:00Z' },
+        limits: [
+          { kind: 'session', percent: 50, severity: 'warning', scope: null, is_active: true },
+          { kind: 'weekly_all', percent: 80, severity: 'warning', scope: null, is_active: true },
+          FABLE_LIMIT_CRITICAL,
+        ],
+      }, NOW);
+      expect(u.scoped_limits).toEqual([{
+        model: 'Fable',
+        percent: 100,
+        severity: 'critical',
+        resets_at: '2026-07-05T08:59:59.905554+00:00',
+        is_active: true,
+      }]);
+    });
+
+    it('keeps the real low Fable fixture as normal', () => {
+      const u = parseUsageResponse('icloud-max-20x', {
+        five_hour: { utilization: 1, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 2, resets_at: '2026-06-15T00:00:00Z' },
+        limits: [FABLE_LIMIT_NORMAL],
+      }, NOW);
+      expect(u.scoped_limits).toEqual([{
+        model: 'Fable',
+        percent: 4,
+        severity: 'normal',
+        resets_at: '2026-07-05T08:59:59.905554+00:00',
+        is_active: true,
+      }]);
+    });
+
+    it('omits scoped_limits when limits[] is absent or only scopeless/non-weekly entries exist', () => {
+      const absent = parseUsageResponse('no-limits', {
+        five_hour: { utilization: 1, resets_at: '2026-06-11T05:00:00Z' },
+      }, NOW);
+      const excluded = parseUsageResponse('excluded', {
+        limits: [
+          { kind: 'weekly_all', percent: 90, severity: 'critical', scope: null, is_active: true },
+          { kind: 'weekly_scoped', percent: 90, severity: 'critical', scope: null, is_active: true },
+          { kind: 'session', percent: 90, severity: 'critical', scope: { model: { display_name: 'Fable' } }, is_active: true },
+        ],
+      }, NOW);
+      expect(absent.scoped_limits).toBeUndefined();
+      expect(excluded.scoped_limits).toBeUndefined();
+    });
+
+    it('captures multiple model-scoped weekly limits generically', () => {
+      const u = parseUsageResponse('future-models', {
+        limits: [
+          FABLE_LIMIT_CRITICAL,
+          {
+            kind: 'weekly_scoped',
+            percent: 61,
+            severity: 'warning',
+            resets_at: null,
+            scope: { model: { display_name: 'Future Model' } },
+            is_active: false,
+          },
+        ],
+      }, NOW);
+      expect(u.scoped_limits).toEqual([
+        {
+          model: 'Fable',
+          percent: 100,
+          severity: 'critical',
+          resets_at: '2026-07-05T08:59:59.905554+00:00',
+          is_active: true,
+        },
+        {
+          model: 'Future Model',
+          percent: 61,
+          severity: 'warning',
+          is_active: false,
+        },
+      ]);
     });
 
     it('marks POSITIVE utilization with null reset metadata as an impossible read', () => {
@@ -264,7 +358,7 @@ describe('usage-accounts', () => {
   describe('evaluateAlerts (edge-triggered dedup)', () => {
     const base: AccountUsage = { account: 'a', ok: true, fetched_at: NOW };
     // Build a prev alert-state for account 'a'.
-    const st = (o: Partial<{ five_h_over: boolean; seven_d_over: boolean; five_h_pending: boolean; seven_d_pending: boolean; extra_enabled: boolean; extra_credits: number; fetch_failing: boolean; fail_consecutive: number; fetch_fail_alerted: boolean }>) => ({
+    const st = (o: Partial<{ five_h_over: boolean; seven_d_over: boolean; five_h_pending: boolean; seven_d_pending: boolean; extra_enabled: boolean; extra_credits: number; scoped_limits: Record<string, 'normal' | 'warning' | 'critical'>; fetch_failing: boolean; fail_consecutive: number; fetch_fail_alerted: boolean }>) => ({
       a: { five_h_over: false, seven_d_over: false, five_h_pending: false, seven_d_pending: false, extra_enabled: false, extra_credits: 0, fetch_failing: false, fail_consecutive: 0, fetch_fail_alerted: false, at: '2026-06-11T02:00:00.000Z', ...o },
     });
 
@@ -377,6 +471,65 @@ describe('usage-accounts', () => {
       );
       expect(alerts.some(a => a.includes('DISABLED') && a.includes('537155'))).toBe(true);
       expect(nextState.a.extra_enabled).toBe(false);
+    });
+
+    it('scoped weekly limits fire warning and critical once on severity edges', () => {
+      const warning = evaluateAlerts([{
+        ...base,
+        scoped_limits: [{ model: 'Fable', percent: 81, severity: 'warning', resets_at: '2026-07-05T08:59:59.905554+00:00', is_active: true }],
+      }], {}, NOW);
+      expect(warning.alerts).toHaveLength(1);
+      expect(warning.alerts[0]).toContain('FABLE-LIMIT a: 81% warning resets');
+
+      const repeat = evaluateAlerts([{
+        ...base,
+        scoped_limits: [{ model: 'Fable', percent: 82, severity: 'warning', resets_at: '2026-07-05T08:59:59.905554+00:00', is_active: true }],
+      }], warning.nextState, NOW);
+      expect(repeat.alerts).toEqual([]);
+
+      const critical = evaluateAlerts([{
+        ...base,
+        scoped_limits: [{ model: 'Fable', percent: 100, severity: 'critical', resets_at: '2026-07-05T08:59:59.905554+00:00', is_active: true }],
+      }], repeat.nextState, NOW);
+      expect(critical.alerts).toEqual([expect.stringContaining('FABLE-LIMIT a: 100% critical resets')]);
+
+      const criticalRepeat = evaluateAlerts([{
+        ...base,
+        scoped_limits: [{ model: 'Fable', percent: 100, severity: 'critical', resets_at: '2026-07-05T08:59:59.905554+00:00', is_active: true }],
+      }], critical.nextState, NOW);
+      expect(criticalRepeat.alerts).toEqual([]);
+    });
+
+    it('scoped weekly limits recover once on drop to normal', () => {
+      const recovered = evaluateAlerts([{
+        ...base,
+        scoped_limits: [{ model: 'Fable', percent: 4, severity: 'normal', resets_at: '2026-07-05T08:59:59.905554+00:00', is_active: true }],
+      }], st({ scoped_limits: { Fable: 'critical' } }), NOW);
+      expect(recovered.alerts).toEqual(['RECOVERED a: Fable weekly limit back to normal (now 4%)']);
+
+      const repeat = evaluateAlerts([{
+        ...base,
+        scoped_limits: [{ model: 'Fable', percent: 4, severity: 'normal', resets_at: '2026-07-05T08:59:59.905554+00:00', is_active: true }],
+      }], recovered.nextState, NOW);
+      expect(repeat.alerts).toEqual([]);
+    });
+
+    it('suppresses scoped weekly limit alert strings for benched accounts while tracking state', () => {
+      const first = evaluateAlerts([{
+        ...base,
+        benched: true,
+        scoped_limits: [{ model: 'Fable', percent: 100, severity: 'critical', resets_at: '2026-07-05T08:59:59.905554+00:00', is_active: true }],
+      }], {}, NOW);
+      expect(first.alerts).toEqual([]);
+      expect(first.nextState.a.scoped_limits).toEqual({ Fable: 'critical' });
+
+      const recovered = evaluateAlerts([{
+        ...base,
+        benched: true,
+        scoped_limits: [{ model: 'Fable', percent: 4, severity: 'normal', resets_at: '2026-07-05T08:59:59.905554+00:00', is_active: true }],
+      }], first.nextState, NOW);
+      expect(recovered.alerts).toEqual([]);
+      expect(recovered.nextState.a.scoped_limits).toEqual({ Fable: 'normal' });
     });
 
     it('suppresses a 1-cycle fetch-fail blip and does not recover-alert', () => {
@@ -931,6 +1084,13 @@ describe('usage-accounts', () => {
           seven_day_pct: 12,
           five_hour_resets: '2026-06-11T05:00:00Z',
           seven_day_resets: '2026-06-15T00:00:00Z',
+          scoped_limits: [{
+            model: 'Fable',
+            percent: 100,
+            severity: 'critical',
+            resets_at: '2026-07-05T08:59:59.905554+00:00',
+            is_active: true,
+          }],
           fetched_at: '2026-06-11T03:00:00.000Z',
           credential_source: 'pkce-authorize',
           credential_fingerprint: 'sk-ant-oat01-P...wTOK',
@@ -948,6 +1108,13 @@ describe('usage-accounts', () => {
       expect(row.last_good).toMatchObject({
         five_hour_pct: 44,
         seven_day_pct: 12,
+        scoped_limits: [{
+          model: 'Fable',
+          percent: 100,
+          severity: 'critical',
+          resets_at: '2026-07-05T08:59:59.905554+00:00',
+          is_active: true,
+        }],
         fetched_at: '2026-06-11T03:00:00.000Z',
       });
       expect(row.last_good?.credential_fingerprint).toBe(hash8('sk-ant-oat01-P...wTOK'));
