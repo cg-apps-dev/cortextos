@@ -1,5 +1,13 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import type { AccountUsagePanelEntry, AgentAccounts, CodexActivity, CodexUsagePanel } from '@/lib/data/reports';
+import type {
+  AccountAttribution,
+  AccountConfidenceTier,
+  AccountUsagePanelEntry,
+  AgentAccountAttribution,
+  AgentAccounts,
+  CodexActivity,
+  CodexUsagePanel,
+} from '@/lib/data/reports';
 import { ResetCountdown } from './reset-countdown';
 
 /** Render an ISO timestamp in Pacific time (fleet rule: humans see PT). */
@@ -40,6 +48,42 @@ function formatUsd(cost: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+}
+
+function degradeTier(tier: AccountConfidenceTier): AccountConfidenceTier {
+  // Keep in sync with src/bus/account-tiers.ts degradeTier.
+  switch (tier) {
+    case 'CONFIRMED-PKCE':
+      return 'CONFIRMED-CORRELATION';
+    case 'CONFIRMED-CORRELATION':
+      return 'ASSERTED';
+    case 'ASSERTED':
+      return 'UNVERIFIED';
+    case 'UNVERIFIED':
+      return 'UNVERIFIED';
+  }
+}
+
+function tierTone(tier: AccountConfidenceTier): string {
+  switch (tier) {
+    case 'CONFIRMED-PKCE':
+      return 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400';
+    case 'CONFIRMED-CORRELATION':
+      return 'bg-teal-500/15 text-teal-600 dark:text-teal-400';
+    case 'ASSERTED':
+      return 'bg-amber-500/15 text-amber-600 dark:text-amber-400';
+    case 'UNVERIFIED':
+      return 'bg-muted text-muted-foreground';
+  }
+}
+
+function TierBadge({ tier, stale }: { tier: AccountConfidenceTier; stale?: boolean }) {
+  const visibleTier = stale ? degradeTier(tier) : tier;
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tierTone(visibleTier)}`}>
+      {visibleTier}
+    </span>
+  );
 }
 
 type UsageMetricKey = 'five_hour' | 'seven_day';
@@ -201,23 +245,71 @@ function ExtraUsage({ extra }: { extra: NonNullable<AccountUsagePanelEntry['extr
   );
 }
 
-function AgentChips({ agents, warning = false }: { agents?: string[]; warning?: boolean }) {
-  if (!agents || agents.length === 0) return null;
+function AgentChips({
+  agents,
+  details,
+  warning = false,
+}: {
+  agents?: string[];
+  details?: AgentAccountAttribution[];
+  warning?: boolean;
+}) {
+  const names = details?.map((agent) => agent.agent) ?? agents;
+  if (!names || names.length === 0) return null;
   const tone = warning
     ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
     : 'bg-muted text-muted-foreground';
   return (
     <div className="flex flex-wrap gap-1">
-      {agents.map((agent) => (
-        <span key={agent} className={`rounded px-1.5 py-0.5 text-[10px] ${tone}`}>
-          {agent}
+      {names.map((agent) => {
+        const detail = details?.find((entry) => entry.agent === agent);
+        return (
+        <span key={agent} className={`rounded px-1.5 py-0.5 text-[10px] ${detail?.pending_restart ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400' : tone}`}>
+          {agent}{detail?.pending_restart ? ' - flip pending restart' : ''}
         </span>
-      ))}
+        );
+      })}
     </div>
   );
 }
 
-function AccountCard({ entry, agents }: { entry: AccountUsagePanelEntry; agents?: string[] }) {
+function AccountAttributionBlock({ attribution }: { attribution?: AccountAttribution }) {
+  if (!attribution) return null;
+  return (
+    <div className="rounded-md border border-border/60 px-3 py-2 text-xs space-y-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-muted-foreground">Attribution</span>
+        <TierBadge tier={attribution.tier} stale={attribution.stale} />
+      </div>
+      <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+        <span>verified {ptTime(attribution.verified_at)}</span>
+        <span>source: {attribution.source}</span>
+      </div>
+      {attribution.stale && (
+        <span className="inline-flex rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+          STALE - map as of {ptTime(attribution.verified_at)}, source: reconciler+security
+        </span>
+      )}
+      {attribution.pending_restart && (
+        <span className="inline-flex rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400">
+          flip pending restart
+        </span>
+      )}
+      {attribution.promotion_candidate && attribution.tier === 'ASSERTED' && (
+        <div className="rounded bg-muted px-2 py-1 text-[10px] text-muted-foreground">
+          <span className="font-medium text-foreground">promotion candidate (pending security)</span>
+          <span className="block">
+            7d +{attribution.promotion_candidate.seven_day_delta}; 5h {attribution.promotion_candidate.five_hour_pct ?? '-'}; spend {attribution.promotion_candidate.spend_pct_or_extra_usage ?? '-'}
+          </span>
+        </div>
+      )}
+      {attribution.note && <p className="text-[10px] text-muted-foreground">{attribution.note}</p>}
+      <AgentChips details={attribution.agents} />
+    </div>
+  );
+}
+
+function AccountCard({ entry, attribution }: { entry: AccountUsagePanelEntry; attribution?: AccountAttribution }) {
   const fiveHour = resolveUsageValue(entry, 'five_hour');
   const sevenDay = resolveUsageValue(entry, 'seven_day');
   const scopedLimits = resolveScopedLimits(entry);
@@ -230,6 +322,7 @@ function AccountCard({ entry, agents }: { entry: AccountUsagePanelEntry; agents?
         <p className="text-sm font-semibold">{entry.email}</p>
         <p className="text-xs text-muted-foreground">{entry.plan}</p>
       </div>
+      <AccountAttributionBlock attribution={attribution} />
       {!showUnavailable ? (
         <div className="space-y-3">
           <UsageRow label="5-Hour Session" usage={fiveHour} />
@@ -248,7 +341,6 @@ function AccountCard({ entry, agents }: { entry: AccountUsagePanelEntry; agents?
           Unavailable{entry.error ? ` (${entry.error})` : ''}
         </p>
       )}
-      <AgentChips agents={agents} />
     </div>
   );
 }
@@ -336,7 +428,7 @@ export function SubscriptionUsage({
           <div className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {data?.accounts.map((a) => (
-                <AccountCard key={a.account} entry={a} agents={agentAccounts?.byAccount[a.account]} />
+                <AccountCard key={a.account} entry={a} attribution={agentAccounts?.accounts[a.account]} />
               ))}
               {codex && <CodexCard codex={codex} codexActivity={codexActivity} agents={agentAccounts?.codexAgents} />}
             </div>
@@ -348,6 +440,9 @@ export function SubscriptionUsage({
             )}
             <p className="text-[10px] text-muted-foreground">
               {data ? `Claude updated ${ptTime(data.generatedAt)} · ` : ''}refreshes every 5 min
+            </p>
+            <p className="text-[10px] text-muted-foreground">
+              CONFIRMED-PKCE requires an agent running a PKCE access_token as runtime; the fleet runs setup-tokens, so 0 is expected. Tiers: PKCE-proof &gt; correlation &gt; asserted (cluster-consistent) &gt; unverified.
             </p>
           </div>
         ) : (

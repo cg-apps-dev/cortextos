@@ -69,6 +69,10 @@ function checkDeliverableRequirement(taskId: string, frameworkRoot: string, org:
   return null;
 }
 
+function getAgentPidMap(): Record<string, number> {
+  return {};
+}
+
 export const busCommand = new Command('bus')
   .description('Bus commands for agent messaging, tasks, and events');
 
@@ -2816,7 +2820,9 @@ busCommand
     const env = resolveEnv();
     try {
       const result = await checkAllUsage(env.ctxRoot);
-      try { writeAgentAccountsSnapshot(env.ctxRoot, env.frameworkRoot); } catch { /* fail-soft */ }
+      try {
+        writeAgentAccountsSnapshot(env.ctxRoot, env.frameworkRoot, { agentPids: getAgentPidMap() });
+      } catch { /* fail-soft */ }
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
       } else if (opts.alertsOnly) {

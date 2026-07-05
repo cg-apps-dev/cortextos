@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { makeCapacityGate, resolveAgentAccount } from '../../../src/daemon/cron-capacity-gate';
+import { makeCapacityGate, resolveAgentAccount, resolveOAuthAccountByTokenHash } from '../../../src/daemon/cron-capacity-gate';
 import type { CronDefinition } from '../../../src/types/index';
+import { shortTokenHash } from '../../../src/utils/live-token-hash';
 
 const TOKEN_A = 'sk-ant-account-a-secret';
 const TOKEN_B = 'sk-ant-account-b-secret';
@@ -385,6 +386,16 @@ describe('makeCapacityGate', () => {
       writeEnv(agentDir, TOKEN_B);
       writeAccounts(root, baseAccounts());
       expect(JSON.stringify(resolveAgentAccount(agentDir, root))).not.toContain('sk-ant');
+    });
+
+    it('resolves oauth accounts by hashed token only and returns no token material', () => {
+      writeAccounts(root, baseAccounts());
+      const result = resolveOAuthAccountByTokenHash(root, shortTokenHash(TOKEN_B));
+
+      expect(result).toBe('B');
+      expect(JSON.stringify(result)).not.toContain(TOKEN_A);
+      expect(JSON.stringify(result)).not.toContain(TOKEN_B);
+      expect(JSON.stringify(result)).not.toContain('sk-ant');
     });
   });
 

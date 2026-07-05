@@ -395,10 +395,45 @@ export function getMultiAccountUsage(): { generatedAt: string; accounts: Account
   return { generatedAt: raw.generated_at, accounts };
 }
 
+export type AccountConfidenceTier = 'CONFIRMED-PKCE' | 'CONFIRMED-CORRELATION' | 'ASSERTED' | 'UNVERIFIED';
+
+export interface PromotionCandidate {
+  cluster_id: string;
+  target_account: string;
+  seven_day_delta: number;
+  five_hour_pct: number | null;
+  spend_pct_or_extra_usage: number | null;
+  no_other_cluster_guard: 'pass';
+}
+
+export interface AgentAccountAttribution {
+  agent: string;
+  tier: AccountConfidenceTier;
+  source: string;
+  cluster_id: string | null;
+  pending_restart: boolean;
+}
+
+export interface AccountAttribution {
+  tier: AccountConfidenceTier;
+  verified_at?: string;
+  stale: boolean;
+  pending_restart: boolean;
+  source: string;
+  note?: string;
+  promotion_candidate?: PromotionCandidate;
+  agents: AgentAccountAttribution[];
+}
+
 export interface AgentAccounts {
   byAccount: Record<string, string[]>;
   unassigned: string[];
   codexAgents: string[];
+  generatedAt?: string;
+  stale: boolean;
+  promotionCandidates: PromotionCandidate[];
+  accounts: Record<string, AccountAttribution>;
+  agents: Record<string, AgentAccountAttribution>;
 }
 
 export function shortAgentName(name: string): string {
@@ -408,24 +443,202 @@ export function shortAgentName(name: string): string {
   return short;
 }
 
+const STALENESS_CYCLES = 2;
+
+function isAccountTier(value: unknown): value is AccountConfidenceTier {
+  return value === 'CONFIRMED-PKCE' ||
+    value === 'CONFIRMED-CORRELATION' ||
+    value === 'ASSERTED' ||
+    value === 'UNVERIFIED';
+}
+
+function tierRank(tier: AccountConfidenceTier): number {
+  switch (tier) {
+    case 'CONFIRMED-PKCE': return 3;
+    case 'CONFIRMED-CORRELATION': return 2;
+    case 'ASSERTED': return 1;
+    case 'UNVERIFIED': return 0;
+  }
+}
+
+function weakestTier(a: AccountConfidenceTier, b: AccountConfidenceTier): AccountConfidenceTier {
+  return tierRank(a) <= tierRank(b) ? a : b;
+}
+
+function parsePromotionCandidate(value: unknown): PromotionCandidate | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (
+    typeof raw.cluster_id !== 'string' ||
+    typeof raw.target_account !== 'string' ||
+    typeof raw.seven_day_delta !== 'number' ||
+    raw.no_other_cluster_guard !== 'pass'
+  ) {
+    return undefined;
+  }
+  return {
+    cluster_id: raw.cluster_id,
+    target_account: raw.target_account,
+    seven_day_delta: raw.seven_day_delta,
+    five_hour_pct: typeof raw.five_hour_pct === 'number' ? raw.five_hour_pct : null,
+    spend_pct_or_extra_usage: typeof raw.spend_pct_or_extra_usage === 'number' ? raw.spend_pct_or_extra_usage : null,
+    no_other_cluster_guard: 'pass',
+  };
+}
+
+function parseIntervalMs(schedule: unknown): number | null {
+  if (typeof schedule !== 'string') return null;
+  const trimmed = schedule.trim();
+  const interval = trimmed.match(/^(\d+)([smhd])$/);
+  if (interval) {
+    const value = Number(interval[1]);
+    if (!Number.isFinite(value) || value <= 0) return null;
+    switch (interval[2]) {
+      case 's': return value * 1000;
+      case 'm': return value * 60_000;
+      case 'h': return value * 60 * 60_000;
+      case 'd': return value * 24 * 60 * 60_000;
+    }
+  }
+  const parts = trimmed.split(/\s+/);
+  if (parts.length === 5) {
+    const minute = parts[0];
+    const step = minute.match(/^\*\/(\d+)$/);
+    if (step) {
+      const value = Number(step[1]);
+      return Number.isFinite(value) && value > 0 ? value * 60_000 : null;
+    }
+  }
+  return null;
+}
+
+function readUsageSnapshotIntervalMs(): number | null {
+  const stateDir = path.join(CTX_ROOT, 'state');
+  if (!fs.existsSync(stateDir)) return null;
+  try {
+    for (const entry of fs.readdirSync(stateDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const cronsPath = path.join(stateDir, entry.name, 'crons.json');
+      if (!fs.existsSync(cronsPath)) continue;
+      let raw: unknown;
+      try {
+        raw = JSON.parse(fs.readFileSync(cronsPath, 'utf-8'));
+      } catch {
+        continue;
+      }
+      const cronList = Array.isArray(raw)
+        ? raw
+        : raw && typeof raw === 'object' && Array.isArray((raw as { crons?: unknown }).crons)
+          ? (raw as { crons: unknown[] }).crons
+          : [];
+      for (const cron of cronList) {
+        if (!cron || typeof cron !== 'object') continue;
+        const record = cron as { name?: unknown; prompt?: unknown; schedule?: unknown; interval?: unknown };
+        const mentionsUsage = record.name === 'check-all-usage' ||
+          (typeof record.prompt === 'string' && record.prompt.includes('check-all-usage'));
+        if (!mentionsUsage) continue;
+        const parsed = parseIntervalMs(record.schedule ?? record.interval);
+        if (parsed) return parsed;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function agentSource(entry: { source?: unknown; pkce_match?: unknown; tier?: unknown; override_note?: unknown }): string {
+  if (entry.pkce_match === true) return 'pkce-confirmed';
+  if (entry.tier === 'CONFIRMED-CORRELATION') return 'correlation-confirmed';
+  if (typeof entry.override_note === 'string') return 'override';
+  if (entry.source === 'login-marker') return 'login-marker';
+  if (entry.source === 'runtime-excluded') return 'runtime-excluded';
+  return 'cluster';
+}
+
 export function getAgentAccounts(): AgentAccounts | null {
   const file = path.join(CTX_ROOT, 'state', 'usage', 'agent-accounts.json');
   if (!fs.existsSync(file)) return null;
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
-      agents?: Array<{ agent?: unknown; account?: unknown; source?: unknown }>;
+      generated_at?: unknown;
+      snapshot_interval_ms?: unknown;
+      promotion_candidates?: unknown[];
+      agents?: Array<{
+        agent?: unknown;
+        account?: unknown;
+        source?: unknown;
+        tier?: unknown;
+        cluster_id?: unknown;
+        live_cluster_id?: unknown;
+        env_cluster_id?: unknown;
+        pending_restart?: unknown;
+        pkce_match?: unknown;
+        override_note?: unknown;
+        promotion_candidate?: unknown;
+      }>;
     };
     if (!Array.isArray(raw.agents)) return null;
 
     const byAccount: Record<string, string[]> = {};
     const unassigned: string[] = [];
     const codexAgents: string[] = [];
+    const generatedAt = typeof raw.generated_at === 'string' ? raw.generated_at : undefined;
+    const generatedMs = generatedAt ? new Date(generatedAt).getTime() : NaN;
+    const snapshotIntervalMs = typeof raw.snapshot_interval_ms === 'number' && raw.snapshot_interval_ms > 0
+      ? raw.snapshot_interval_ms
+      : readUsageSnapshotIntervalMs();
+    const stale = Number.isFinite(generatedMs) && snapshotIntervalMs !== null
+      ? Date.now() - generatedMs > STALENESS_CYCLES * snapshotIntervalMs
+      : false;
+    const promotionCandidates = Array.isArray(raw.promotion_candidates)
+      ? raw.promotion_candidates.map(parsePromotionCandidate).filter((c): c is PromotionCandidate => !!c)
+      : [];
+    const accounts: Record<string, AccountAttribution> = {};
+    const agents: Record<string, AgentAccountAttribution> = {};
+
     for (const entry of raw.agents) {
       if (typeof entry.agent !== 'string') continue;
       const name = shortAgentName(entry.agent);
+      const tier = isAccountTier(entry.tier) ? entry.tier : 'UNVERIFIED';
+      const cluster_id = typeof entry.cluster_id === 'string'
+        ? entry.cluster_id
+        : typeof entry.live_cluster_id === 'string'
+          ? entry.live_cluster_id
+          : typeof entry.env_cluster_id === 'string'
+            ? entry.env_cluster_id
+            : null;
+      const pending_restart = entry.pending_restart === true;
+      const source = agentSource(entry);
+      const attribution: AgentAccountAttribution = { agent: name, tier, source, cluster_id, pending_restart };
+      agents[name] = attribution;
       if (typeof entry.account === 'string' && entry.account.length > 0) {
         if (!byAccount[entry.account]) byAccount[entry.account] = [];
         byAccount[entry.account].push(name);
+        const existing = accounts[entry.account];
+        const candidate = parsePromotionCandidate(entry.promotion_candidate) ??
+          promotionCandidates.find((c) => c.target_account === entry.account);
+        if (!existing) {
+          accounts[entry.account] = {
+            tier,
+            verified_at: generatedAt,
+            stale,
+            pending_restart,
+            source,
+            ...(typeof entry.override_note === 'string' ? { note: entry.override_note } : {}),
+            ...(candidate ? { promotion_candidate: candidate } : {}),
+            agents: [attribution],
+          };
+        } else {
+          existing.tier = weakestTier(existing.tier, tier);
+          existing.pending_restart = existing.pending_restart || pending_restart;
+          const existingClusters = new Set(existing.agents.map((agent) => agent.cluster_id).filter(Boolean));
+          const clusterConflict = cluster_id !== null && existingClusters.size > 0 && !existingClusters.has(cluster_id);
+          existing.source = existing.source === source && !clusterConflict ? source : 'conflicting-clusters';
+          existing.note = existing.note ?? 'multiple clusters map to this account';
+          if (!existing.promotion_candidate && candidate) existing.promotion_candidate = candidate;
+          existing.agents.push(attribution);
+        }
       } else if (entry.source === 'runtime-excluded') {
         codexAgents.push(name);
       } else {
@@ -435,7 +648,10 @@ export function getAgentAccounts(): AgentAccounts | null {
     for (const names of Object.values(byAccount)) names.sort();
     unassigned.sort();
     codexAgents.sort();
-    return { byAccount, unassigned, codexAgents };
+    for (const account of Object.values(accounts)) {
+      account.agents.sort((a, b) => a.agent.localeCompare(b.agent));
+    }
+    return { byAccount, unassigned, codexAgents, generatedAt, stale, promotionCandidates, accounts, agents };
   } catch {
     return null;
   }

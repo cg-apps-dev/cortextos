@@ -25,6 +25,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { CronDefinition } from '../types/index.js';
+import { shortTokenHash } from '../utils/live-token-hash.js';
 
 export interface GateDecision { defer: boolean; reason?: string }
 
@@ -53,7 +54,7 @@ interface UsageFile {
 }
 
 interface OAuthAccount {
-  access_token: string;
+  access_token_hash: string;
   usage_credential?: { source: string };
 }
 
@@ -118,7 +119,7 @@ function parseOAuthAccounts(value: unknown): OAuthAccountsFile | null {
   const accounts: Record<string, OAuthAccount> = {};
   for (const [label, raw] of Object.entries(value.accounts)) {
     if (!isRecord(raw) || typeof raw.access_token !== 'string') return null;
-    const account: OAuthAccount = { access_token: raw.access_token };
+    const account: OAuthAccount = { access_token_hash: shortTokenHash(raw.access_token) };
     if (isRecord(raw.usage_credential) && typeof raw.usage_credential.source === 'string') {
       account.usage_credential = { source: raw.usage_credential.source };
     }
@@ -191,6 +192,22 @@ function readEnvToken(agentDir: string): { ok: true; token?: string } | { ok: fa
   }
 }
 
+export function hashAgentEnvToken(agentDir: string): string | null {
+  const envToken = readEnvToken(agentDir);
+  if (!envToken.ok || envToken.token === undefined) return null;
+  return shortTokenHash(envToken.token);
+}
+
+export function resolveOAuthAccountByTokenHash(ctxRoot: string, tokenHash: string | null): string | null {
+  if (!tokenHash) return null;
+  const oauth = readOAuthAccounts(ctxRoot);
+  if (!oauth.ok) return null;
+  const matches = Object.entries(oauth.accounts.accounts)
+    .filter(([, account]) => account.access_token_hash === tokenHash)
+    .map(([label]) => label);
+  return matches.length === 1 ? matches[0] : null;
+}
+
 function resolveAccountLabel(agentDir: string, ctxRoot: string): AccountResolution {
   const override = readUsageAccountOverride(agentDir);
   if (!override.ok) return { label: null, reason: override.reason };
@@ -214,8 +231,9 @@ function resolveAccountLabel(agentDir: string, ctxRoot: string): AccountResoluti
   if (!oauth.ok) return { label: null, reason: oauth.reason };
 
   if (envToken.token !== undefined) {
+    const envTokenHash = shortTokenHash(envToken.token);
     const matches = Object.entries(oauth.accounts.accounts)
-      .filter(([, account]) => account.access_token === envToken.token)
+      .filter(([, account]) => account.access_token_hash === envTokenHash)
       .map(([label]) => label);
     if (matches.length === 1) return { label: matches[0], source: 'token-match' };
     return { label: null, reason: 'agent billing account unresolved' };

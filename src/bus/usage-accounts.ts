@@ -1338,8 +1338,17 @@ export async function checkAllUsage(
   // single-account refreshUsage path owns) so the dashboard does one read and
   // there is no shape conflict. The 15-min launchd check-all-usage run
   // refreshes it. Usage numbers + reset times + extra-usage state only - never a token.
+  const multiUsagePath = multiAccountUsagePath(ctxRoot);
+  if (existsSync(multiUsagePath)) {
+    try {
+      atomicWriteSync(
+        join(ctxRoot, 'state', 'usage', 'multi-account-usage.previous.json'),
+        readFileSync(multiUsagePath, 'utf-8'),
+      );
+    } catch { /* previous snapshot is best-effort */ }
+  }
   atomicWriteSync(
-    multiAccountUsagePath(ctxRoot),
+    multiUsagePath,
     JSON.stringify({ generated_at: now, accounts: guardedUsages }, null, 2),
   );
 

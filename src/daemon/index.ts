@@ -1,5 +1,6 @@
 import { AgentManager } from './agent-manager.js';
 import { IPCServer } from './ipc-server.js';
+import { createAgentAccountsSnapshotLoop, type AgentAccountsSnapshotLoop } from './agent-accounts-snapshot-loop.js';
 import { readdirSync, readFileSync, writeFileSync, existsSync, chmodSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
@@ -220,6 +221,7 @@ function handleFatal(
 class Daemon {
   private agentManager: AgentManager | null = null;
   private ipcServer: IPCServer | null = null;
+  private agentAccountsSnapshotLoop: AgentAccountsSnapshotLoop | null = null;
   private instanceId: string;
   private ctxRoot: string;
 
@@ -265,6 +267,12 @@ class Daemon {
 
     // Discover and start agents
     await this.agentManager.discoverAndStart();
+    this.agentAccountsSnapshotLoop = createAgentAccountsSnapshotLoop({
+      agentManager: this.agentManager,
+      ctxRoot: this.ctxRoot,
+      frameworkRoot,
+    });
+    this.agentAccountsSnapshotLoop.start();
 
     console.log(`[daemon] Running (pid: ${process.pid})`);
 
@@ -272,6 +280,10 @@ class Daemon {
     const shutdown = async () => {
       console.log('[daemon] Shutting down...');
       try {
+        if (this.agentAccountsSnapshotLoop) {
+          this.agentAccountsSnapshotLoop.stop();
+          this.agentAccountsSnapshotLoop = null;
+        }
         if (this.agentManager) {
           await this.agentManager.stopAll();
         }
