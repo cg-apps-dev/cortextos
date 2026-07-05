@@ -473,6 +473,60 @@ describe('usage-accounts', () => {
       expect(nextState.a.extra_enabled).toBe(false);
     });
 
+    // Regression: the me-com phantom-464 bug. A NEVER-metered account whose
+    // response carries no extra_usage block (fetch-OK, extra_usage:None) used to
+    // carry a stale prev.extra_credits forever via `enabled ? credits : prev`.
+    it('extra-usage: never-metered account with no extra_usage block resets a stale phantom to 0 (me-com 464)', () => {
+      const usage = { ...base }; // no extra_usage key -> extraReadable=false
+      const { alerts, nextState } = evaluateAlerts(
+        [usage], st({ extra_enabled: false, extra_credits: 464 }), NOW,
+      );
+      // No edge (prev disabled + no reading), and the fossil is cleared.
+      expect(alerts.some(a => a.includes('EXTRA-USAGE'))).toBe(false);
+      expect(nextState.a.extra_enabled).toBe(false);
+      expect(nextState.a.extra_credits).toBe(0);
+    });
+
+    // Regression: a metered account that blips to a missing extra_usage block for
+    // ONE cycle must NOT flap DISABLED->ENABLED, and must NOT emit a false RISING
+    // on recovery (the carried baseline is compared, not a reset-to-0).
+    it('extra-usage: metered account with a 1-cycle missing block carries baseline and does not false-rise', () => {
+      // Cycle 1: enabled at 100 (baseline established).
+      const c1 = evaluateAlerts(
+        [{ ...base, extra_usage: { is_enabled: true, used_credits: 100 } }],
+        st({ extra_enabled: true, extra_credits: 100 }), NOW,
+      );
+      expect(c1.alerts).toEqual([]); // flat, no rise
+      // Cycle 2: fetch-OK but extra_usage absent -> no edge, baseline carried.
+      const c2 = evaluateAlerts([{ ...base }], c1.nextState, NOW);
+      expect(c2.alerts.some(a => a.includes('EXTRA-USAGE'))).toBe(false);
+      expect(c2.nextState.a.extra_enabled).toBe(true);
+      expect(c2.nextState.a.extra_credits).toBe(100);
+      // Cycle 3: recovers at the SAME 100 -> no false RISING.
+      const c3 = evaluateAlerts(
+        [{ ...base, extra_usage: { is_enabled: true, used_credits: 100 } }],
+        c2.nextState, NOW,
+      );
+      expect(c3.alerts.some(a => a.includes('RISING'))).toBe(false);
+      // And a genuine rise during the blackout still fires correctly.
+      const c3b = evaluateAlerts(
+        [{ ...base, extra_usage: { is_enabled: true, used_credits: 130 } }],
+        c2.nextState, NOW,
+      );
+      expect(c3b.alerts.some(a => a.includes('RISING 100 -> 130'))).toBe(true);
+    });
+
+    // A genuine fetch-fail (u.ok=false) is carried wholesale ABOVE the extra
+    // block, so extra state is preserved untouched (no reset, no false edge).
+    it('extra-usage: a fetch-fail preserves extra state wholesale', () => {
+      const { nextState } = evaluateAlerts(
+        [{ ...base, ok: false, error: 'HTTP 429' }],
+        st({ extra_enabled: true, extra_credits: 100 }), NOW,
+      );
+      expect(nextState.a.extra_enabled).toBe(true);
+      expect(nextState.a.extra_credits).toBe(100);
+    });
+
     it('scoped weekly limits fire warning and critical once on severity edges', () => {
       const warning = evaluateAlerts([{
         ...base,

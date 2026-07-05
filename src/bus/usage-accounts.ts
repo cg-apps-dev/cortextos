@@ -1195,22 +1195,41 @@ export function evaluateAlerts(
     next.seven_d_pending = seven.pending;
 
     // Extra-usage - enable / disable / rise edges; quiet on flat-enabled.
+    // extraReadable distinguishes a DEFINITE reading (the response carried an
+    // extra_usage block) from an ABSENT one (extra_usage:None - an unmetered
+    // account like me-com, or a transient API omission). This block only runs
+    // when u.ok (a genuine fetch-fail continues above), so "unreadable" here
+    // means fetch-OK-but-no-extra_usage, NOT a network fail.
+    //   - Edges (ENABLED/DISABLED/RISING) fire ONLY on a definite reading, so a
+    //     metered account with a one-cycle missing block does NOT flap
+    //     DISABLED -> ENABLED -> RISING.
+    //   - Credits reflect ONLY a live enabled reading (Meta reports used_credits:0
+    //     when disabled). On an unreadable cycle we CARRY the last-known baseline
+    //     for a previously-metered account (so recovery compares against the real
+    //     baseline, no false RISING) but reset to 0 for a NEVER-metered account
+    //     (kills a stale phantom, e.g. me-com's fossil extra_credits:464 that was
+    //     carried forever by the old `enabled ? credits : prev.extra_credits`).
+    const extraReadable = u.extra_usage !== undefined;
     const enabled = u.extra_usage?.is_enabled === true;
     const credits = u.extra_usage?.used_credits ?? 0;
-    if (enabled && !prev.extra_enabled) {
-      alerts.push(
-        credits > 0
-          ? `EXTRA-USAGE ${who}: ENABLED with ${credits} credits already used (silent billing - first sighting)`
-          : `EXTRA-USAGE ${who}: ENABLED (no credits used yet - watch)`,
-      );
-    } else if (!enabled && prev.extra_enabled) {
-      alerts.push(`EXTRA-USAGE ${who}: DISABLED (was at ${prev.extra_credits} credits) - meter walled off`);
-    } else if (enabled && prev.extra_enabled && credits > prev.extra_credits) {
-      alerts.push(`EXTRA-USAGE ${who}: credits RISING ${prev.extra_credits} -> ${credits} (delta +${credits - prev.extra_credits} since ${ptTime(prev.at)}) (silent billing ACTIVE)`);
+    if (extraReadable) {
+      if (enabled && !prev.extra_enabled) {
+        alerts.push(
+          credits > 0
+            ? `EXTRA-USAGE ${who}: ENABLED with ${credits} credits already used (silent billing - first sighting)`
+            : `EXTRA-USAGE ${who}: ENABLED (no credits used yet - watch)`,
+        );
+      } else if (!enabled && prev.extra_enabled) {
+        alerts.push(`EXTRA-USAGE ${who}: DISABLED (was at ${prev.extra_credits} credits) - meter walled off`);
+      } else if (enabled && prev.extra_enabled && credits > prev.extra_credits) {
+        alerts.push(`EXTRA-USAGE ${who}: credits RISING ${prev.extra_credits} -> ${credits} (delta +${credits - prev.extra_credits} since ${ptTime(prev.at)}) (silent billing ACTIVE)`);
+      }
     }
     // enabled + flat, or persistently disabled -> quiet.
-    next.extra_enabled = enabled;
-    next.extra_credits = enabled ? credits : prev.extra_credits;
+    next.extra_enabled = extraReadable ? enabled : prev.extra_enabled;
+    next.extra_credits = extraReadable
+      ? (enabled ? credits : 0)
+      : (prev.extra_enabled ? prev.extra_credits : 0);
 
     // Model-scoped weekly limits (Fable today): Anthropic supplies native
     // severity, so warning/critical fire immediately on severity edges.
