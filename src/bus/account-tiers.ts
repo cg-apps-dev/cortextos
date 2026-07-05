@@ -44,6 +44,7 @@ export interface PromotionUsageRow {
   seven_day_pct?: number;
   five_hour_pct?: number;
   spend_pct?: number;
+  spend?: { percent?: number };
   extra_usage?: { used_credits?: number };
 }
 
@@ -78,6 +79,13 @@ function labelsConsistent(rows: AgentClusterRow[]): boolean {
 
 function resolveOverride(row: AgentClusterRow, overrides: OverrideMap): TierOverride | undefined {
   return overrides[row.agent];
+}
+
+function spendEvidence(row: PromotionUsageRow | undefined): number | null {
+  if (typeof row?.spend?.percent === 'number') return row.spend.percent;
+  if (typeof row?.spend_pct === 'number') return row.spend_pct;
+  if (typeof row?.extra_usage?.used_credits === 'number') return row.extra_usage.used_credits;
+  return null;
 }
 
 export function deriveTiers(
@@ -172,11 +180,7 @@ export function computePromotionCandidates(
       target_account: targetAccount,
       seven_day_delta,
       five_hour_pct: typeof current?.five_hour_pct === 'number' ? current.five_hour_pct : null,
-      spend_pct_or_extra_usage: typeof current?.spend_pct === 'number'
-        ? current.spend_pct
-        : typeof current?.extra_usage?.used_credits === 'number'
-        ? current.extra_usage.used_credits
-        : null,
+      spend_pct_or_extra_usage: spendEvidence(current),
       no_other_cluster_guard: 'pass',
     });
   }

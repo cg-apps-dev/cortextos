@@ -80,14 +80,14 @@ describe('deriveTiers', () => {
 });
 
 describe('computePromotionCandidates', () => {
-  it('emits full evidence for asserted cluster with empty-target 7d rise and no other cluster', () => {
+  it('emits full evidence and prefers nested spend percent for asserted clusters', () => {
     const rows = [
       row({ agent: 'a1', account: 'acct' }),
       row({ agent: 'a2', account: 'acct' }),
     ];
 
     expect(computePromotionCandidates(rows, [
-      { account: 'acct', seven_day_pct: 4, five_hour_pct: 12, spend_pct: 55, extra_usage: { used_credits: 90 } },
+      { account: 'acct', seven_day_pct: 4, five_hour_pct: 12, spend: { percent: 44 }, spend_pct: 55, extra_usage: { used_credits: 90 } },
     ], [
       { account: 'acct', seven_day_pct: 0 },
     ])).toEqual([{
@@ -95,9 +95,22 @@ describe('computePromotionCandidates', () => {
       target_account: 'acct',
       seven_day_delta: 4,
       five_hour_pct: 12,
-      spend_pct_or_extra_usage: 55,
+      spend_pct_or_extra_usage: 44,
       no_other_cluster_guard: 'pass',
     }]);
+  });
+
+  it('uses top-level spend_pct when nested spend percent is absent', () => {
+    const rows = [
+      row({ agent: 'a1', account: 'acct' }),
+      row({ agent: 'a2', account: 'acct' }),
+    ];
+
+    expect(computePromotionCandidates(rows, [
+      { account: 'acct', seven_day_pct: 4, spend_pct: 55, extra_usage: { used_credits: 90 } },
+    ], [
+      { account: 'acct', seven_day_pct: 0 },
+    ])[0]?.spend_pct_or_extra_usage).toBe(55);
   });
 
   it('falls back to extra usage credits when spend_pct is absent', () => {
