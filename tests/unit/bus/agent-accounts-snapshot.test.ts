@@ -93,6 +93,8 @@ describe('writeAgentAccountsSnapshot', () => {
     const snapshot = JSON.parse(raw) as {
       generated_at: string;
       snapshot_interval_ms: number;
+      override_unreadable?: boolean;
+      override_source?: string;
       promotion_candidates: unknown[];
       agents: Array<{
         org: string;
@@ -109,6 +111,8 @@ describe('writeAgentAccountsSnapshot', () => {
     };
     expect(snapshot.generated_at).toEqual(expect.any(String));
     expect(snapshot.snapshot_interval_ms).toBe(90_000);
+    expect(snapshot.override_unreadable).toBeUndefined();
+    expect(snapshot.override_source).toBeUndefined();
     expect(snapshot.promotion_candidates).toEqual([]);
     expect(snapshot.agents).toEqual([
       expect.objectContaining({
@@ -212,6 +216,35 @@ describe('writeAgentAccountsSnapshot', () => {
     expect(JSON.stringify(snapshot)).not.toContain('should-not-apply');
     expect(JSON.stringify(snapshot)).not.toContain('renamed-stale-agent');
     expect(JSON.stringify(snapshot)).not.toContain('stale-account');
+  });
+
+  it('marks present but unreadable override files without changing mechanical tiers', () => {
+    const ctxRoot = makeRoot('agent-accounts-ctx-');
+    const frameworkRoot = makeRoot('agent-accounts-framework-');
+    const agentsRoot = join(frameworkRoot, 'orgs', 'o1', 'agents');
+    const a1 = join(agentsRoot, 'a1');
+    const a2 = join(agentsRoot, 'a2');
+    mkdirSync(a1, { recursive: true });
+    mkdirSync(a2, { recursive: true });
+    writeAccounts(ctxRoot);
+    writeFileSync(join(a1, '.env'), `CLAUDE_CODE_OAUTH_TOKEN="${TOKEN_B}"\n`, 'utf-8');
+    writeFileSync(join(a2, '.env'), `CLAUDE_CODE_OAUTH_TOKEN="${TOKEN_B}"\n`, 'utf-8');
+    const overridePath = join(frameworkRoot, 'override.json');
+    mkdirSync(join(overridePath, '..'), { recursive: true });
+    writeFileSync(overridePath, '{ nope', 'utf-8');
+
+    expect(writeAgentAccountsSnapshot(ctxRoot, frameworkRoot, { securityOverridePath: overridePath })).toBe(2);
+    const snapshot = JSON.parse(readFileSync(join(ctxRoot, 'state', 'usage', 'agent-accounts.json'), 'utf-8')) as {
+      override_unreadable?: boolean;
+      override_source?: string;
+      agents: Array<{ agent: string; tier: string }>;
+    };
+    expect(snapshot.override_unreadable).toBe(true);
+    expect(snapshot.override_source).toBe('error');
+    expect(snapshot.agents).toEqual([
+      expect.objectContaining({ agent: 'a1', tier: 'ASSERTED' }),
+      expect.objectContaining({ agent: 'a2', tier: 'ASSERTED' }),
+    ]);
   });
 
   it('refuses to write agent-accounts.json when a future field carries a token-shaped value', () => {

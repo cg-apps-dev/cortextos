@@ -78,6 +78,7 @@ describe('getAgentAccounts', () => {
       unassigned: ['orchestrator'],
       codexAgents: ['codex-dev'],
       stale: false,
+      overrideUnreadable: false,
       promotionCandidates: [],
     });
   });
@@ -144,5 +145,22 @@ describe('getAgentAccounts', () => {
     ], '2026-06-12T12:00:00.000Z', [], 60_000);
 
     expect(reports.getAgentAccounts()?.stale).toBe(true);
+  });
+
+  it('surfaces an unreadable security override layer flag', () => {
+    fs.writeFileSync(path.join(usageDir, 'agent-accounts.json'), JSON.stringify({
+      generated_at: new Date().toISOString(),
+      override_source: 'error',
+      override_unreadable: true,
+      promotion_candidates: [],
+      agents: [
+        { org: 'o1', agent: 'meta-ads-agent', account: 'B', source: 'token-match', tier: 'ASSERTED' },
+      ],
+    }));
+
+    expect(reports.getAgentAccounts()).toMatchObject({
+      overrideUnreadable: true,
+      overrideSource: 'error',
+    });
   });
 });

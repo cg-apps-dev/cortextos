@@ -48,6 +48,11 @@ interface RawOverrideFile {
   overrides?: OverrideMap;
 }
 
+type OverrideReadResult =
+  | { source: 'absent'; overrides: OverrideMap }
+  | { source: 'ok'; overrides: OverrideMap }
+  | { source: 'error'; overrides: OverrideMap };
+
 interface RawUsageSnapshot {
   accounts?: PromotionUsageRow[];
 }
@@ -83,10 +88,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function readOverrides(path: string): OverrideMap {
+function readOverrides(path: string): OverrideReadResult {
+  if (!existsSync(path)) return { source: 'absent', overrides: {} };
   try {
     const raw = readJson(path) as RawOverrideFile;
-    if (!isRecord(raw) || !isRecord(raw.overrides)) return {};
+    if (!isRecord(raw) || !isRecord(raw.overrides)) return { source: 'error', overrides: {} };
     const overrides: OverrideMap = {};
     for (const [key, value] of Object.entries(raw.overrides)) {
       if (key.startsWith('_')) continue;
@@ -104,9 +110,9 @@ function readOverrides(path: string): OverrideMap {
         ...(typeof setAt === 'string' ? { set_at: setAt } : {}),
       };
     }
-    return overrides;
+    return { source: 'ok', overrides };
   } catch {
-    return {};
+    return { source: 'error', overrides: {} };
   }
 }
 
@@ -192,8 +198,8 @@ export function writeAgentAccountsSnapshot(
     const currentUsage = readPromotionUsage(join(ctxRoot, 'state', 'usage', 'multi-account-usage.json'));
     const priorUsage = readPromotionUsage(join(ctxRoot, 'state', 'usage', 'multi-account-usage.previous.json'));
     const promotion_candidates = computePromotionCandidates(rows, currentUsage, priorUsage);
-    const overrides = readOverrides(options.securityOverridePath ?? join(frameworkRoot, DEFAULT_SECURITY_OVERRIDE_RELATIVE_PATH));
-    const tierResults = deriveTiers(rows, overrides, candidateMap(promotion_candidates));
+    const overrideRead = readOverrides(options.securityOverridePath ?? join(frameworkRoot, DEFAULT_SECURITY_OVERRIDE_RELATIVE_PATH));
+    const tierResults = deriveTiers(rows, overrideRead.overrides, candidateMap(promotion_candidates));
     const tierByAgent = new Map(tierResults.map((result) => [result.agent, result]));
     const agents: AgentAccountEntry[] = baseEntries.map((entry) => {
       const tier = tierByAgent.get(entry.agent);
@@ -214,6 +220,7 @@ export function writeAgentAccountsSnapshot(
     const serialized = JSON.stringify({
       generated_at: new Date().toISOString(),
       ...(typeof options.snapshotIntervalMs === 'number' ? { snapshot_interval_ms: options.snapshotIntervalMs } : {}),
+      ...(overrideRead.source === 'error' ? { override_source: 'error', override_unreadable: true } : {}),
       promotion_candidates,
       agents,
     }, null, 2);

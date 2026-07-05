@@ -431,6 +431,8 @@ export interface AgentAccounts {
   codexAgents: string[];
   generatedAt?: string;
   stale: boolean;
+  overrideUnreadable: boolean;
+  overrideSource?: 'error';
   promotionCandidates: PromotionCandidate[];
   accounts: Record<string, AccountAttribution>;
   agents: Record<string, AgentAccountAttribution>;
@@ -563,6 +565,8 @@ export function getAgentAccounts(): AgentAccounts | null {
     const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
       generated_at?: unknown;
       snapshot_interval_ms?: unknown;
+      override_unreadable?: unknown;
+      override_source?: unknown;
       promotion_candidates?: unknown[];
       agents?: Array<{
         agent?: unknown;
@@ -584,6 +588,8 @@ export function getAgentAccounts(): AgentAccounts | null {
     const unassigned: string[] = [];
     const codexAgents: string[] = [];
     const generatedAt = typeof raw.generated_at === 'string' ? raw.generated_at : undefined;
+    const overrideUnreadable = raw.override_unreadable === true || raw.override_source === 'error';
+    const overrideSource = raw.override_source === 'error' ? 'error' : undefined;
     const generatedMs = generatedAt ? new Date(generatedAt).getTime() : NaN;
     const snapshotIntervalMs = typeof raw.snapshot_interval_ms === 'number' && raw.snapshot_interval_ms > 0
       ? raw.snapshot_interval_ms
@@ -651,7 +657,18 @@ export function getAgentAccounts(): AgentAccounts | null {
     for (const account of Object.values(accounts)) {
       account.agents.sort((a, b) => a.agent.localeCompare(b.agent));
     }
-    return { byAccount, unassigned, codexAgents, generatedAt, stale, promotionCandidates, accounts, agents };
+    return {
+      byAccount,
+      unassigned,
+      codexAgents,
+      generatedAt,
+      stale,
+      overrideUnreadable,
+      ...(overrideSource ? { overrideSource } : {}),
+      promotionCandidates,
+      accounts,
+      agents,
+    };
   } catch {
     return null;
   }

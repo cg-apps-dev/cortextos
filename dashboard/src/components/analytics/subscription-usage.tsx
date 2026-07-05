@@ -426,6 +426,11 @@ export function SubscriptionUsage({
       <CardContent>
         {(data && data.accounts.length > 0) || codex ? (
           <div className="space-y-3">
+            {agentAccounts?.overrideUnreadable && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                Security override layer unreadable - tiers are mechanical-only, judgments not applied.
+              </div>
+            )}
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {data?.accounts.map((a) => (
                 <AccountCard key={a.account} entry={a} attribution={agentAccounts?.accounts[a.account]} />
