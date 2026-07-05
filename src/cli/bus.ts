@@ -2563,6 +2563,11 @@ busCommand
   .description('PreToolUse hook: detects and blocks repeated tool loops (same-args repetition + ping-pong alternation)')
   .action(() => runHook('hook-loop-detector'));
 
+busCommand
+  .command('hook-send-guard')
+  .description('PreToolUse hook: blocks unsafe bus send-message/send-telegram Bash commands')
+  .action(() => runHook('hook-send-guard'));
+
 // --- OAuth token rotation commands ---
 
 busCommand

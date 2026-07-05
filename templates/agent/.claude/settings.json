@@ -63,6 +63,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "cortextos bus hook-send-guard",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "rtk hook claude"
           }
         ]
