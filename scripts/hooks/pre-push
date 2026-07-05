@@ -1,32 +1,65 @@
 #!/usr/bin/env bash
-# pre-push hook — installed by scripts/setup-hooks.sh
+# Security backup guard - installed by scripts/setup-hooks.sh.
 #
-# Runs npm run build && npm test before any push.
-# Fails the push if either step fails, so broken code never reaches CI.
-#
-# To bypass in an emergency (last resort):
-#   git push --no-verify
-# Do NOT use --no-verify routinely. Fix the error instead.
+# Runs gitleaks for backup pushes. For code branch pushes only, also runs the
+# complementary operational shape scan. The agent-state branch remains
+# gitleaks-only.
 
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
+remote_name="${1:-}"
+remote_url="${2:-}"
 
-echo "[pre-push] Running build..."
-if ! npm run build --silent; then
-  echo ""
-  echo "[pre-push] Build failed. Fix the error before pushing." >&2
-  echo "[pre-push] Push aborted." >&2
+case "$remote_name$remote_url" in
+  *backup*|*cg-cortextos-backup*) : ;;
+  *) exit 0 ;;
+esac
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+cfg="orgs/clean-green-marketing/agents/security-agent/tools/gitleaks-backup.toml"
+
+refs_to_scan=()
+saw_push_ref=0
+stdin_file="$(mktemp)"
+trap 'rm -f "$stdin_file"' EXIT
+cat > "$stdin_file"
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "${local_sha:-}" ] && continue
+  saw_push_ref=1
+  case "$local_sha" in
+    0000000000000000000000000000000000000000) continue ;;
+    *)
+      if [ "${remote_ref:-}" != "refs/heads/agent-state" ]; then
+        refs_to_scan+=("$local_sha")
+      fi ;;
+  esac
+done < "$stdin_file"
+if [ "${#refs_to_scan[@]}" -eq 0 ] && [ "$saw_push_ref" -eq 0 ]; then
+  refs_to_scan=(HEAD)
+fi
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-push: gitleaks not found - refusing to push to backup without a secret scan." >&2
   exit 1
 fi
 
-echo "[pre-push] Running tests..."
-if ! npm test --silent; then
-  echo ""
-  echo "[pre-push] Tests failed. Fix the failing tests before pushing." >&2
-  echo "[pre-push] Push aborted." >&2
+echo "pre-push: scanning for secrets before backup push..." >&2
+if ! gitleaks git . -c "$cfg" --redact --no-banner >/dev/null 2>&1; then
+  echo "pre-push: BLOCKED - gitleaks found a potential secret. Run: gitleaks git . -c $cfg --redact" >&2
   exit 1
 fi
 
-echo "[pre-push] Build and tests passed. Pushing..."
+if [ "${#refs_to_scan[@]}" -gt 0 ]; then
+  echo "pre-push: scanning for operational leak shapes before code backup push..." >&2
+  for ref in "${refs_to_scan[@]}"; do
+    if ! bash scripts/hooks/leak-shape-scan.sh --tree "$ref"; then
+      echo "pre-push: BLOCKED - operational leak shape found in $ref." >&2
+      exit 1
+    fi
+  done
+fi
+
+echo "pre-push: clean - no secrets or blocked shapes. Allowing backup push." >&2
+exit 0

@@ -51,6 +51,11 @@ tests/playwright/dashboard-ui.spec.ts
 # Local ops docs (personal, not for public repo)
 docs/
 
+# Internal ops/dev reports - never public.
+*INSTALL_REPORT.md
+*PHASE*-REPORT.md
+docs/phase-reports/
+
 # Internal developer/planning notes (not for public repo)
 KNOWN-ISSUES.md
 WINDOWS-IMPLEMENTATION-PLAN.md

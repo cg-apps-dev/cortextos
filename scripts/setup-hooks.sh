@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# setup-hooks.sh — Install cortextOS git hooks into the local repo
+# setup-hooks.sh - Install cortextOS git hooks into the local repo
 #
 # Run once after cloning:
 #   bash scripts/setup-hooks.sh
 #
-# Installs a pre-push hook that runs npm run build && npm test before
-# any push. If either fails, the push is aborted and you fix it locally
-# rather than failing on CI.
+# Installs the security backup pre-push hook. Backup pushes run the gitleaks
+# secret scan, and code backup pushes also run the operational shape scan.
+# Agent-state pushes stay gitleaks-only.
 
 set -euo pipefail
 
