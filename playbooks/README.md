@@ -12,5 +12,8 @@ Maintained by the-sop-keeper. Changes land via a local branch reviewed by the-or
 |---|---|---|
 | [meta-ads-agent/](meta-ads-agent/) | 8 | Meta ads upload-to-launch pipeline: ClickUp intake, sheet posting, ad copy, launch drafts, ad-set batching, launch tracking, upkeep, compliance scan |
 | [meta-media-buyer-agent/](meta-media-buyer-agent/) | (cross-link) | Executing owner of the launch-draft + ad-set-batch playbooks, which live under meta-ads-agent for pipeline browsability |
+| [the-ad-strategist/](the-ad-strategist/) | 1 | Weekly what-is-working ad-intelligence report (nCAC iterate-ranker, pattern extraction, task list to the-team-lead) |
+| [the-analyst/](the-analyst/) | 5 | Daily digest, throughput snapshot, theta-wave cycle, fleet health monitoring, nightly maintenance |
+| [fleet/](fleet/) | 1 | Cross-agent processes owned by no single agent: the zero-model launchd monitor layer |
 
-More agents land here per the fleet-playbook migration plan (next: the-ad-strategist, the-analyst).
+More agents land here per the fleet-playbook migration plan.
