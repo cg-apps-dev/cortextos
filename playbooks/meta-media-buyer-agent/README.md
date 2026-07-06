@@ -1,11 +1,11 @@
 ---
-type: reference
+type: index
+agent: meta-media-buyer-agent
 status: active
 date: 2026-07-05
-tags: [agents, meta, media-buyer, launch, navigation]
 ---
 
-# The Meta Media Buyer Agent
+# The Meta Media Buyer Agent - Playbooks (cross-link)
 
 Runs the sheet-to-AdManage launch lane of the Meta ads pipeline in the live cortextOS fleet: manual-trigger only, draft-only, human-gated - Adam publishes every draft inside AdManage. Persistent Telegram agent at `orgs/clean-green-marketing/agents/meta-media-buyer-agent/` in the cortextos repo (gitignored runtime state); this folder is its brain-repo home.
 

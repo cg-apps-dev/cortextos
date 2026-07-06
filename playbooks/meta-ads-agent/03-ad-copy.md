@@ -2,9 +2,9 @@
 type: playbook
 agent: meta-ads-agent
 process: ad-copy
+pipeline_stage: 2 (copy)
 status: active
 date: 2026-07-05
-pipeline_stage: 2 (copy)
 tags: [playbook, meta-ads, copy, compliance]
 ---
 

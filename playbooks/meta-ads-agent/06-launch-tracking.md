@@ -2,9 +2,9 @@
 type: playbook
 agent: meta-ads-agent
 process: launch-tracking
+pipeline_stage: 4 (track)
 status: active
 date: 2026-07-05
-pipeline_stage: 4 (track)
 tags: [playbook, meta-ads, admanage, tracking]
 ---
 

@@ -2,9 +2,9 @@
 type: playbook
 agent: meta-ads-agent
 process: upkeep-analysis
+pipeline_stage: 5 (upkeep)
 status: active
 date: 2026-07-05
-pipeline_stage: 5 (upkeep)
 tags: [playbook, meta-ads, analysis, upkeep]
 ---
 
