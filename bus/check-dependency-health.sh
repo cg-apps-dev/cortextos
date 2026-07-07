@@ -42,6 +42,14 @@
 #   composio     SKIP  Connection health is MCP-only (COMPOSIO_MANAGE_CONNECTIONS); no REST
 #                      key in secrets.env. Env-gate: set COMPOSIO_API_KEY to arm the REST
 #                      connectedAccounts liveness check.
+#   codex_runtime_auth ACTIVE  Detect a Codex RUNTIME token REVOCATION the token-EXPIRY
+#                      check cannot see (revocation != expiry; runtime cred != usage-probe
+#                      cred). Greps each codex-app-server agent's stdout.log TAIL for the
+#                      revocation signature, PAIRED with heartbeat staleness => auth-dead.
+#                      CODE RED (needs re-auth), distinct from expiry. Caught by hand on
+#                      2026-07-07 after 13h dark; this makes it minutes. Dynamic agent
+#                      discovery (SKIP if no codex-runtime agents). Tunables:
+#                      CODEX_AUTH_STALE_THRESHOLD (default 5400s), CODEX_AUTH_LOG_TAIL (400).
 #
 # Adding a dep: write a probe_<name> fn that echoes "<STATUS>\t<detail>" where STATUS is
 # one of OK | FAIL | DEGRADED | SKIP, then add "<name>" to the PROBES array. SKIP is silent
@@ -194,8 +202,83 @@ probe_composio() {
   esac
 }
 
+# ── Probe: codex_runtime_auth (ACTIVE) ───────────────────────────────────────
+# Detect a Codex RUNTIME token REVOCATION (auth-death) that the token-EXPIRY check
+# structurally CANNOT see: a revoked token is invalidated BEFORE expiry (revocation !=
+# expiry), and the runtime cred (codex-app-server auth) differs from the usage-probe
+# cred, so neither the expiry check nor the usage API 401s. The only visible signal is
+# the revocation SIGNATURE in the codex agent's own stdout.log, PAIRED with heartbeat
+# staleness (auth-dead => can't process => can't heartbeat). The pairing rules out a
+# transient 401. Greps the log TAIL (not log-internal timestamps => immune to per-agent
+# log-clock skew) + reads heartbeat.json (daemon clock). Triggered by the 2026-07-07
+# codex-dev auth-death that went 13h dark uncaught. Scope: any runtime==codex-app-server
+# agent (dynamic discovery), so a new Codex agent is covered with zero config.
+CODEX_AUTH_STALE_THRESHOLD="${CODEX_AUTH_STALE_THRESHOLD:-5400}"   # 90m stale => rules out a transient 401
+CODEX_AUTH_LOG_TAIL="${CODEX_AUTH_LOG_TAIL:-400}"                  # stdout.log tail lines to scan for the signature
+CODEX_AUTH_SIG_RE='refresh token was revoked|access token could not be refreshed|codexErrorInfo"?[: ]+"?unauthorized|token_invalidated|willRetry"?[: ]+"?false'
+probe_codex_runtime_auth() {
+  # Paths default to the live tree; overridable so tests can point at fixtures.
+  local orgs_root="${CODEX_AUTH_ORGS_ROOT:-${FRAMEWORK_ROOT}/orgs}"
+  local logs_base="${CODEX_AUTH_LOGS_BASE:-${CTX_ROOT}/logs}"
+  local state_base="${CODEX_AUTH_STATE_BASE:-${CTX_ROOT}/state}"
+  [[ -d "$orgs_root" ]] || { echo -e "SKIP\tno orgs dir ($orgs_root)"; return; }
+  local now cfg agent runtime logf hbf sig age checked=0
+  local -a dead=() transient=() unknown=()
+  now=$(date -u +%s)
+  while IFS= read -r cfg; do
+    agent="$(basename "$(dirname "$cfg")")"
+    runtime="$(grep -oE '"runtime"[[:space:]]*:[[:space:]]*"[^"]+"' "$cfg" 2>/dev/null | head -1 | grep -oE '"[^"]+"$' | tr -d '"')"
+    [[ "$runtime" == "codex-app-server" ]] || continue
+    checked=$((checked+1))
+    logf="${logs_base}/${agent}/stdout.log"
+    hbf="${state_base}/${agent}/heartbeat.json"
+    [[ -f "$logf" ]] || continue
+    sig="$(tail -n "$CODEX_AUTH_LOG_TAIL" "$logf" 2>/dev/null | grep -aE "$CODEX_AUTH_SIG_RE" | tail -1)"
+    [[ -n "$sig" ]] || continue   # no revocation signature => this agent is fine
+    # signature present: pair with heartbeat staleness (daemon clock)
+    age="$(HBF="$hbf" NOW="$now" python3 - <<'PY' 2>/dev/null || echo -1
+import os, json, datetime
+try:
+    hb = json.load(open(os.environ["HBF"])).get("last_heartbeat", "")
+    t = datetime.datetime.fromisoformat(hb.replace("Z", "+00:00"))
+    print(int(int(os.environ["NOW"]) - t.timestamp()))
+except Exception:
+    print(-1)
+PY
+)"
+    if [[ "$age" -lt 0 ]]; then
+      unknown+=("$agent")                                  # signature but heartbeat unreadable => uncertain
+    elif [[ "$age" -gt "$CODEX_AUTH_STALE_THRESHOLD" ]]; then
+      dead+=("${agent} (~$((age/3600))h stale)")            # signature AND stale => auth-dead
+    else
+      transient+=("$agent")                                # signature but fresh heartbeat => transient 401, not dead
+    fi
+  done < <(find "$orgs_root" -maxdepth 4 -path '*/agents/*/config.json' 2>/dev/null)
+
+  if [[ "$checked" -eq 0 ]]; then
+    echo -e "SKIP\tno codex-app-server runtime agents found (registered, not armed)"
+  elif [[ ${#dead[@]} -gt 0 ]]; then
+    local names age_h first_age
+    names="$(printf '%s, ' "${dead[@]}")"; names="${names%, }"
+    # human-readable stale hours from the first dead agent's embedded seconds
+    echo -e "FAIL\tCODE RED: Codex RUNTIME token REVOKED/invalidated on ${names} - auth-dead, cannot process any turn (401 every turn, willRetry:false). Needs a Codex RE-AUTH (log out + sign in). NOT a token-expiry - the expiry check cannot catch this. Signature paired with heartbeat staleness (> ${CODEX_AUTH_STALE_THRESHOLD}s)."
+  elif [[ ${#unknown[@]} -gt 0 ]]; then
+    local names; names="$(printf '%s, ' "${unknown[@]}")"; names="${names%, }"
+    echo -e "DEGRADED\tCodex revocation signature seen on ${names} but heartbeat.json unreadable - cannot confirm the staleness pairing; check manually (possible auth-death)."
+  elif [[ ${#transient[@]} -gt 0 ]]; then
+    local names; names="$(printf '%s, ' "${transient[@]}")"; names="${names%, }"
+    echo -e "OK\ttransient Codex 401 seen on ${names} but heartbeat FRESH - not auth-dead (pairing gate held; no alert)."
+  else
+    echo -e "OK\tno Codex runtime revocation signature (${checked} codex agent(s) checked)"
+  fi
+}
+
 # ── Run all probes ───────────────────────────────────────────────────────────
-PROBES=(gemini clickup triplewhale admanage composio)
+# Allow `source`-ing the script (probe fns only) from a test harness without running
+# the probe/alert/output body. When executed directly, BASH_SOURCE==$0 and this is a no-op.
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0 2>/dev/null || true
+
+PROBES=(gemini clickup triplewhale admanage composio codex_runtime_auth)
 RESULTS=""   # name<TAB>status<TAB>detail per line
 for name in "${PROBES[@]}"; do
   line=$("probe_${name}" 2>/dev/null || echo -e "DEGRADED\tprobe errored")
