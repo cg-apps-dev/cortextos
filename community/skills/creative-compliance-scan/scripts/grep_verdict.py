@@ -75,7 +75,11 @@ HARD_DIGIT = [
  ("M-2 delivery-time-guarantee", re.compile(r'deliver\w*\s+in\s+\d+\s*(hours?|days?)|\d+[- ]?(hour|day)[- ]?(delivery|shipping)|\b(24|48|72)[- ]?hours?\b')),
  # M-16a (rules.md 2026-06-11, rejection-proven): ANY specific count tied to a social-proof noun = HARD,
  # any surface incl on-image. Standalone ratings ("4.8 stars") stay PASS; "thousands of" is the APPROVED form.
- ("M-16a social-proof-count", re.compile(r'(?<![\$])\b\d[\d,]*\s*\+?\s*(?:\w+\s+)?(customers?|reviews?|subscribers?|households?|people|orders?|families|sleepers?|users?|five[- ]star)\b|\b\d+k\+?\s*(customers?|reviews?|subscribers?|people)\b|\b\d(\.\d)?\s*stars?\s+from\s+\d')),
+ # 2026-07-03 (mc-aligned to canonical): (1) 3+-digit FLOOR \d[\d,]{2,} - a real CG count is always 3+ digits
+ # (62,719 / 8,249 / 1000), a testimonial byline AGE ("Maya, 31, Brooklyn") is 2 = never a count. (2) same-line
+ # adjacency [^\S\n]* not \s* between number and count-noun - a real count keeps them adjacent; blocks a span
+ # across a paragraph break into a distant CTA ("31, Brooklyn\n\nOrder Today"). Mirrors mc's staged canonical fix.
+ ("M-16a social-proof-count", re.compile(r'(?<![\$])\b\d[\d,]{2,}[^\S\n]*\+?[^\S\n]*(?:\w+[^\S\n]+)?(customers?|reviews?|subscribers?|households?|people|orders?|families|sleepers?|users?|five[- ]star)\b|\b\d+k\+?[^\S\n]*(customers?|reviews?|subscribers?|people)\b|\b\d(\.\d)?[^\S\n]*stars?[^\S\n]+from[^\S\n]+\d')),
 ]
 SHIPCTX = re.compile(r'\b(ship|shipped|shipping|deliver|delivered|delivery|arrive|arrives|arrival|doorstep|door|mail|mailed)\b')
 SINGLE_TOKEN_BANS = {
@@ -105,6 +109,55 @@ GUM_HARD_DIGIT = [
 GUM_AMBIG_ALPHA = [
  ("M-13? melatonin mention", re.compile(r'(?<!no )(?<!no-)(?<!free )(?<!without )(?<!zero )melatonin\b(?![ -]?free)')),
 ]
+
+# ---- BRAIN-DERIVED HARD set (canonicalization, task_1782181935289 2026-07-02) ----
+# UNION layer on top of the inline sets above: every banned-terms.json hard[] pattern also runs
+# (matched on RAW lowered text - brain patterns are authored against normal text). The inline sets
+# stay as the FLOOR (fail-safe: a malformed brain file can never make this gate WEAKER, only the
+# brain-additions drop, with a loud warning). Single source of truth = mc's banned-terms.json;
+# this closes the local-drift class (e.g. the v1.0.8->v1.0.9 naturally-grown gap, the "calmer"/
+# "batch" lag that #146 fixed on mc's own gate).
+# SURFACE-SPLIT for claim_surface_only patterns (mc ruling 2026-07-03, M-24a scoping spec):
+# A claim_surface_only pattern (e.g. M-24a "\bclean green\b") behaves DIFFERENTLY by surface.
+#  - COPY surface (Headline..Primary Var.4 + Ad Description) = advertiser-authored claim layer ->
+#    stays a HARD grep FAIL. That is the copy-gate (copy-gate.py), NOT this creative scan - untouched.
+#  - CREATIVE-IMAGERY OCR surface (this scan) = mixed layer (physical packaging + advertiser overlays).
+#    An OCR-d pouch WORDMARK/logo must NOT auto-FAIL. So claim_surface_only patterns are EXCLUDED from
+#    the deterministic hard[] union here and EMITTED as a VISION-ADJUDICATION note (candidate) instead:
+#    the vision pass resolves pouch-LOGO -> exempt PASS vs added HEADLINE/overlay/testimonial-line/
+#    mockup-product-listing -> FAIL. (rules.md L492/L614 + M-19f pouch/logo exclusion; skill L126
+#    "vision flag, not a blind grep".) A "Clean Green Flower" mockup still hard-FAILs independently on
+#    M-2 'flower'; the cleangreen.com domain URL stays exempt. Generalized to ALL claim_surface_only.
+def _load_brain_hard():
+    path = os.environ.get("BANNED_TERMS_JSON",
+                          "/tmp/brain/agents/meta-compliance-agent/data/banned-terms.json")
+    out = []; claim = []
+    try:
+        d = json.load(open(path, encoding="utf-8"))
+        ver = d.get("version", "?")
+        for p in d.get("hard", []):
+            pat = p.get("pattern")
+            if not isinstance(pat, str) or not pat:
+                continue
+            try:
+                entry = (f"{p.get('m_code','M-?')} brain-hard", re.compile(pat, re.IGNORECASE))
+            except re.error as e:
+                print(f"WARNING: banned-terms hard pattern skipped ({e}): {pat[:60]}", file=sys.stderr)
+                continue
+            # claim_surface_only -> NOT a creative-OCR hard fail; route to vision-adjudication.
+            if p.get("claim_surface_only"):
+                claim.append((f"{p.get('m_code','M-?')} claim-surface (vision-adjudicate: pouch-logo exempt / added-text FAIL)", entry[1]))
+            else:
+                out.append(entry)
+        if not out:
+            raise ValueError("hard[] empty")
+        print(f"brain hard[] loaded: {len(out)} hard + {len(claim)} claim-surface->vision (banned-terms v{ver})", file=sys.stderr)
+    except Exception as e:
+        print(f"WARNING: banned-terms.json load failed ({e}); running INLINE floor only - "
+              f"brain-added terms NOT covered this run, fix the file/path", file=sys.stderr)
+        out = []; claim = []
+    return out, claim
+BRAIN_HARD, BRAIN_CLAIM_SURFACE = _load_brain_hard()
 
 # ---- DE-CODE on-CREATIVE -> UNCLEAR-for-Adam-review (NOT FAIL) ----
 # LIVE-SOURCED from cannabis-coding-signals.json de_code_hard_remove.patterns (single source, mc owns it).
@@ -182,7 +235,7 @@ def verdict_for(rec):
     union_raw_l  = DECODE_CREATIVE_RE.sub(_blank, union_raw_l)
     union_leet_l = DECODE_CREATIVE_RE.sub(_blank, union_leet_l)
 
-    fails=[]; unclears=[]
+    fails=[]; unclears=[]; vision_adjudicate=[]
 
     # corroboration count per single-token product ban across independent sources
     def src_count(word):
@@ -211,6 +264,21 @@ def verdict_for(rec):
                 unclears.append(f"{label}(no ship context):'{val}' - verify"); continue
         fails.append(f"{label}:'{val}'")
 
+    # brain-derived hard[] union pass (raw lowered text; dedup vs already-failed values)
+    already = {f.split(":'",1)[1].rstrip("'") for f in fails if ":'" in f}
+    for label, val in find_all(union_raw_l, BRAIN_HARD):
+        if val in already: continue
+        already.add(val)
+        fails.append(f"{label}:'{val}'")
+
+    # claim_surface_only patterns on the creative-OCR surface: NOT a hard fail (mc 2026-07-03).
+    # Emit as a vision-adjudication note (default packaging/incidental = exempt PASS; the vision pass
+    # flips added-headline/overlay/mockup-listing to FAIL). Skip values already failed on another axis
+    # (e.g. a "Clean Green Flower" mockup already M-2-failed on 'flower').
+    for label, val in find_all(union_raw_l, BRAIN_CLAIM_SURFACE):
+        if val in already: continue
+        vision_adjudicate.append(f"{label}:'{val}'")
+
     # letterspace-collapsed evasion: also corroboration-gated
     readable = set(seen)
     for w in SINGLE_TOKEN_BANS:
@@ -237,9 +305,17 @@ def verdict_for(rec):
     if rec.get("low_conf"): unclears.append("low-confidence read")
 
     fails = list(dict.fromkeys(fails)); unclears = list(dict.fromkeys(unclears))
+    vision_adjudicate = list(dict.fromkeys(vision_adjudicate))
     if fails:    v, ev = "FAIL", "; ".join(fails[:6])
     elif unclears: v, ev = "UNCLEAR", "; ".join(unclears[:5]) + "; needs human review"
-    else:        v, ev = "PASS", "clean: no banned text, imagery clean"
+    else:
+        v = "PASS"
+        # claim-surface hits that did not fail on any other axis: default-exempt (pouch logo/incidental)
+        # per mc 2026-07-03, with a note so the vision pass can flip added-text/mockup to FAIL.
+        if vision_adjudicate:
+            ev = "clean: no banned text, imagery clean [vision-adjudicate default-exempt: " + "; ".join(vision_adjudicate[:3]) + "]"
+        else:
+            ev = "clean: no banned text, imagery clean"
     return v, ev, fails, unclears
 
 def meta_reconcile(v, fails, meta):

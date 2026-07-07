@@ -21,8 +21,10 @@ CASES = [
     ("Agriculture Act compliant.",         "FAIL"),
     # hard M-2 not in the de-code set -> FAIL
     ("No chemicals, ever.",                "FAIL"),
-    # accepted-risk, not in de-code set -> never flags
-    ("Family-grown quality, delivered.",   "PASS"),
+    # GROWN-FAMILY HARD BAN (Adam 2026-07-01, brain PR #199/#204): 2026-06-22 accepted-risk ALLOW REVERSED.
+    # All grown-provenance phrasing (family/farm/home/usa/locally/organically grown, "grown in/on/by")
+    # = HARD FAIL M-19b via banned-terms.json hard[]. NOT accepted-risk anymore.
+    ("Family-grown quality, delivered.",   "FAIL"),
     # clean
     ("Real quality delivered. 20% off.",   "PASS"),
     # §-7 FIRED (brain #161 -> cannabis-coding-signals v1.1.4, 2026-06-23): mc WIDENED the de-code
