@@ -8,12 +8,17 @@
 # persistent failure alerts on the transition + a slow re-alert cadence, never spams.
 #
 # Usage:
-#   cortextos bus check-dependency-health [--chat-id ID] [--cooldown SECONDS] [--quiet]
+#   cortextos bus check-dependency-health [--chat-id ID] [--cooldown SECONDS] [--quiet] [--only P,Q]
 #
 # Options:
 #   --chat-id ID     Telegram chat to alert (defaults to the running agent's CHAT_ID)
 #   --cooldown SEC   Re-alert interval while a dep stays broken (default: 21600 = 6h)
 #   --quiet          Suppress the stdout JSON summary (still alerts + logs)
+#   --only P[,Q]     Run ONLY the named probe(s); all others are skipped entirely (their
+#                    functions are never called => no API/embed spend). Lets a cheap probe
+#                    run on its own FAST cron decoupled from the full 12h sweep. Unknown
+#                    names exit 1. Example fast auth-death poll (~30min, zero-cost):
+#                      cortextos bus check-dependency-health --only codex_runtime_auth
 #
 # Output: JSON summary of every probe to stdout. Exit 0 normally (the script owns its
 # own alerting); exits non-zero ONLY on an internal scripting error so the cron can
@@ -64,10 +69,13 @@ source "$SCRIPT_DIR/_ctx-env.sh"
 CHAT_ID="${CTX_TELEGRAM_CHAT_ID:-}"
 COOLDOWN=21600   # 6h re-alert cadence while a dep stays broken
 QUIET=false
+ONLY=""          # --only <probe[,probe]>: run just these probes (comma-sep). Filtered-out
+                 # probe FUNCTIONS are never called => no side effects/API/embed spend for them.
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --chat-id)  CHAT_ID="$2";  shift 2 ;;
+    --only)     ONLY="$2";     shift 2 ;;
     --cooldown) COOLDOWN="$2"; shift 2 ;;
     --quiet)    QUIET=true;    shift   ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -279,6 +287,20 @@ PY
 [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0 2>/dev/null || true
 
 PROBES=(gemini clickup triplewhale admanage composio codex_runtime_auth)
+# --only <probe[,probe]>: run just the named probe(s). Any probe NOT selected is skipped
+# ENTIRELY - its function is never invoked - so a fast --only cron incurs zero cost from the
+# other (API/embed-spending) probes. Unknown --only names exit 1 (fail loud, don't silently no-op).
+if [[ -n "$ONLY" ]]; then
+  IFS=',' read -r -a _only <<< "$ONLY"
+  declare -a _filtered=()
+  for want in "${_only[@]}"; do
+    want="${want// /}"; [[ -z "$want" ]] && continue
+    _match=false
+    for p in "${PROBES[@]}"; do [[ "$p" == "$want" ]] && { _filtered+=("$want"); _match=true; break; }; done
+    [[ "$_match" == true ]] || { echo "Unknown --only probe: $want (valid: ${PROBES[*]})" >&2; exit 1; }
+  done
+  PROBES=("${_filtered[@]}")
+fi
 RESULTS=""   # name<TAB>status<TAB>detail per line
 for name in "${PROBES[@]}"; do
   line=$("probe_${name}" 2>/dev/null || echo -e "DEGRADED\tprobe errored")
