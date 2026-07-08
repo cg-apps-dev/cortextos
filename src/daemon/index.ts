@@ -1,6 +1,10 @@
 import { AgentManager } from './agent-manager.js';
 import { IPCServer } from './ipc-server.js';
 import { createAgentAccountsSnapshotLoop, type AgentAccountsSnapshotLoop } from './agent-accounts-snapshot-loop.js';
+import {
+  createRtkContinueDecayAutohealLoop,
+  type RtkContinueDecayAutohealLoop,
+} from './rtk-continue-decay-autoheal.js';
 import { readdirSync, readFileSync, writeFileSync, existsSync, chmodSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
@@ -222,6 +226,7 @@ class Daemon {
   private agentManager: AgentManager | null = null;
   private ipcServer: IPCServer | null = null;
   private agentAccountsSnapshotLoop: AgentAccountsSnapshotLoop | null = null;
+  private rtkContinueDecayAutohealLoop: RtkContinueDecayAutohealLoop | null = null;
   private instanceId: string;
   private ctxRoot: string;
 
@@ -273,6 +278,12 @@ class Daemon {
       frameworkRoot,
     });
     this.agentAccountsSnapshotLoop.start();
+    this.rtkContinueDecayAutohealLoop = createRtkContinueDecayAutohealLoop({
+      agentManager: this.agentManager,
+      ctxRoot: this.ctxRoot,
+      frameworkRoot,
+    });
+    this.rtkContinueDecayAutohealLoop.start();
 
     console.log(`[daemon] Running (pid: ${process.pid})`);
 
@@ -283,6 +294,10 @@ class Daemon {
         if (this.agentAccountsSnapshotLoop) {
           this.agentAccountsSnapshotLoop.stop();
           this.agentAccountsSnapshotLoop = null;
+        }
+        if (this.rtkContinueDecayAutohealLoop) {
+          this.rtkContinueDecayAutohealLoop.stop();
+          this.rtkContinueDecayAutohealLoop = null;
         }
         if (this.agentManager) {
           await this.agentManager.stopAll();
