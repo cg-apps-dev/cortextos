@@ -974,7 +974,7 @@ interface AlertState {
 const DELTA_SANITY_MAX_CYCLE_MS = 10 * 60_000;
 const SEVEN_DAY_RISE_SUSPECT_POINTS = 30;
 
-function loadPriorUsage(ctxRoot: string): Map<string, AccountUsage> {
+export function loadMultiAccountUsage(ctxRoot: string): Map<string, AccountUsage> {
   const prior = new Map<string, AccountUsage>();
   const path = multiAccountUsagePath(ctxRoot);
   if (!existsSync(path)) return prior;
@@ -988,6 +988,10 @@ function loadPriorUsage(ctxRoot: string): Map<string, AccountUsage> {
     }
   } catch { /* no prior */ }
   return prior;
+}
+
+function loadPriorUsage(ctxRoot: string): Map<string, AccountUsage> {
+  return loadMultiAccountUsage(ctxRoot);
 }
 
 function lastGoodFrom(prior: AccountUsage | undefined): LastGoodUsage | undefined {

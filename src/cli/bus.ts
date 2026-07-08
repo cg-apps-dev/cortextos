@@ -18,8 +18,8 @@ import { updateCronFire, parseDurationMs, readCronState } from '../bus/cron-stat
 import { addCron, removeCron, readCrons, updateCron as updateCronDef, getCronByName, getExecutionLog } from '../bus/crons.js';
 import { nextFireFromCron } from '../daemon/cron-scheduler.js';
 import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/knowledge-base.js';
-import { refreshUsage, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D } from '../bus/oauth.js';
-import { captureKeychainUsageCredential, beginUsageAuth, completeUsageAuth, checkAllUsage, setAccountBenched, fingerprint as ucFingerprint } from '../bus/usage-accounts.js';
+import { refreshUsage, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D, type AccountsStore, type OAuthAccount } from '../bus/oauth.js';
+import { captureKeychainUsageCredential, beginUsageAuth, completeUsageAuth, checkAllUsage, setAccountBenched, fingerprint as ucFingerprint, loadMultiAccountUsage, type AccountUsage } from '../bus/usage-accounts.js';
 import { resolveAgentAccount } from '../daemon/cron-capacity-gate.js';
 import { resolvePaths } from '../utils/paths.js';
 import { resolveEnv } from '../utils/env.js';
@@ -87,6 +87,120 @@ export function formatAgentAccountRow(row: AgentAccountCliRow): { account: strin
     return { account: 'EXCLUDED', source: `runtime-excluded (${row.reason ?? 'not a Claude account'})` };
   }
   return { account: 'UNRESOLVED', source: `- (${row.reason ?? 'unresolved'})` };
+}
+
+function accountUsageFingerprint(acct: OAuthAccount): string | undefined {
+  return acct.usage_credential?.access_token ? ucFingerprint(acct.usage_credential.access_token) : undefined;
+}
+
+function matchingSamplerUsage(name: string, acct: OAuthAccount, sampler: Map<string, AccountUsage>): AccountUsage | undefined {
+  const row = sampler.get(name);
+  const expected = accountUsageFingerprint(acct);
+  if (!row || !expected || row.credential_fingerprint !== expected) return undefined;
+  return row;
+}
+
+function formatSamplerPct(v: number | undefined): string {
+  if (v === undefined || !Number.isFinite(v)) return 'n/a';
+  return `${Math.round(v)}%`;
+}
+
+const SAMPLER_STALE_AFTER_MS = 30 * 60_000;
+
+function samplerAgeMs(row: AccountUsage, nowMs: number): number | undefined {
+  const fetchedMs = Date.parse(row.fetched_at);
+  if (Number.isNaN(fetchedMs)) return undefined;
+  return Math.max(0, nowMs - fetchedMs);
+}
+
+function formatAge(ms: number | undefined): string {
+  if (ms === undefined) return 'unknown age';
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes}m old`;
+  const hours = Math.round(minutes / 60);
+  return `${hours}h old`;
+}
+
+function formatSamplerDisplayPct(v: number | undefined, ageMs: number | undefined): string {
+  const base = formatSamplerPct(v);
+  // An ok:true row with an unparseable/missing fetched_at (ageMs undefined) must
+  // NOT render as a confident current number - same misleading-number class as a
+  // stale row. Flag it explicitly rather than defaulting to fresh.
+  if (ageMs === undefined) return `${base} (age unknown)`;
+  if (ageMs <= SAMPLER_STALE_AFTER_MS) return base;
+  return `${base} (stale, ${formatAge(ageMs)})`;
+}
+
+function maybeUnreadStoredUsage(acct: OAuthAccount): boolean {
+  return (
+    acct.five_hour_utilization === 0 &&
+    acct.seven_day_utilization === 0 &&
+    (!acct.expires_at || acct.expires_at <= 0)
+  );
+}
+
+function storedUsageValue(acct: OAuthAccount, key: 'five_hour_utilization' | 'seven_day_utilization'): number | undefined {
+  if (maybeUnreadStoredUsage(acct)) return undefined;
+  return acct[key];
+}
+
+function formatOAuthExpiry(acct: OAuthAccount): string {
+  if (typeof acct.expires_at === 'number' && Number.isFinite(acct.expires_at) && acct.expires_at > 0) {
+    return new Date(acct.expires_at).toISOString();
+  }
+  if (acct.expires_at === 0) return 'unmanaged (setup-token)';
+  return 'n/a';
+}
+
+function formatFetchedAt(iso: string | undefined): string {
+  if (!iso) return 'unknown';
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return iso;
+  return `${new Date(ms).toISOString().slice(11, 16)}Z`;
+}
+
+function formatSamplerResets(row: AccountUsage): string {
+  return `  resets: 5h ${formatFetchedAt(row.five_hour_resets)}  7d ${formatFetchedAt(row.seven_day_resets)}`;
+}
+
+export function formatOAuthAccountLines(
+  name: string,
+  acct: OAuthAccount,
+  store: Pick<AccountsStore, 'active'>,
+  sampler: Map<string, AccountUsage>,
+  nowMs = Date.now(),
+): string[] {
+  const active = name === store.active ? ' (active)' : '';
+  const samplerRow = matchingSamplerUsage(name, acct, sampler);
+  const useSampler = samplerRow?.ok === true;
+  const ageMs = useSampler ? samplerAgeMs(samplerRow, nowMs) : undefined;
+  const fiveHourValue = useSampler ? samplerRow.five_hour_pct : storedUsageValue(acct, 'five_hour_utilization');
+  const sevenDayValue = useSampler ? samplerRow.seven_day_pct : storedUsageValue(acct, 'seven_day_utilization');
+  const fiveHourForWarn = useSampler ? (fiveHourValue ?? 0) / 100 : (fiveHourValue ?? 0);
+  const sevenDayForWarn = useSampler ? (sevenDayValue ?? 0) / 100 : (sevenDayValue ?? 0);
+  const warn5h = fiveHourForWarn >= ALERT_5H ? ' ⚠️' : '';
+  const warn7d = sevenDayForWarn >= ALERT_7D ? ' ⚠️' : '';
+  const fiveHour = useSampler ? formatSamplerDisplayPct(fiveHourValue, ageMs) : pct(fiveHourValue);
+  const sevenDay = useSampler ? formatSamplerDisplayPct(sevenDayValue, ageMs) : pct(sevenDayValue);
+  const source = useSampler
+    ? `sampler, fetched ${formatFetchedAt(samplerRow.fetched_at)}`
+    : 'accounts.json, stale';
+  const resets = useSampler ? formatSamplerResets(samplerRow) : '';
+
+  const lines = [
+    `${name}${active}`,
+    `  5h: ${fiveHour}${warn5h}  7d: ${sevenDay}${warn7d}  expires: ${formatOAuthExpiry(acct)}${resets}  (${source})`,
+  ];
+
+  if (acct.usage_credential) {
+    const uc = acct.usage_credential;
+    const ucExp = uc.expires_at ? new Date(uc.expires_at).toISOString() : 'unknown';
+    lines.push(`  usage-cred: ${ucFingerprint(uc.access_token)} (${uc.source}) expires: ${ucExp}`);
+  } else {
+    lines.push('  usage-cred: NONE (account invisible to multi-account usage monitoring)');
+  }
+
+  return lines;
 }
 
 busCommand
@@ -2682,20 +2796,9 @@ busCommand
       console.log('No accounts.json found at state/oauth/accounts.json');
       return;
     }
+    const sampler = loadMultiAccountUsage(env.ctxRoot);
     for (const [name, acct] of Object.entries(store.accounts)) {
-      const active = name === store.active ? ' (active)' : '';
-      const expiry = new Date(acct.expires_at).toISOString();
-      const warn5h = (acct.five_hour_utilization ?? 0) >= ALERT_5H ? ' ⚠️' : '';
-      const warn7d = (acct.seven_day_utilization ?? 0) >= ALERT_7D ? ' ⚠️' : '';
-      console.log(`${name}${active}`);
-      console.log(`  5h: ${pct(acct.five_hour_utilization)}${warn5h}  7d: ${pct(acct.seven_day_utilization)}${warn7d}  expires: ${expiry}`);
-      if (acct.usage_credential) {
-        const uc = acct.usage_credential;
-        const ucExp = uc.expires_at ? new Date(uc.expires_at).toISOString() : 'unknown';
-        console.log(`  usage-cred: ${ucFingerprint(uc.access_token)} (${uc.source}) expires: ${ucExp}`);
-      } else {
-        console.log('  usage-cred: NONE (account invisible to multi-account usage monitoring)');
-      }
+      for (const line of formatOAuthAccountLines(name, acct, store, sampler)) console.log(line);
     }
   });
 
