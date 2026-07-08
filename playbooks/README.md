@@ -21,9 +21,16 @@ Maintained by the-sop-keeper. Changes land via a local branch reviewed by the-or
 | [meta-media-buyer-agent/](meta-media-buyer-agent/) | cross-link | Executing owner of the launch-draft + ad-set-batch playbooks, which live under meta-ads-agent for pipeline browsability |
 | [the-ad-strategist/](the-ad-strategist/) | 1 | Weekly what-is-working ad-intelligence report (nCAC iterate-ranker, pattern extraction, task list to the-team-lead) |
 | [the-analyst/](the-analyst/) | 5 | Daily digest, throughput snapshot, theta-wave cycle, fleet health monitoring, nightly maintenance |
+| [the-orchestrator/](the-orchestrator/) | 8 | Daily/weekly review cadence, goal lifecycle, approvals + human tasks, fleet optimization, account onboarding + agent migration |
+| [the-team-lead/](the-team-lead/) | 2 | Sunday per-person retrospective + Monday forward-look for the human marketing team |
+| [security-agent/](security-agent/) | 2 | Daily security safety-net sweep + bi-weekly threat-intel research |
+| [cro-agent/](cro-agent/) | 1 | Weekly CRO opportunities report |
+| [claude-dev-agent/](claude-dev-agent/) | 2 | Dev-pairing contract (plan/review half) + daily upstream check |
+| [codex-dev-agent/](codex-dev-agent/) | 1 | Implementation-partner flow (the execution half of the dev pair) |
+| [meta-compliance-agent/](meta-compliance-agent/) | 2 | Scan-and-verdict process + M-code rules ownership (agent files live in the brain; process documented here) |
 | [fleet/](fleet/) | 1 | Cross-agent processes owned by no single agent: the zero-model launchd monitor layer |
 
-More agents land here per the fleet-playbook migration plan.
+The playbook system now covers the full active fleet.
 
 ## How to read a playbook (the labels)
 
