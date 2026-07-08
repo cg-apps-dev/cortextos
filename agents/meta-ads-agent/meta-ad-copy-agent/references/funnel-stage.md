@@ -1,8 +1,8 @@
-# Funnel Stage — Per-Tab Dropdown Columns
+# Funnel Stage - Per-Tab Dropdown Columns
 
 The Funnel Stage cell is a Google Sheets **classic data-validation
 dropdown** (`ONE_OF_LIST`, `strict: true`) on all four product-specific
-tabs. Allowed values: `TOF`, `MOF`, `BOF` — uppercase, no prefix, no
+tabs. Allowed values: `TOF`, `MOF`, `BOF` - uppercase, no prefix, no
 suffix.
 
 The plugin writes this column on every run as part of the per-tab
@@ -11,7 +11,7 @@ Step 3.6 for video tabs). On all four tabs the fill reads the linked
 ClickUp card for an explicit declaration and falls back to TOF when
 nothing is declared (v0.7.5+).
 
-**As of v0.7.6 the four tabs do not share a single column letter** —
+**As of v0.7.6 the four tabs do not share a single column letter** -
 the sister-winner reference columns inserted at C–F (flower) / C–D
 (gummies) shifted the FUNNEL STAGE column right by 4 on flower tabs
 and 2 on gummies tabs. **v0.8.1 added a 5th flower reference column at
@@ -32,25 +32,25 @@ validation. Never write any other string.
 
 ---
 
-## §1 — Stage framing (Cold / Warm / Hot audience)
+## §1 - Stage framing (Cold / Warm / Hot audience)
 
 Picked by the team 2026-05-14. This is the canonical framing every
 inference cue maps back to.
 
-**`TOF` — Top of funnel, cold prospect.** The viewer has no prior
+**`TOF` - Top of funnel, cold prospect.** The viewer has no prior
 relationship with Clean Green. They might be problem-aware
 ("driving to the shop is annoying", "online cannabis is sketchy") but
 they are not actively evaluating the brand. The ad's job is pattern
 interruption and brand introduction. Most prospecting / acquisition
 campaigns sit here.
 
-**`MOF` — Middle of funnel, warmed-up consideration.** The viewer is
+**`MOF` - Middle of funnel, warmed-up consideration.** The viewer is
 familiar with the brand and is now evaluating. They've seen the hook
 before; this ad reinforces proof, differentiation, and trust. Deep
 proof stacks, lab-test framing, family-grown story, side-by-side
 comparisons, longer-form testimonial.
 
-**`BOF` — Bottom of funnel, ready to buy.** The viewer has been
+**`BOF` - Bottom of funnel, ready to buy.** The viewer has been
 retargeted, knows the brand, and needs the close. Offer + risk
 reversal do the work: `20% OFF using code TRY20`, `100-Day Money-Back
 Guarantee`, scarcity, deadline, FAQ / objection-handling. The ad is
@@ -64,9 +64,9 @@ copy structure.
 
 ---
 
-## §2 — Extraction rule per tab type
+## §2 - Extraction rule per tab type
 
-### §2.1 — Video tabs (brief-driven)
+### §2.1 - Video tabs (brief-driven)
 
 For each Card ID group in a video tab:
 
@@ -91,17 +91,17 @@ For each Card ID group in a video tab:
    - `Hot` / `Hot audience` / `Retargeting` / `Closing` → `BOF`
 5. If no declaration is present, **default to `TOF`** (per §3). Add
    the group to the `defaulted-to-TOF` count for the Step 4 report.
-6. The chosen value must be exactly one of `TOF`, `MOF`, `BOF` — any
+6. The chosen value must be exactly one of `TOF`, `MOF`, `BOF` - any
    other string is a hard error; block the row instead of writing.
 
 All rows in a Card ID group share one funnel-stage value. If existing
-non-empty values diverge inside a single group, do not overwrite — use
+non-empty values diverge inside a single group, do not overwrite - use
 the most common existing value for new rows in the group, and note the
 divergence in the Step 4 report.
 
-### §2.2 — Image tabs (linked-card driven, new in v0.7.5)
+### §2.2 - Image tabs (linked-card driven, new in v0.7.5)
 
-Image tabs do not use the image asset for funnel-stage inference —
+Image tabs do not use the image asset for funnel-stage inference -
 funnel stage is a campaign/audience metadata field, not a creative
 content signal. v0.7.5+ reads the **linked ClickUp card** (column L
 on `IMAGES (Flower)` as of v0.8.1, column I on `IMAGES (Sleep Gummies)`)
@@ -115,7 +115,7 @@ one row:
 1. Group image rows by Card ID (column L on `IMAGES (Flower)`, column
    I on `IMAGES (Sleep Gummies)`). Rows with no Card ID go into a
    `no_card` bucket and default to `TOF` (image rows are still
-   writable without a card, unlike video rows — the image itself is
+   writable without a card, unlike video rows - the image itself is
    the brief for copy, so a missing card only blocks stage inference,
    not the row).
 2. Fetch the card with `CLICKUP_GET_TASK`, cache it keyed by Card ID.
@@ -130,7 +130,7 @@ one row:
 5. If no declaration is present, default to `TOF` (§3) and
    increment `defaulted-to-TOF`.
 6. If the ClickUp fetch fails (401 / 404 / invalid ID / non-ClickUp
-   string), do **not** block the row — image rows have copy that
+   string), do **not** block the row - image rows have copy that
    can ship without a known stage. Instead, default to `TOF` and
    add the row to `defaulted-to-TOF-from-fetch-failure` for the
    Step 4 report so the operator can see which rows had a bad
@@ -147,13 +147,13 @@ card; it does not look at the image for stage cues. See §5.
 
 ---
 
-## §3 — Per-tab default
+## §3 - Per-tab default
 
 When the linked card carries no explicit declaration (or the card
 is unfetchable on an image row), the per-tab default is `TOF` on
 all four tabs. Picked by the team 2026-05-14. Rationale: most
 Clean Green UGC and image ads still run cold acquisition, and TOF
-is the safest fallback — it will not over-promise retargeting
+is the safest fallback - it will not over-promise retargeting
 performance to the buying platform when the ad is actually a
 prospecting unit.
 
@@ -163,7 +163,7 @@ version.
 
 ---
 
-## §4 — Ambiguity resolution
+## §4 - Ambiguity resolution
 
 Per the v0.7.4 product decision (still in force in v0.7.5):
 **never leave the Funnel Stage cell empty when the row qualifies for
@@ -194,10 +194,10 @@ campaigns is a signal, not a success.
 
 ---
 
-## §5 — Future extensions (not yet implemented in v0.7.5)
+## §5 - Future extensions (not yet implemented in v0.7.5)
 
 These are stubs to keep the inference surface visible. None of them
-ship in v0.7.5 — the agent must not implement any of these without an
+ship in v0.7.5 - the agent must not implement any of these without an
 explicit version bump and a spec update here:
 
 - **Image-visual stage inference** based on offer dominance: an ad
@@ -206,15 +206,15 @@ explicit version bump and a spec update here:
   TOF; a proof-stack-heavy creative (10K reviews, lab test,
   family-farm story) with a soft offer probably reads as MOF.
   Currently v0.7.5 reads the linked ClickUp card and falls back to
-  TOF — visual cues are not consulted. Adding this requires a
+  TOF - visual cues are not consulted. Adding this requires a
   per-tag cue table in §3 and a confidence threshold for when
   visual cues override the linked-card default.
 - **Hook-type cross-reference**: the `Hook Type` column on the video
   tabs (column P on `VIDEOS (Flower)` as of v0.8.1, column M on `VIDEOS (Sleep
-  Gummies)`) may carry a funnel-stage signal — e.g. a
+  Gummies)`) may carry a funnel-stage signal - e.g. a
   `Closer` hook type implies BOF. Not used in v0.7.6 because the
   column is inconsistently filled.
 - **Campaign-source inference**: the brief sometimes mentions
-  "prospecting campaign" / "retargeting campaign" — these phrases could
+  "prospecting campaign" / "retargeting campaign" - these phrases could
   map to TOF / BOF respectively. Currently normalized through §2.1.4
   via the `Cold` / `Warm` / `Hot` synonyms.

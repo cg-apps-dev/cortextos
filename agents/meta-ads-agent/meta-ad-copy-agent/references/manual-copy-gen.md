@@ -10,7 +10,7 @@ description: >
   Loaded by the /adcopy:manual command.
 ---
 
-# Manual Copy Generation — 3-Style Framework
+# Manual Copy Generation - 3-Style Framework
 
 This skill defines how to write Clean Green Meta ad copy manually in 3
 proven styles. It is separate from the automated `copy-framework`
@@ -20,7 +20,7 @@ exploration.
 
 **Required companion skills:** brand-voice, compliance, avatars.
 
-> **Compliance is single-sourced from the [meta-compliance-agent](../../../meta-compliance-agent/) (2026-06-08).** This file is generation *guidance* (3 manual styles), **not** compliance rules. Its references, headline banks, and trust signals were rebuilt to be compliant against the agent's M-codes (M-2 / M-3 / M-5 / M-6a / M-12 / M-13 / M-19 / M-24, …) so manually-written copy starts compliant. Enforcement is the agent's scan as a hard pre-write gate — see [`compliance.md`](compliance.md). The retired in-pipeline `§9 cleanup` / `§10 mechanical substitution` passes **no longer exist**; wherever older text below references them, read it as: *this is banned (per the cited M-code) — draft the compliant form, and the agent scan is the gate.*
+> **Compliance is single-sourced from the [meta-compliance-agent](../../../meta-compliance-agent/) (2026-06-08).** This file is generation *guidance* (3 manual styles), **not** compliance rules. Its references, headline banks, and trust signals were rebuilt to be compliant against the agent's M-codes (M-2 / M-3 / M-5 / M-6a / M-12 / M-13 / M-19 / M-24, …) so manually-written copy starts compliant. Enforcement is the agent's scan as a hard pre-write gate - see [`compliance.md`](compliance.md). The retired in-pipeline `§9 cleanup` / `§10 mechanical substitution` passes **no longer exist**; wherever older text below references them, read it as: *this is banned (per the cited M-code) - draft the compliant form, and the agent scan is the gate.*
 
 ---
 
@@ -40,15 +40,15 @@ benefit stacks). The heavy lifter that does full persuasion in-feed.
 
 **Structure:**
 ```
-[HOOK — 1 line, pattern interrupt or bold claim]
+[HOOK - 1 line, pattern interrupt or bold claim]
 
-[BODY — Framework-driven: problem/agitation, story, or contrast]
+[BODY - Framework-driven: problem/agitation, story, or contrast]
 
-[PROOF — Checkmarks, benefits, timeline, or objection handling]
+[PROOF - Checkmarks, benefits, timeline, or objection handling]
 
-[TRUST — Guarantee, customer count, press, or tested-before-it-ships]
+[TRUST - Guarantee, customer count, press, or tested-before-it-ships]
 
-[CTA — Discount code + "Limited Time Only"]
+[CTA - Discount code + "Limited Time Only"]
 ```
 
 **7 Proven Frameworks (mapped to winning copies):**
@@ -123,13 +123,13 @@ it. Starts with skepticism, ends with conversion.
 
 **Structure:**
 ```
-"[OPENING — Skepticism, doubt, or concern the viewer shares]
+"[OPENING - Skepticism, doubt, or concern the viewer shares]
 
-[MIDDLE — What happened when they tried / discovery moment]
+[MIDDLE - What happened when they tried / discovery moment]
 
-[CLOSE — Conversion statement + specific authentic detail]" ⭐️⭐️⭐️⭐️⭐️
+[CLOSE - Conversion statement + specific authentic detail]" ⭐️⭐️⭐️⭐️⭐️
 
-[CTA — Discount code, outside the quotes]
+[CTA - Discount code, outside the quotes]
 ```
 
 **4 Proven Angles:**
@@ -144,7 +144,7 @@ it. Starts with skepticism, ends with conversion.
 **Hard rules:**
 - ALWAYS in quotation marks (entire review)
 - ALWAYS first person
-- ALWAYS starts with doubt/concern — never positive
+- ALWAYS starts with doubt/concern - never positive
 - ALWAYS ends with ⭐️⭐️⭐️⭐️⭐️
 - CTA line sits OUTSIDE the quotes
 - Include 1-2 specific details (times, amounts, sensory) for
@@ -193,9 +193,9 @@ retargeting, announcements, state callouts, restocks.
 
 **Structure:**
 ```
-[HEADLINE STATEMENT — benefit, announcement, or callout]
+[HEADLINE STATEMENT - benefit, announcement, or callout]
 [OPTIONAL: 1 supporting line]
-[CTA — Discount code + "Limited Time Only"]
+[CTA - Discount code + "Limited Time Only"]
 ```
 
 **3 Proven Patterns:**
@@ -247,7 +247,7 @@ Every ad needs a headline under 27 chars.
 **Headline formula patterns:**
 - {Outcome} + 🌿
 - {Benefit}, {Benefit}, {Benefit}
-- {Curiosity question} (NOT a `Tired Of [X]?` diagnostic question — those are M-12-banned)
+- {Curiosity question} (NOT a `Tired Of [X]?` diagnostic question - those are M-12-banned)
 - {Authority signal}
 - Stop {pain} 🌿
 - {Guarantee statement} 🌿
@@ -289,7 +289,7 @@ Examples: "Ends tonight", "4.9 stars", "Free shipping over $99"
 > Wasting [X]?`, `Fed Up With [X]?`, `Can't sleep?`) trips Meta's
 > M-12 classifier. The mechanical substitution pass replaces these
 > with the per-product rotator in `compliance.md` §10.0. Don't
-> draft them — pick a different hook.
+> draft them - pick a different hook.
 
 ---
 
@@ -370,7 +370,7 @@ Vary phrasing across the batch. Options:
     night`, `stay asleep`, `fall asleep faster`, `drift off`, `8
     hours straight`, `sleep deeper`, `best sleep in a long time`,
     `End the 3am ceiling stare`, `Better mornings start the night
-    before` (M-13 — outside Review-Style carve-out)?
+    before` (M-13 - outside Review-Style carve-out)?
 13. No two ads share same hook?
 14. No two ads share same CTA phrasing?
 15. Line breaks between sections?

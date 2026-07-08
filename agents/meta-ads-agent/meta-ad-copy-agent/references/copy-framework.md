@@ -3,13 +3,13 @@ name: copy-framework
 description: The static-ads-dr direct-response framework for Clean Green. Defines the 5-stage conversion arc, the 5 headline hook types, the 5 body copy variation angles (no synonym swaps), the non-negotiable asset-to-copy alignment rule, CTA selection, and per-product proof banks for Flower vs Sleep Gummies. Load on every generation run alongside brand-voice, compliance, and avatars. Grounded in Clean Green's winning ad archive and canonical templates. Vocabulary rebuilt 2026-05 against the meta-compliance scan (M-3 / M-5 / M-6a / M-12 / M-13).
 ---
 
-# Copy Framework — static-ads-dr
+# Copy Framework - static-ads-dr
 
 This skill is the structural blueprint. It tells you **what shape each
 variation takes and what angle it leads with.** `brand-voice` gives
 you the words; this skill gives you the scaffolding.
 
-> **Compliance is single-sourced from the [meta-compliance-agent](../../../meta-compliance-agent/) (2026-06-08).** This file is generation *guidance* (structure, hooks, proof banks), **not** compliance rules. Its proof-bank phrases, openers, and worked examples were rebuilt to be compliant against the agent's M-codes (M-2 / M-3 / M-5 / M-6a / M-12 / M-13 / M-19 / M-24, …) so the agent **learns from clean source vocabulary** rather than fixing copy after the fact. Enforcement is the agent's scan as a hard pre-write gate — see [`compliance.md`](compliance.md). The retired in-pipeline `§9 cleanup` / `§10 mechanical substitution` passes **no longer exist**; wherever older text below references them, read it as: *this is banned (per the cited M-code) — draft the compliant form, and the agent scan is the gate.*
+> **Compliance is single-sourced from the [meta-compliance-agent](../../../meta-compliance-agent/) (2026-06-08).** This file is generation *guidance* (structure, hooks, proof banks), **not** compliance rules. Its proof-bank phrases, openers, and worked examples were rebuilt to be compliant against the agent's M-codes (M-2 / M-3 / M-5 / M-6a / M-12 / M-13 / M-19 / M-24, …) so the agent **learns from clean source vocabulary** rather than fixing copy after the fact. Enforcement is the agent's scan as a hard pre-write gate - see [`compliance.md`](compliance.md). The retired in-pipeline `§9 cleanup` / `§10 mechanical substitution` passes **no longer exist**; wherever older text below references them, read it as: *this is banned (per the cited M-code) - draft the compliant form, and the agent scan is the gate.*
 
 ---
 
@@ -26,7 +26,7 @@ declares the product:
 | `VIDEOS (Sleep Gummies)` | Video | `gummies:deep-sleep` |
 
 **The image vs. video distinction is still the architectural divide
-between source-of-truth pipelines** — image rows read the image,
+between source-of-truth pipelines** - image rows read the image,
 video rows read the ClickUp brief. The product split is a separate
 axis: it shifts the proof bank, voice notes, and per-product
 compliance section, but the pipeline shape stays the same per
@@ -40,7 +40,7 @@ workflow.
    framing, and visible product spec.
 2. **Set `product_category` from the tab name.** Flower tab →
    `flower`. Sleep Gummies tab → `gummies:deep-sleep`. Do NOT infer
-   product from the image — the image is for offers, hooks, and
+   product from the image - the image is for offers, hooks, and
    sanity-checking the tab match.
 3. **Run the tab-mismatch sanity check** (see SKILL.md). If the
    image visibly shows the wrong product for the tab, halt with
@@ -58,9 +58,9 @@ contain production metadata, not copy briefs.
 
 1. **Fetch the ClickUp task** using the Card ID column for the tab
    (column N on `VIDEOS (Flower)`, column K on `VIDEOS (Sleep
-   Gummies)` as of v0.8.1) — one `CLICKUP_GET_TASK` call per unique
+   Gummies)` as of v0.8.1) - one `CLICKUP_GET_TASK` call per unique
    Card ID; rows sharing a Card ID share copy. See SKILL.md Step 3.
-2. **Extract the brief** from the task description — hook/body/CTA
+2. **Extract the brief** from the task description - hook/body/CTA
    sections, script transcript, core claims, specific numbers.
 3. **Set `product_category` from the tab name** (not from the
    brief). Flower tab → `flower`. Sleep Gummies tab →
@@ -74,12 +74,12 @@ contain production metadata, not copy briefs.
    voice from the per-product sections.
 
 **For videos, the ClickUp brief IS the source of truth for the
-hook, claims, and arc — but the product comes from the tab.**
+hook, claims, and arc - but the product comes from the tab.**
 
 ### Why this matters
 
-The 2026-04-27 IMG_177 incident — a poisoned cache silently flipped
-flower copy to gummies copy on three rows — is structurally
+The 2026-04-27 IMG_177 incident - a poisoned cache silently flipped
+flower copy to gummies copy on three rows - is structurally
 impossible under the four-tab architecture. The flower tab contains
 flower rows. The gummies tab contains gummies rows. The cache is
 ancillary.
@@ -93,10 +93,10 @@ specific creative.
 Every run produces, per row: 1 primary headline + 4 headline
 variations, then 1 primary body + 4 body variations (10 copy cells).
 The exact per-tab column letters are in the §4 headline table and §5
-body table below — they differ per tab and shifted +1 on the flower
+body table below - they differ per tab and shifted +1 on the flower
 tabs in v0.8.1.
 
-Those 10 lines per ad must be **meaningfully different** — different
+Those 10 lines per ad must be **meaningfully different** - different
 psychological entry points, different proof orders, different closes
 where appropriate. Synonym swaps and reshuffled word orders are failures.
 
@@ -107,7 +107,7 @@ where appropriate. Synonym swaps and reshuffled word orders are failures.
 The single biggest failure mode of this plugin is writing copy that
 doesn't actually engage with what the asset shows or says. Brand voice
 without asset alignment is wallpaper. This section defines the
-analysis discipline that produces the cache JSON — and that the copy
+analysis discipline that produces the cache JSON - and that the copy
 then has to answer to.
 
 This is **not an optional pre-step.** Understanding the ad is a larger
@@ -143,7 +143,7 @@ below as the visual yardstick:
 > **Note on packaging vocabulary.** Internal-only descriptors above
 > use words like "mylar pouch" because they're documenting visual
 > signature for the agent's eyes. **Never write `mylar pouch` /
-> `discreet packaging` / `smell-proof` into output copy** — those
+> `discreet packaging` / `smell-proof` into output copy** - those
 > are M-3-banned. The output vocabulary for product packaging is
 > `sealed product packaging`, `shipping box`, and similar from
 > `compliance.md` §2.
@@ -161,18 +161,18 @@ contradicts the tab, halt with `blocked-tab-mismatch` (see SKILL.md
 copy.
 
 The cache (`Visual_Analysis_Cache`, `Transcript_Cache`) is no longer
-the source of truth for product. It stores ancillary fields — offer,
-proof signals, hook type, visual style — that speed up downstream
+the source of truth for product. It stores ancillary fields - offer,
+proof signals, hook type, visual style - that speed up downstream
 runs without driving product detection.
 
 **Everything downstream depends on `product_category` being set
 correctly from the tab.** Get the tab right (or block on mismatch);
 the rest of the framework follows.
 
-### 1a. Static image ads — what to extract
+### 1a. Static image ads - what to extract
 
 For every image, pull the following into `Visual_Analysis_Cache` (AH).
-Do not paraphrase when the image contains text — transcribe verbatim.
+Do not paraphrase when the image contains text - transcribe verbatim.
 
 1. **On-image text, verbatim.** Every word visible on the image, in
    reading order. Headline overlays, sub-overlays, price callouts,
@@ -185,12 +185,12 @@ Do not paraphrase when the image contains text — transcribe verbatim.
 3. **Visual format / treatment.** UGC selfie vs. studio shot vs.
    flat-lay vs. text-on-color vs. split-screen. This is
    `visual_style`.
-4. **Product presentation.** Exactly how the product appears —
+4. **Product presentation.** Exactly how the product appears -
    *packaging form, placement, surrounding context*. "Sealed product
    packaging on kitchen counter next to coffee mug." "USPS box with
    label visible on wooden doorstep." "White branded box with Test
    Results card fanned beside it." No flower, bud, plant material, or
-   open jars ever — if the image appears to violate that, flag it in
+   open jars ever - if the image appears to violate that, flag it in
    `compliance_signals`.
 5. **Proof / trust signals visible.** Family-grown callouts,
    star ratings, review counts,
@@ -200,7 +200,7 @@ Do not paraphrase when the image contains text — transcribe verbatim.
 7. **Who is in the frame and what are they doing.** Shapes the avatar
    read.
 
-### 1b. Video ads — what to extract
+### 1b. Video ads - what to extract
 
 Videos are a bigger job because you're reading two tracks at once.
 Split the work into audio analysis and visual analysis, then
@@ -248,7 +248,7 @@ If any fail, re-analyze before generating copy.
 ## 2. Non-negotiable: asset-to-copy alignment
 
 **Copy is not generic brand copy applied to an asset. It is written
-specifically for what is in that image or video — the hook, the
+specifically for what is in that image or video - the hook, the
 visual framing, the spoken words.**
 
 Hard rules:
@@ -258,7 +258,7 @@ Hard rules:
 - If the image shows an unboxing or a package at the door, the copy
   must reference the arrival and reveal.
 - If the transcript's core claim is an M-20 superiority claim (e.g.
-  "hits harder than shop quality"), do NOT echo it — reframe to a
+  "hits harder than shop quality"), do NOT echo it - reframe to a
   compliant experiential line ("exactly what I hoped for") that still
   aligns to the asset, not a generic proof stack.
 - If the `hook_type` is `before/after split`, at least one headline
@@ -312,10 +312,10 @@ tab the row is in.
 > `lab-tested`, `federally compliant`, `Farm Bill`, `no med card`,
 > `discreet`, `End the 3am ceiling stare`, `Better mornings start
 > the night before`, `wake up rested`, `sleep through the night`,
-> `stay asleep`, `fall asleep faster`, `8 hours straight` — stop and
+> `stay asleep`, `fall asleep faster`, `8 hours straight` - stop and
 > use the substituted vocabulary in `compliance.md` §2 instead.
 
-### 3.5a — Flower (`IMAGES (Flower)`, `VIDEOS (Flower)`)
+### 3.5a - Flower (`IMAGES (Flower)`, `VIDEOS (Flower)`)
 
 **Proof bank (use these phrases verbatim when the asset supports them):**
 
@@ -351,7 +351,7 @@ tab the row is in.
 - If the brief explicitly invokes the family-grown positioning
   → make `Family-grown` the headline of the Proof variation.
 
-### 3.5b — Sleep Gummies / DeepSleep (`IMAGES (Sleep Gummies)`, `VIDEOS (Sleep Gummies)`)
+### 3.5b - Sleep Gummies / DeepSleep (`IMAGES (Sleep Gummies)`, `VIDEOS (Sleep Gummies)`)
 
 **Proof bank (use these phrases verbatim when the asset supports them):**
 
@@ -412,7 +412,7 @@ the 89 existing "six" claims were verified true.)
   rotator replaces the whole headline; use the asset's actual claim
   inside the body instead.
 
-### 3.5c — Cross-product rules (apply to both products)
+### 3.5c - Cross-product rules (apply to both products)
 
 These rules apply regardless of product:
 
@@ -438,7 +438,7 @@ These rules apply regardless of product:
    [`compliance.md`](compliance.md). Even if you draft from this
    file's vocabulary, the asset's text overlay or the ClickUp brief
    may pull banned phrasings into the draft. The agent scan catches
-   them — FAIL means fix per its suggested substitutions and re-scan.
+   them - FAIL means fix per its suggested substitutions and re-scan.
 
 ---
 
@@ -447,11 +447,11 @@ These rules apply regardless of product:
 **One headline per hook type. Five hook types total.** Each variation
 leads with a different angle. No synonym swaps.
 
-Per-tab column mapping (v0.8.1 — flower tabs shifted +1 vs v0.7.6; gummies unchanged):
+Per-tab column mapping (v0.8.1 - flower tabs shifted +1 vs v0.7.6; gummies unchanged):
 
 | Slot | `IMAGES (Flower)` | `IMAGES (Sleep Gummies)` | `VIDEOS (Flower)` | `VIDEOS (Sleep Gummies)` | Hook type | Job |
 |------|---|---|---|---|---|---|
-| Primary | W | T | AA | X | Balanced — the strongest all-around headline | The one most likely to win on its own |
+| Primary | W | T | AA | X | Balanced - the strongest all-around headline | The one most likely to win on its own |
 | Var 1 | X | U | AB | Y | Curiosity | Open a loop the reader has to click to close |
 | Var 2 | Y | V | AC | Z | Proof | Lead with the hardest credibility signal from the asset |
 | Var 3 | Z | W | AD | AA | Pain | Name the problem the asset/avatar solves |
@@ -462,24 +462,24 @@ If the row has **no promo** (no TRY20, no free gift), replace the
 promote the curiosity or proof hook into the primary slot instead.
 
 **Headline length rule:** 6–10 words. Fragments allowed. Title Case
-**or** sentence case — match what the asset's text overlays use.
+**or** sentence case - match what the asset's text overlays use.
 Never end a headline with a period unless it's a two-sentence headline.
 
 **Diagnostic-question headlines forbidden.** Headlines that start with
 `Tired Of`, `Sick Of`, `Done With`, `Done Wasting`, `Fed Up With`,
 or `Can't sleep?` are M-12-banned. The mechanical substitution pass
 in `compliance.md` §10 replaces them via the per-product rotator.
-Don't draft them in the first place — pick a different hook angle.
+Don't draft them in the first place - pick a different hook angle.
 
-### 4.0b Offer-CTA rules (Adam 2026-06-22 — enforced by `copy-gate.py`)
+### 4.0b Offer-CTA rules (Adam 2026-06-22 - enforced by `copy-gate.py`)
 
-Two hard, deterministic rules — they apply to **offer ads** (`SHOP_NOW` and every non-LEARN_MORE CTA). The gate (`HEAD_CTA_RE` / `BODY_CTA_RE`) blocks any such row that misses either; don't make Adam catch them.
+Two hard, deterministic rules - they apply to **offer ads** (`SHOP_NOW` and every non-LEARN_MORE CTA). The gate (`HEAD_CTA_RE` / `BODY_CTA_RE`) blocks any such row that misses either; don't make Adam catch them.
 
-> **LEARN_MORE / advertorial exception (Adam 2026-06-22, option 2).** A row whose CTA button is `LEARN_MORE` is **exempt from both rules** — advertorial/click-to-learn-more copy uses a curiosity/soft close (`Still skeptical? Test it yourself.`) and curiosity headlines on purpose; the offer lives on the landing page, so forcing offer-CTAs into the ad body/headlines would defeat the funnel (see §C close-matching). The gate reads the row's `cta` (from the sheet **CTA** column, passed as `card["cta"]` / `rows[].cta` at gen time) and **skips both checks only when `cta == LEARN_MORE`**. **FAIL-SAFE: the default is ENFORCE** — a missing / unknown / `SHOP_NOW` / any-other `cta` gets BOTH checks (never let a no-offer close slip through an absent field).
+> **LEARN_MORE / advertorial exception (Adam 2026-06-22, option 2).** A row whose CTA button is `LEARN_MORE` is **exempt from both rules** - advertorial/click-to-learn-more copy uses a curiosity/soft close (`Still skeptical? Test it yourself.`) and curiosity headlines on purpose; the offer lives on the landing page, so forcing offer-CTAs into the ad body/headlines would defeat the funnel (see §C close-matching). The gate reads the row's `cta` (from the sheet **CTA** column, passed as `card["cta"]` / `rows[].cta` at gen time) and **skips both checks only when `cta == LEARN_MORE`**. **FAIL-SAFE: the default is ENFORCE** - a missing / unknown / `SHOP_NOW` / any-other `cta` gets BOTH checks (never let a no-offer close slip through an absent field).
 
-1. **≥2 of the 5 headlines must be DIRECT offer-CTA headlines** — a super-clear call to action, e.g. `Get 20% Off Today`, `Limited Time Offer`, `Subscribe & Save 20% Today`, `20% Off Your First Order`. When the asset carries an offer, put these in the **Var 3 / Var 4** slots and keep Primary / Var 1 / Var 2 as the angled hooks (so the card is ~3 hook-typed + 2 direct-CTA, not 5 pure hooks). Recognized CTA tokens: `TRY20`, a `% off` / `save %` phrase, `Limited Time`, `Subscribe & Save`, or a **free-gift** offer (`🎁` / `free gift` / `free <item> with your/every …`).
+1. **≥2 of the 5 headlines must be DIRECT offer-CTA headlines** - a super-clear call to action, e.g. `Get 20% Off Today`, `Limited Time Offer`, `Subscribe & Save 20% Today`, `20% Off Your First Order`. When the asset carries an offer, put these in the **Var 3 / Var 4** slots and keep Primary / Var 1 / Var 2 as the angled hooks (so the card is ~3 hook-typed + 2 direct-CTA, not 5 pure hooks). Recognized CTA tokens: `TRY20`, a `% off` / `save %` phrase, `Limited Time`, `Subscribe & Save`, or a **free-gift** offer (`🎁` / `free gift` / `free <item> with your/every …`).
 
-2. **Every body (Primary + all 4 variants) must CLOSE on a recognized offer CTA** — the last paragraph carries the offer: the canonical `Get 20% OFF using code 'TRY20' at checkout (Limited Time Only)` line for standard cards, or `Subscribe & Save 20% on every order.` for subscribe-offer cards, or the asset's own `% off` / **free-gift** offer. NEVER close a body on a soft line (`Still skeptical? Test it yourself.`, `Start shopping today.`) with no offer — that drops the CTA. A soft line may appear earlier in the body, but the CLOSE must be the offer.
+2. **Every body (Primary + all 4 variants) must CLOSE on a recognized offer CTA** - the last paragraph carries the offer: the canonical `Get 20% OFF using code 'TRY20' at checkout (Limited Time Only)` line for standard cards, or `Subscribe & Save 20% on every order.` for subscribe-offer cards, or the asset's own `% off` / **free-gift** offer. NEVER close a body on a soft line (`Still skeptical? Test it yourself.`, `Start shopping today.`) with no offer - that drops the CTA. A soft line may appear earlier in the body, but the CLOSE must be the offer.
 
 (Origin: the 2026-06-22 batch had ~1/3 of bodies close soft + cards with 0 CTA headlines; Adam flagged both. These checks make it a pre-write gate.)
 
@@ -610,7 +610,7 @@ Findings that ground 4.1/4.2, kept here so the numbers have provenance:
 
 **Five body variations, each leading with a different psychological
 angle.** Same no-synonym-swap rule. Variations differ in the *first
-two lines* — that's where the angle lives — then converge on proof
+two lines* - that's where the angle lives - then converge on proof
 and close.
 
 **STRUCTURAL variety is mandatory, not just angle variety (Adam
@@ -629,14 +629,14 @@ close) read as five versions of one ad. The set must vary SHAPE:
 - Length spread check before writing: shortest and longest body should
   differ by roughly 2x or more.
 
-Per-tab column mapping (v0.8.1 — flower tabs shifted +1 vs v0.7.6; gummies unchanged):
+Per-tab column mapping (v0.8.1 - flower tabs shifted +1 vs v0.7.6; gummies unchanged):
 
 | Slot | `IMAGES (Flower)` | `IMAGES (Sleep Gummies)` | `VIDEOS (Flower)` | `VIDEOS (Sleep Gummies)` | Angle | Lead move |
 |------|---|---|---|---|---|---|
 | Primary | AB | Y | AF | AC | Balanced / skeptic-to-believer | The signature Clean Green arc (Template #1 shape) |
 | Var 1 | AC | Z | AG | AD | Proof-led | Open with the hardest proof from the per-product proof bank (§3.5) |
 | Var 2 | AD | AA | AH | AE | Pain-led | Open by naming the specific frustration (flower: bad shop trip / overpriced / weak gas-station quality; gummies: the long day / unpredictable bedtime) |
-| Var 3 | AE | AB | AI | AF | Social proof / customer voice | Open with a customer quote or review excerpt (Template #2 shape, Review Style — `"..."` + `⭐️⭐️⭐️⭐️⭐️`) |
+| Var 3 | AE | AB | AI | AF | Social proof / customer voice | Open with a customer quote or review excerpt (Template #2 shape, Review Style - `"..."` + `⭐️⭐️⭐️⭐️⭐️`) |
 | Var 4 | AF | AC | AJ | AG | Offer / urgency | Open with the offer or a scarcity cue; tight 3–5 line body (Template #3 shape) |
 
 ### 5.0 The FIRST-125 HOOK GATE (research-grounded, 2026-06)
@@ -683,7 +683,7 @@ metalla hook guides)
 1. **Opening line = angle.** The first line must make the angle
    obvious. Don't bury it under a generic hook. The 5.0 hook gate
    applies on top: first sentence <100 chars, reader-side, specific.
-2. **Middle = proof from the asset.** Pull specifics from the cache —
+2. **Middle = proof from the asset.** Pull specifics from the cache -
    not the generic proof stack. If the transcript mentions "third
    order this month," use it. If the visual shows a USPS box,
    reference the package arriving.
@@ -711,7 +711,7 @@ distinct variation than two polished near-duplicates.
 Angle differentiation is not enough. Every variation also has a
 **required visual format** that signals "Clean Green" at a glance.
 A variation that hits the right angle but ships as dense prose with
-no emoji, no stars, no checkmarks, no blank lines is **a failure** —
+no emoji, no stars, no checkmarks, no blank lines is **a failure** -
 it reads as generic DTC copy and loses the brand.
 
 The rules below are hard requirements per slot. Every row ships with
@@ -733,13 +733,13 @@ all of these, every time.
   containing `\n` but zero `\n\n` (FORMAT paragraph-spacing) and any
   headline containing a newline - malformed copy cannot ship.
 - **No em dashes.** Use periods or colons.
-- **Emoji discipline — use these, never others:**
-  - ✅ — proof stacks only, one per line, stacked vertically
+- **Emoji discipline - use these, never others:**
+  - ✅ - proof stacks only, one per line, stacked vertically
   - (🌿 removed - HARD-BANNED on Meta ad copy + creative per M-19e 2026-06-07)
-  - ⭐️ — review style, always as ⭐️⭐️⭐️⭐️⭐️ (5 in a row)
-  - 🎁 — free-gift offers only
+  - ⭐️ - review style, always as ⭐️⭐️⭐️⭐️⭐️ (5 in a row)
+  - 🎁 - free-gift offers only
 
-### Per-slot formatting requirements — BODY (IMAGES V–Z, VIDEOS Z–AD)
+### Per-slot formatting requirements - BODY (IMAGES V–Z, VIDEOS Z–AD)
 
 **Shape system (supersedes the old rigid per-slot signatures,
 2026-06-11):** the five bodies carry five ANGLES (slot table in §5)
@@ -759,23 +759,23 @@ same slot on every row - the structural-variety mandate exists so the
 ad SET reads as five different ads, row after row. Each set: length
 spread of roughly 2x or more between shortest and longest.
 
-### Per-slot formatting requirements — HEADLINES (5 per row)
+### Per-slot formatting requirements - HEADLINES (5 per row)
 
 Headlines are short (6–10 words) so visual formatting is lighter, but
 **🌿 is BANNED on headlines (M-19e 2026-06-07).** Do not add 🌿 to any headline. Headlines carry no emoji unless the asset has a review/star rating (see Stars note below).
 
 Stars (⭐️⭐️⭐️⭐️⭐️) may appear in the Proof headline when the asset
-shows a star rating or review count — otherwise keep stars to the
+shows a star rating or review count - otherwise keep stars to the
 body Var 3 slot.
 
 ### Format failure examples (rewrite, don't ship)
 
 > **All examples below use 2026-05 compliant vocabulary.** Pre-rewrite
 > versions of these examples used `bud`, `lab-tested`, `End the 3am
-> ceiling stare`, `Asleep faster`, `Through the night`, etc. — every
+> ceiling stare`, `Asleep faster`, `Through the night`, etc. - every
 > one M-3-/M-12-/M-13-banned. Don't revert.
 
-**WRONG — Var 3 without review formatting:**
+**WRONG - Var 3 without review formatting:**
 ```
 Melatonin quit on me at 2AM every single night.
 DeepSleep stays. Slept 7 hours straight the first night.
@@ -783,7 +783,7 @@ DeepSleep stays. Slept 7 hours straight the first night.
 Get 20% OFF using code 'TRY20' at checkout (Limited Time Only)
 ```
 
-**RIGHT — Var 3 with review formatting (carve-out applies):**
+**RIGHT - Var 3 with review formatting (carve-out applies):**
 ```
 "Melatonin quit on me at 2AM every single night." ⭐️⭐️⭐️⭐️⭐️
 
@@ -795,11 +795,11 @@ Get 20% OFF using code 'TRY20' at checkout (Limited Time Only)
 ```
 
 (The duration phrase "Slept 7 hours straight" is allowed because it
-sits inside `"..."` followed by `⭐️⭐️⭐️⭐️⭐️` — the Review-Style
+sits inside `"..."` followed by `⭐️⭐️⭐️⭐️⭐️` - the Review-Style
 carve-out documented in `compliance.md` §8a / §10. In primary brand
 voice, the same phrase would substitute to `a steady night`.)
 
-**WRONG — Primary body without checkmark stack, dense prose:**
+**WRONG - Primary body without checkmark stack, dense prose:**
 ```
 Clean Green DeepSleep jar on my nightstand for 21 straight nights.
 First week, made for the wind-down once around 3am, settled in minutes.
@@ -808,7 +808,7 @@ Third week, evenings settling into a steady rhythm before my alarm.
 Blackberry, 15mg, 30 per jar.
 ```
 
-**RIGHT — Primary body with proof stack (compliant vocab):**
+**RIGHT - Primary body with proof stack (compliant vocab):**
 ```
 "I'll try it once" is what most say before their first DeepSleep order.
 
@@ -823,13 +823,13 @@ Then they realize:
 Get 20% OFF using code 'TRY20' at checkout (Limited Time Only)
 ```
 
-**WRONG — Var 4 short-form (dense, no spacing):**
+**WRONG - Var 4 short-form (dense, no spacing):**
 ```
 Your nightly reset starts here.
 20% off with code TRY20.
 ```
 
-**RIGHT — Var 4 short-form (spaced, no banned emoji):**
+**RIGHT - Var 4 short-form (spaced, no banned emoji):**
 ```
 Your evening reset.
 
@@ -839,17 +839,17 @@ Get 20% OFF using code 'TRY20' at checkout (Limited Time Only)
 ```
 
 If any variation you draft doesn't match the format signature above,
-rewrite before writing to the sheet. Format is not decoration — it's
+rewrite before writing to the sheet. Format is not decoration - it's
 the brand.
 
 ---
 
-## 6. CTA rules (per-tab CTA column — read-only, not the copy field)
+## 6. CTA rules (per-tab CTA column - read-only, not the copy field)
 
 The CTA column letter shifted again with the v0.8.1 flower +1 insertion. Per-tab locations: AK on `IMAGES (Flower)`, AH on `IMAGES (Sleep Gummies)`, AO on `VIDEOS (Flower)`, AL on `VIDEOS (Sleep Gummies)`.
 
 The sheet's CTA column is a Meta button value (e.g. `SHOP_NOW`). This
-skill doesn't write that — it's set on the row already. But the
+skill doesn't write that - it's set on the row already. But the
 copy's close must *match the urgency* of the CTA:
 
 - `SHOP_NOW` → pair with the direct offer close (TRY20 or free gift). **Offer-CTA close required (§4.0b gate-enforced).**
@@ -857,7 +857,7 @@ copy's close must *match the urgency* of the CTA:
   proof close. No TRY20 in the body. **This is the ONLY CTA exempt from
   the §4.0b offer-CTA rules** (advertorial soft close + curiosity headlines).
 - Any other button → treat as an offer ad: **offer-CTA close required
-  (§4.0b gate-enforced — only `LEARN_MORE` is exempt; fail-safe toward
+  (§4.0b gate-enforced - only `LEARN_MORE` is exempt; fail-safe toward
   enforcing).**
 
 ---
@@ -865,20 +865,20 @@ copy's close must *match the urgency* of the CTA:
 ## 7. Worked examples
 
 These examples show what "5 meaningfully different variations" looks
-like. They are illustrative — use them as the yardstick for diff
+like. They are illustrative - use them as the yardstick for diff
 quality, not as templates to copy verbatim. Real output must be
 written to the specific asset on the row.
 
 > **Vocabulary note.** Every line in §7 was rewritten in 2026-05
 > against the meta-compliance scan. Pre-rewrite versions used
 > `bud`, `flower`, `lab-tested`, `2018 Farm Bill`, `no med card`,
-> `garbage`, `Tired Of [X]?`, etc. — every one banned. The agent
+> `garbage`, `Tired Of [X]?`, etc. - every one banned. The agent
 > should learn the compliant patterns from these examples, not
 > revert to the older ones.
 
 > **Second-person rule (Adam 2026-06-20).** Headlines speak TO the reader ("you"/"your"), never about a third-person character (he/she/they/"regulars") and never bare first-person ("the old me") outside a testimonial quote. The headlines below were updated to second person; some body openers still illustrate testimonial first-person inside quotes, which is allowed.
 
-### Example 1 — Image ad (Flower, `FCA=The Skeptic 1st Time Online Buyer`)
+### Example 1 - Image ad (Flower, `FCA=The Skeptic 1st Time Online Buyer`)
 
 **Asset description (from cache):** UGC selfie of a guy on a couch
 holding sealed Clean Green product packaging. Text overlay: "First
@@ -916,7 +916,7 @@ Paying Shop Prices For Less.")
   Fast. / Still skeptical? Test it yourself. / Get 20% OFF using
   code 'TRY20' at checkout (Limited Time Only)`.
 
-### Example 2 — Image ad (Flower, `FCA=The Shop Switcher`)
+### Example 2 - Image ad (Flower, `FCA=The Shop Switcher`)
 
 **Asset description (from cache):** Flat-lay of a USPS shipping box
 on a doorstep next to sealed product packaging. `hook_type`:
@@ -939,11 +939,11 @@ callout.
   directly with our growers → short contrast pair → TRY20.
 - **X:** Pain-led on the shop trip (traffic, markup, the drive) →
   "package arrives fast" reveal → TRY20.
-- **Y:** Customer voice in `"..."` + ⭐️⭐️⭐️⭐️⭐️ — review from a
+- **Y:** Customer voice in `"..."` + ⭐️⭐️⭐️⭐️⭐️ - review from a
   shop switcher → TRY20.
 - **Z:** 3-line offer-led variant.
 
-### Example 3 — Image ad (Flower, `FCA=Daily Unwind` — formerly "Wellness Seeker")
+### Example 3 - Image ad (Flower, `FCA=Daily Unwind` - formerly "Wellness Seeker")
 
 **Asset description (from cache):** Clean studio shot of a sealed
 white branded box with family-grown provenance copy. `hook_type`:
@@ -958,7 +958,7 @@ language.
 - **U (Transformation):** From Mystery Brands To Real Quality
 
 **Body (angles only):**
-- **V:** Balanced, softer opening (no heavy skeptic quote — Avatar
+- **V:** Balanced, softer opening (no heavy skeptic quote - Avatar
   03 reads as wellness-aware). Lead with family-grown + real quality
   → skeptic challenge close.
 - **W:** Proof-led with family-grown specifics → TRY20.
@@ -968,7 +968,7 @@ language.
   → TRY20.
 - **Z:** Short offer-led.
 
-### Example 4 — Video ad (Flower, `FCA=The Skeptic 1st Time Online Buyer`)
+### Example 4 - Video ad (Flower, `FCA=The Skeptic 1st Time Online Buyer`)
 
 **Asset cache (summary):** 9x16 UGC video. Transcript opens: "I'll
 be honest, I thought this was gonna be a waste of money." Core
@@ -995,11 +995,11 @@ trip the M-12 rotator. Drafted as a statement instead.)
 - **AB (Pain-led):** Overpaid at the shop → transcript
   reversal → TRY20.
 - **AC (Social proof, Review Style):** The speaker's quote is itself
-  the social proof — lift a second line from the transcript, close
+  the social proof - lift a second line from the transcript, close
   with skeptic challenge.
 - **AD (Offer-led):** 3 lines, TRY20.
 
-### Example 5 — Video ad (Flower, `FCA=Subscribe and Save` — reorder/repeat-purchase framing)
+### Example 5 - Video ad (Flower, `FCA=Subscribe and Save` - reorder/repeat-purchase framing)
 
 **Asset cache (summary):** 9x16 video of a customer opening a
 reorder box. Transcript: "Third order this month. These never
@@ -1014,17 +1014,17 @@ cadence. Tone: matter-of-fact review.
 - **Y (Transformation):** From Trying It Once To Ditching The Local Shop
 
 **Body:**
-- **Z (Balanced):** No skeptic arc — this is Repeat Buyer. Lead with
+- **Z (Balanced):** No skeptic arc - this is Repeat Buyer. Lead with
   the reorder cue, reference the new product, close offer-first.
 - **AA (Proof-led):** Consistency across every order → offer.
-- **AB (Pain-led):** Short — "tired of brands that change on you?" →
+- **AB (Pain-led):** Short - "tired of brands that change on you?" →
   reorder proof → offer. (Note: this draft trips the M-12 trigger;
   reframe as "Brands change. We don't." statement.)
 - **AC (Social proof, Review Style):** Customer quote from the
   transcript inside `"..."` + ⭐️⭐️⭐️⭐️⭐️ → offer.
 - **AD (Offer-led):** 3 lines, reorder-framed TRY20 or free-gift line.
 
-### Example 6 — Sleep Gummies image ad (`DSCA=Wellness Stacker`)
+### Example 6 - Sleep Gummies image ad (`DSCA=Wellness Stacker`)
 
 > **New in 2026-05.** Added to demonstrate compliant Sleep-Gummies
 > generation. Pre-rewrite, every Sleep-Gummies example in §7 used
@@ -1041,7 +1041,7 @@ visible (15mg, 30 ct), no visible gummies.
 - **Q (Balanced):** The Gummy A Friend Slips You Before Bed
 - **R (Curiosity):** Why Notes Like This Keep Showing Up On Counters
 - **S (Proof):** 15mg Blackberry. 30 Per Jar.
-- **T (Pain — non-question form):** Your Nightly Wind-Down, Made Simple.
+- **T (Pain - non-question form):** Your Nightly Wind-Down, Made Simple.
 - **U (Transformation):** Your Nightly Wind-Down Ritual
 
 **Body (angles only):**
@@ -1049,7 +1049,7 @@ visible (15mg, 30 ct), no visible gummies.
   stack: a wind-down within the hour, made for the nightly wind-down,
   made for your nightly wind-down → close with TRY20.
 - **W (Proof-led):** `15mg blackberry. 30 per jar.` → wind-down ritual claim → skeptic challenge close.
-- **X (Pain-led):** Names the end-of-day scramble — the long day, the late
+- **X (Pain-led):** Names the end-of-day scramble - the long day, the late
   dishes, sticky-note moments. → ✅ proof stack → TRY20.
 - **Y (Social proof, Review Style):** `"This one earned its spot."` review → ⭐️⭐️⭐️⭐️⭐️ → TRY20. Screen the quote for
   M-13/M-4 symptom-resolution language before use - no carve-out.
@@ -1071,16 +1071,16 @@ Before writing any of the 10 lines to the sheet, confirm:
    angles.
 4. Each variation's lead references a specific element from the
    cache (hook, visual detail, transcript phrase, text overlay).
-5. You've picked **one** close per body variation — never stacked
+5. You've picked **one** close per body variation - never stacked
    skeptic challenge + TRY20.
 6. **Every line has passed the meta-compliance-agent scan**
-   (asset-type `ad-copy`) — see [`compliance.md`](compliance.md). Any
+   (asset-type `ad-copy`) - see [`compliance.md`](compliance.md). Any
    FAIL was fixed per the agent's suggested substitutions and
    re-scanned; nothing is written until it passes.
 7. No two variations share the same first 5 words, same lead angle,
    or same proof order.
 
-**Format checks (per section 5.5 — non-negotiable):**
+**Format checks (per section 5.5 - non-negotiable):**
 8. Primary (V/Z) body has **≥3 ✅ lines** stacked vertically with
    blank lines around the stack.
 9. Proof-led (W/AA) body has **≥3 ✅ lines** stacked vertically.
@@ -1096,7 +1096,7 @@ Before writing any of the 10 lines to the sheet, confirm:
 14. Every body variation has **blank lines between sections** (never
     a wall of sentence-per-line text).
 
-**Vocabulary checks (per `compliance.md` §1.7–§1.11 — non-negotiable):**
+**Vocabulary checks (per `compliance.md` §1.7–§1.11 - non-negotiable):**
 15. Zero `bud`, `flower`, `pre-roll`, `hand-roll`, `strain`,
     `harvest`, `discreet`, `mylar pouch`, `lab-tested`, `lab-verified`,
     `Certificate of Analysis`, `COA`, `federally compliant`, `Farm
@@ -1111,14 +1111,14 @@ Before writing any of the 10 lines to the sheet, confirm:
 17. Zero `scam`, `garbage`, `junk`, `trash`, `fake` as
     product/brand nouns (M-6a).
 18. Zero `Tired Of X?`, `Sick Of X?`, `Done With X?`, `Done Wasting
-    X?`, `Fed Up With X?`, `Can't sleep?` headlines (M-12 — replaced
+    X?`, `Fed Up With X?`, `Can't sleep?` headlines (M-12 - replaced
     by rotator).
 19. Zero `wake up rested`, `wake up refreshed`, `sleep through the
     night`, `stay asleep`, `fall asleep faster`, `drift off`,
     `8 hours straight`, `sleep deeper`, `sleeping deeper`, `best
     sleep in a long time`, `the secret to sleeping through the
     night`, `Finally Stay Asleep All Night`, `Better mornings start
-    the night before`, `End the 3am ceiling stare` (M-13 — outside
+    the night before`, `End the 3am ceiling stare` (M-13 - outside
     Review-Style carve-out only).
 
 If any check fails, rewrite. Only write all 10 cells when every

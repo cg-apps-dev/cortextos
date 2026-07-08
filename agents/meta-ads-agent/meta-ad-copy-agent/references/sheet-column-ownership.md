@@ -1,19 +1,19 @@
-# META Ad Upload Sheet — Column-Ownership Map & Write Protocol
+# META Ad Upload Sheet - Column-Ownership Map & Write Protocol
 
-**Status:** RATIFIED by the-orchestrator (2026-06-04). Canonical — both meta-ads-agent and meta-media-buyer-agent read this.
+**Status:** RATIFIED by the-orchestrator (2026-06-04). Canonical - both meta-ads-agent and meta-media-buyer-agent read this.
 **Sheet:** `1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME` ("META - Ad Upload Sheet")
-**Exact column letters/names:** always header-map by NAME from [`column-maps.md`](./column-maps.md) (same directory; live read, never hardcode letters). This doc assigns ownership by **category** — `column-maps.md` is the source of the exact columns.
+**Exact column letters/names:** always header-map by NAME from [`column-maps.md`](./column-maps.md) (same directory; live read, never hardcode letters). This doc assigns ownership by **category** - `column-maps.md` is the source of the exact columns.
 
 ## Why this exists
 The pipeline split created **two writers** on one sheet with **no lock**:
-- **meta-ads-agent** — content half: ClickUp intake → copy / avatar / actor.
-- **meta-media-buyer-agent** — media-buying half: batching → AdManage drafts → launch / review-status.
+- **meta-ads-agent** - content half: ClickUp intake → copy / avatar / actor.
+- **meta-media-buyer-agent** - media-buying half: batching → AdManage drafts → launch / review-status.
 
 Two writers + no lock = risk of a concurrent read-modify-write clobbering each other's columns or shifting the header map. This map + protocol removes that risk.
 
 ## Column ownership (by category)
 
-### meta-ads-agent OWNS (content / intake columns) — writes; media-buyer reads only
+### meta-ads-agent OWNS (content / intake columns) - writes; media-buyer reads only
 - ClickUp intake fields (Card ID, status mirror, concept/theme)
 - Customer Avatar, Funnel Stage
 - Headline + Headline Var. 1–4
@@ -21,13 +21,13 @@ Two writers + no lock = risk of a concurrent read-modify-write clobbering each o
 - Ad Description
 - Media URLs (Drive links), asset/tab fields
 - Actor Age Bracket (auto-populated by intake vision)
-- Ad Name (the verbatim Stage-4 join key — authored on the content side)
+- Ad Name (the verbatim Stage-4 join key - authored on the content side)
 - Any other copy / creative / intake-produced column
 
-### meta-media-buyer-agent OWNS (launch / review-status columns) — writes; content side reads only
+### meta-media-buyer-agent OWNS (launch / review-status columns) - writes; content side reads only
 - **Review / delivery status** (current AdManage review state, incl. disapproved stamps)
-- **`Ad Set Group`** — bundle-ID selection record (adset-batch STEP 2; operator confirms)
-- **Per-account launch stamps** — which account(s) each ad is live in (Stage-4 launch-tracker stamp-back)
+- **`Ad Set Group`** - bundle-ID selection record (adset-batch STEP 2; operator confirms)
+- **Per-account launch stamps** - which account(s) each ad is live in (Stage-4 launch-tracker stamp-back)
 - Any other launch / tracking-produced column
 
 ### Shared-read, neither writes casually
@@ -39,5 +39,5 @@ Two writers + no lock = risk of a concurrent read-modify-write clobbering each o
 3. **Mid-batch = no cross-writes.** If the other agent's heartbeat shows it active in its batch, hold your writes on that tab until it reports done (orchestrator greenlights the window). (Applied 2026-06-04: media-buyer held a review-status refresh while meta-ads was mid video+static batch.)
 4. **Stay strictly in your owned columns.** Write only your category's columns; never overwrite the other side's. Read theirs freely.
 5. **Batch + targeted writes.** Prefer a single batched update of only the owned column(s) over per-cell round-trips, to shrink the collision window. (Composio `GOOGLESHEETS_BATCH_UPDATE` via `COMPOSIO_MULTI_EXECUTE_TOOL`.)
-6. **Re-map by name every run.** Header-map columns by NAME before any write; never trust a cached letter — a structural add by the other side may have shifted positions.
-7. **On conflict, the orchestrator arbitrates.** If both need to write the same tab urgently, ping the-orchestrator to sequence — don't race.
+6. **Re-map by name every run.** Header-map columns by NAME before any write; never trust a cached letter - a structural add by the other side may have shifted positions.
+7. **On conflict, the orchestrator arbitrates.** If both need to write the same tab urgently, ping the-orchestrator to sequence - don't race.

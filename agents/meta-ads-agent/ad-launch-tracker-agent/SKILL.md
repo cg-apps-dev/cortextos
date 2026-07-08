@@ -6,7 +6,7 @@ date: 2026-05-15
 tags: [ad-tracking, meta, admanage, google-sheets, sync]
 ---
 
-# Ad Launch Tracker — Skill Definition
+# Ad Launch Tracker - Skill Definition
 
 You are the Ad Launch Tracker Agent. Your job is to sync ad launch timestamps from AdManage.ai into the META Ad Upload Sheet so the team can see which ads have been published to which ad accounts and when.
 
@@ -23,7 +23,7 @@ SPREADSHEET_ID = 1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME
 SHEET_NAME     = META - Ad Upload Sheet
 ```
 
-### Account → Tab → Column Mapping (RESOLVE BY HEADER NAME — do NOT hardcode letters)
+### Account → Tab → Column Mapping (RESOLVE BY HEADER NAME - do NOT hardcode letters)
 
 > **⚠️ COLUMNS ARE NOT FIXED. Resolve every column at runtime from the live header row (row 1).** The sheet has had columns inserted (e.g. 2026-06-04: "Added to Sheet" at B + "Meta Review Status" at C inserted, shifting everything right by 2). Hardcoded letters WILL drift and cause you to write launch dates into the WRONG column (e.g. into Meta Review Status). Always look up the column by its **header text**, never by a memorized letter.
 
@@ -48,9 +48,9 @@ Why prefix and not the full header string: live headers carry a curated ` | <des
 | act_1290046305969978 | E-0496 \| Gum 1 | Gummies |
 | act_1681011799914295 | E-0593 \| Gum 1 | Gummies |
 
-(Account short-names also appear as the per-account header columns on each tab — that IS the tracking column. If an account's Short Name header is not present on a tab, log it and skip — never guess a letter.)
+(Account short-names also appear as the per-account header columns on each tab - that IS the tracking column. If an account's Short Name header is not present on a tab, log it and skip - never guess a letter.)
 
-> **2026-06-17 (Adam-directed):** AliCG3 (`act_2180010646097084`, businessName "Ali Reza") + JCG1 - Flow (`act_1520076759702669`) are agency-managed accounts in a DIFFERENT workspace (`cmkpn94za0005l8vk8iz0m7y1`) than the E-codes (`cmox7laqw02hbg6q5f8ks9f4b`). `list_activity_log` is company-wide, so it catches their launches. Their tracking columns live on the FLOWER tabs grouped right after E-0535 (IMAGES (Flower): AliCG3 = col K, JCG1 - Flow = col L; VIDEOS (Flower): same) — but ALWAYS resolve by HEADER NAME, never the letter (columns shift). Note: the flower-line creative naming was rebranded "Flower" → "Flow" in the sheet (Adam-confirmed intentional 2026-06-17); the "JCG1 - Flow" account header is unrelated to that rebrand (it is the AdManage businessName verbatim).
+> **2026-06-17 (Adam-directed):** AliCG3 (`act_2180010646097084`, businessName "Ali Reza") + JCG1 - Flow (`act_1520076759702669`) are agency-managed accounts in a DIFFERENT workspace (`cmkpn94za0005l8vk8iz0m7y1`) than the E-codes (`cmox7laqw02hbg6q5f8ks9f4b`). `list_activity_log` is company-wide, so it catches their launches. Their tracking columns live on the FLOWER tabs grouped right after E-0535 (IMAGES (Flower): AliCG3 = col K, JCG1 - Flow = col L; VIDEOS (Flower): same) - but ALWAYS resolve by HEADER NAME, never the letter (columns shift). Note: the flower-line creative naming was rebranded "Flower" → "Flow" in the sheet (Adam-confirmed intentional 2026-06-17); the "JCG1 - Flow" account header is unrelated to that rebrand (it is the AdManage businessName verbatim).
 
 > **2026-06-20 (Adam-directed):** Three reconciliations, all authoritative via AdManage `list_ad_accounts`:
 > 1. **AliCG3 to AliCG1.** Account `act_2180010646097084` was RENAMED in AdManage on 2026-06-20 (accountName now `AliCG1 | CG Host - Ali - Flow`, businessName "Ali Reza"); the live sheet header was updated to `AliCG1 | AliCG1 - Flow 3`. The prior "AliCG3" Short Name was stale (it caught the pre-rename name). Account ID unchanged. Match on the `AliCG1` prefix.
@@ -74,7 +74,7 @@ e.g. `Active - 06/10/2026 12:53 PM PT - Ad ID: 120247500797860183`
 
 One cell per account, so a creative launched to multiple accounts records each account's distinct Meta ruling in that account's own column (Active in one, Rejected in another). `{Status}` refreshes every run; `{date/time}` (PT) and `Ad ID` are set once at launch and preserved on refresh (see STEP 5). Cell COLOR is sheet-owned conditional formatting on these columns (contains Rejected=red, Pending/In Review=yellow, Active=green) - the tracker writes text only. The legacy single `Meta Review Status` and `Ad ID` columns are NOT written.
 
-### Ad Name Column — RESOLVE BY HEADER NAME
+### Ad Name Column - RESOLVE BY HEADER NAME
 The Ad Name column = the column whose row-1 header is `Ad Name` **OR** (on VIDEOS (Sleep Gummies), where the header is the long formula string) the column immediately LEFT of the `1x1` header. Resolve it at runtime from row 1 per tab. Do NOT hardcode a letter.
 
 ### Account-to-Category Routing
@@ -104,7 +104,7 @@ GUMMIES_TABS = ["VIDEOS (Sleep Gummies)", "IMAGES (Sleep Gummies)"]
 
 ---
 
-## STEP 0: Resolve columns from live headers (HARD GATE — run first, every run)
+## STEP 0: Resolve columns from live headers (HARD GATE - run first, every run)
 
 Before doing anything else, read row 1 of the tabs you will touch (`GOOGLESHEETS_BATCH_GET`, e.g. `'VIDEOS (Flower)'!A1:BA1`, etc.). For each tab build a `header → column-letter` map. From it resolve:
 - the **Ad Name** column (header `Ad Name`, or the column left of `1x1` on VIDEOS (Sleep Gummies)), and
@@ -121,10 +121,10 @@ Call `list_activity_log` with these filters:
 - `action`: `launch_ads`
 - `status`: `success`
 - `platform`: `meta`
-- `startDate`: 24 hours ago (ISO-8601 format) — **DEFAULT (incremental) mode.**
+- `startDate`: 24 hours ago (ISO-8601 format) - **DEFAULT (incremental) mode.**
 - `limit`: `100`
 
-**BACK-FILL mode** (one-time / on request, e.g. "back-fill all historical launches"): set `startDate` far in the past (or omit it) to pull the **entire** `launch_ads` history, and paginate ALL pages. Everything else is identical — the combined-cell write (STEP 5) is idempotent (set-once date/time/id, refresh status), so a full-history pass safely stamps every ad ever launched and re-running is safe. The incremental 24h mode keeps it current thereafter.
+**BACK-FILL mode** (one-time / on request, e.g. "back-fill all historical launches"): set `startDate` far in the past (or omit it) to pull the **entire** `launch_ads` history, and paginate ALL pages. Everything else is identical - the combined-cell write (STEP 5) is idempotent (set-once date/time/id, refresh status), so a full-history pass safely stamps every ad ever launched and re-running is safe. The incremental 24h mode keeps it current thereafter.
 
 If there are multiple pages (`totalPages > 1`), paginate through all pages.
 
@@ -144,9 +144,9 @@ For each activity log entry from Step 1:
 2. Extract `inputData.batchId` from the response
 3. Call `get_batch_status` with that `batchId`
 4. From the batch status response, collect:
-   - `adAccountId` — which ad account this batch was launched to
-   - `ads[].adName` **and `ads[].adId`** — the individual ad name + Meta ad ID for each ad in the batch
-5. **Call `get_batch_delivery_statuses` with that `batchId`** (pass `refresh:"true"` to bypass cache) → returns `adDeliveryStatuses[adId].effectiveStatus` per ad. Map each `adId` → review status (normalize: `ACTIVE`→`ACTIVE`; `DISAPPROVED`→`DISAPPROVED`; `PENDING_REVIEW`/`IN_REVIEW`→`PENDING_REVIEW`; `WITH_ISSUES`/`CAMPAIGN_PAUSED`/`ADSET_PAUSED`/other → keep the raw effectiveStatus verbatim so nothing is hidden). If `allSettled:false`, some are still pending — that's fine, write current state and it refreshes next run.
+   - `adAccountId` - which ad account this batch was launched to
+   - `ads[].adName` **and `ads[].adId`** - the individual ad name + Meta ad ID for each ad in the batch
+5. **Call `get_batch_delivery_statuses` with that `batchId`** (pass `refresh:"true"` to bypass cache) → returns `adDeliveryStatuses[adId].effectiveStatus` per ad. Map each `adId` → review status (normalize: `ACTIVE`→`ACTIVE`; `DISAPPROVED`→`DISAPPROVED`; `PENDING_REVIEW`/`IN_REVIEW`→`PENDING_REVIEW`; `WITH_ISSUES`/`CAMPAIGN_PAUSED`/`ADSET_PAUSED`/other → keep the raw effectiveStatus verbatim so nothing is hidden). If `allSettled:false`, some are still pending - that's fine, write current state and it refreshes next run.
 
 Build a list of `(adName, adAccountId, launchDateTime, adId, reviewStatus)` tuples.
 - Format `launchDateTime` from the activity log's `createdAt` converted to **Pacific Time** as `MM/DD/YYYY H:MM AM/PM PT` (e.g. `06/10/2026 12:53 PM PT`). Use PT (not UTC) so a launch near UTC midnight carries the correct local calendar day.
@@ -164,7 +164,7 @@ Determine which tabs to search based on the accounts found in Step 2:
 
 For each tab that needs loading, use Composio `GOOGLESHEETS_VALUES_GET`:
 - `spreadsheet_id`: the SPREADSHEET_ID above
-- `range`: `'{tab_name}'!{ad_name_col}:{ad_name_col}` where `{ad_name_col}` is the Ad Name column letter you RESOLVED in STEP 0 from that tab's live header (do not hardcode — it shifts when columns are inserted)
+- `range`: `'{tab_name}'!{ad_name_col}:{ad_name_col}` where `{ad_name_col}` is the Ad Name column letter you RESOLVED in STEP 0 from that tab's live header (do not hardcode - it shifts when columns are inserted)
 
 This returns all Ad Name values. Build a lookup map: `adName → row number` (row 1 is the header, data starts at row 2).
 
@@ -223,7 +223,7 @@ def make_key(name):
 
 AdManage sometimes drops the description field (e.g., `V01 -  - Mia` instead of `V01 - AI UGC - Mia`). When the full 5-part key produces no match:
 
-1. Try a 4-part key: `(id_short, version, hook, actor)` — drop `desc`
+1. Try a 4-part key: `(id_short, version, hook, actor)` - drop `desc`
 2. If exactly 1 row matches on the reduced key, use it
 3. If multiple rows match, log as ambiguous and skip
 4. If still no match, log as unmatched
@@ -301,7 +301,7 @@ This is not a publish block in code. The media buyer remains draft-only and Adam
 After completing the sync, output a summary to chat:
 
 ```
-## Ad Launch Tracker — Sync Report
+## Ad Launch Tracker - Sync Report
 
 **Run time:** {datetime}
 **Activity log entries processed:** {n}

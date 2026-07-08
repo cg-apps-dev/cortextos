@@ -14,9 +14,9 @@ Automated Meta ad copy generation for Clean Green's Google Sheets pipeline. Read
 
 ## Overview
 
-The agent writes Meta-bound ad copy at scale. It is **not** an auditor — it **defers all compliance to the [meta-compliance-agent](../../meta-compliance-agent/)**, which owns the canonical M-code rules. As of 2026-06-08 this pipeline keeps **no** compliance rules of its own: it reads the agent's [`rules.md`](../../meta-compliance-agent/references/rules.md) at generation time and runs the agent's scan as a hard pre-write gate (generate → scan → fix on FAIL → write on PASS). See [`references/compliance.md`](references/compliance.md).
+The agent writes Meta-bound ad copy at scale. It is **not** an auditor - it **defers all compliance to the [meta-compliance-agent](../../meta-compliance-agent/)**, which owns the canonical M-code rules. As of 2026-06-08 this pipeline keeps **no** compliance rules of its own: it reads the agent's [`rules.md`](../../meta-compliance-agent/references/rules.md) at generation time and runs the agent's scan as a hard pre-write gate (generate → scan → fix on FAIL → write on PASS). See [`references/compliance.md`](references/compliance.md).
 
-The agent reads from Google Sheets, downloads images from Google Drive, and fetches video briefs from ClickUp — all via the Composio MCP server.
+The agent reads from Google Sheets, downloads images from Google Drive, and fetches video briefs from ClickUp - all via the Composio MCP server.
 
 ## Scope
 
@@ -42,11 +42,11 @@ The agent **only** processes rows in the four tabs of the configured spreadsheet
 |---|---|---|
 | Interactive (MVP) | Operator messages the agent in Claude Console | Operator |
 | Dry-run | Operator includes `dry-run` in the kickoff message | Operator |
-| Scheduled (future) | Cron via GitHub Actions, once weekly | Automated — not yet wired |
+| Scheduled (future) | Cron via GitHub Actions, once weekly | Automated - not yet wired |
 
 ## MVP testing
 
-The `Spreadsheet ID` constant at the top of [`SKILL.md`](SKILL.md) is set to the **MVP test sheet** `19DF4aGQzDNL3Xt_Au_7V537OeMu22JCB9Fj7rFfc1VY` — a duplicate of the production sheet. SKILL.md also contains a hard block: the agent refuses to call any Sheets tool against the production sheet ID during MVP.
+The `Spreadsheet ID` constant at the top of [`SKILL.md`](SKILL.md) is set to the **MVP test sheet** `19DF4aGQzDNL3Xt_Au_7V537OeMu22JCB9Fj7rFfc1VY` - a duplicate of the production sheet. SKILL.md also contains a hard block: the agent refuses to call any Sheets tool against the production sheet ID during MVP.
 
 Test flow:
 
@@ -61,19 +61,19 @@ Test flow:
 | File | Contains |
 |---|---|
 | [references/brand-voice.md](references/brand-voice.md) | Clean Green's tone, sentence rhythm, signature openers, per-product voice notes, DO/DON'T pairs, TRY20 promo phrasing. |
-| [references/compliance.md](references/compliance.md) | How compliance is enforced — defines **no** rules; points at the meta-compliance-agent's `rules.md` and runs the agent's scan as a hard pre-write gate. |
+| [references/compliance.md](references/compliance.md) | How compliance is enforced - defines **no** rules; points at the meta-compliance-agent's `rules.md` and runs the agent's scan as a hard pre-write gate. |
 | [references/copy-framework.md](references/copy-framework.md) | 5 headline hook types, 5 body angles, asset-to-copy alignment rules, per-product proof banks, §5.5 visual formatting contract. |
 | [references/manual-copy-gen.md](references/manual-copy-gen.md) | 3-style framework (Long Form / Review Style / Short Form) for manual batches. |
 | [references/column-maps.md](references/column-maps.md) | Exact column layout for the four tabs. Hard write boundary (Q:Z for images, U:AD for videos). |
 
 ## Dependencies
 
-- **Composio MCP** — Google Sheets read+write, Google Drive download, ClickUp task fetch
+- **Composio MCP** - Google Sheets read+write, Google Drive download, ClickUp task fetch
   - `GOOGLESHEETS_BATCH_GET`, `GOOGLESHEETS_UPDATE_VALUES_BATCH`
   - `GOOGLEDRIVE_DOWNLOAD_FILE`
   - `CLICKUP_GET_TASK` (account alias: `clean-green`)
-- **Agent toolset** — `read` (native vision for image OCR), `bash` (rarely used), `grep`, `glob`
-- **Marketing Brain repo (mounted)** — the agent reads `references/*.md` from `/workspace/repo/agents/meta-ad-copy-agent/references/` at session start
+- **Agent toolset** - `read` (native vision for image OCR), `bash` (rarely used), `grep`, `glob`
+- **Marketing Brain repo (mounted)** - the agent reads `references/*.md` from `/workspace/repo/agents/meta-ad-copy-agent/references/` at session start
 
 ## Pipeline Position
 
@@ -83,20 +83,20 @@ sheet rows → meta-ad-copy-agent → meta-compliance-agent scan (pre-write gate
         Composio MCP (Sheets, Drive, ClickUp)
 ```
 
-The agent runs end-to-end without a separate writing agent. Compliance is delegated to the meta-compliance-agent (its rules + its scan as a pre-write gate) — this pipeline holds no compliance rules of its own.
+The agent runs end-to-end without a separate writing agent. Compliance is delegated to the meta-compliance-agent (its rules + its scan as a pre-write gate) - this pipeline holds no compliance rules of its own.
 
 ## Managed Agent infrastructure
 
 | Resource | Name / ID | Notes |
 |---|---|---|
-| Agent | TBD — created during MVP setup | New agent, separate from Creative Performance Agent |
+| Agent | TBD - created during MVP setup | New agent, separate from Creative Performance Agent |
 | Environment | `env_01SSKG9vvvbeUb3tzSa8PMTt` | Reused from Creative Performance Agent (networking: unrestricted) |
 | Vault | **Clean Green Marketing** (existing) | Composio MCP credential lives here. Same vault the operator already uses for Composio access. |
 | Test spreadsheet | `19DF4aGQzDNL3Xt_Au_7V537OeMu22JCB9Fj7rFfc1VY` | MVP test sheet, duplicated from production. Hardcoded in SKILL.md. The production sheet ID is intentionally not stored in this agent's content during MVP. |
 
 ## Related
 
-- [`brand/compliance.md`](../../../brand/compliance.md) — universal banned-word list and visual-compliance rules (human-gated)
-- [`agents/meta-compliance-agent/`](../../meta-compliance-agent/) — **the single source of truth for this agent's compliance.** The copy generator reads its `rules.md` and runs its scan as a hard pre-write gate (as of 2026-06-08; previously the rules were duplicated inline and drifted).
-- [`agents/conventions.md`](../../conventions.md) — fleet governance (PR flow, scope boundaries, human-gated paths)
+- [`brand/compliance.md`](../../../brand/compliance.md) - universal banned-word list and visual-compliance rules (human-gated)
+- [`agents/meta-compliance-agent/`](../../meta-compliance-agent/) - **the single source of truth for this agent's compliance.** The copy generator reads its `rules.md` and runs its scan as a hard pre-write gate (as of 2026-06-08; previously the rules were duplicated inline and drifted).
+- [`agents/conventions.md`](../../conventions.md) - fleet governance (PR flow, scope boundaries, human-gated paths)
 - Source plugin (pre-managed-agent): `Plugins Sandbox/Rodrigo - Meta Ad Copywriter/Meta Ad Copywriter - agent/compliance-rewrite-2026-05-02/plugin-v0.7.0-staging/`

@@ -1,4 +1,4 @@
-# Completeness Mapping — Meta Ad Copy Agent consolidation
+# Completeness Mapping - Meta Ad Copy Agent consolidation
 
 **Purpose:** prove that collapsing the 8 source files into the single `playbook.md` lost NO apply-every-run rule. Shown, not asserted. Built from 4 parallel adversarial completeness critics (one per rule-bearing file + one for the 4 lookup files), each mapping every source rule → ELEVATED (in the playbook) / REFERENCE-ONLY (correctly left in its file, which the consolidation KEEPS) / CHANGED (with basis) / GAP (caught + closed).
 
@@ -6,15 +6,15 @@
 
 ---
 
-## ‼️ RATIFY AT MERGE — explicit decisions needed (compliance + Adam)
+## ‼️ RATIFY AT MERGE - explicit decisions needed (compliance + Adam)
 
-### 1. WRITE BOUNDARY — does the copy agent write `Ad Description` + `Promo`? → **RESOLVED: YES (WRITE).**
+### 1. WRITE BOUNDARY - does the copy agent write `Ad Description` + `Promo`? → **RESOLVED: YES (WRITE).**
 - **The conflict (two brain files disagree):** `SKILL.md` (L45/L225) and `column-maps.md` say `Ad Description` + `Promo Code` are **read-only / do-not-write** (12-cell boundary). But `copy-framework.md` §4.2 carries full `Ad Description` AUTHORING rules, the **ratified** `sheet-column-ownership.md` (2026-06-04, orchestrator-ratified) lists **`Ad Description` under "meta-ads-agent OWNS"**, and this session's live intake DID write `Ad Description` + `Promo`.
 - **Ruling (the-orchestrator, this session):** **WRITE governs.** Basis = the ratified ownership doc + live practice + copy-framework §4.2 all align = current ratified reality. The SKILL/column-maps "read-only" is the stale pre-ratification MVP boundary → corrected in the reference-refresh task (`task_1781995021909`).
 - **In the playbook:** §G write set = 10 copy + avatar + funnel + **Ad Description + Promo**; §H carries the authoring rules.
-- **Asking compliance + Adam to explicitly bless this at merge** (it's a live-sheet write boundary; if Adam wants read-only it's a 1-line flip). **Note: writing `Ad Description` does NOT bypass compliance — the M-code scan + the gate apply to it like any cell.**
+- **Asking compliance + Adam to explicitly bless this at merge** (it's a live-sheet write boundary; if Adam wants read-only it's a 1-line flip). **Note: writing `Ad Description` does NOT bypass compliance - the M-code scan + the gate apply to it like any cell.**
 
-### 2. M-code range cite — minor. Playbook §Compliance cites **M-1…M-25**; source SKILL.md cites M-1…M-24. Treated as an intentional brain update (rules.md is the live SoT either way). Confirm at merge.
+### 2. M-code range cite - minor. Playbook §Compliance cites **M-1…M-25**; source SKILL.md cites M-1…M-24. Treated as an intentional brain update (rules.md is the live SoT either way). Confirm at merge.
 
 ---
 
@@ -35,10 +35,10 @@
 
 ---
 
-## Intentional CHANGES (not losses — basis given)
+## Intentional CHANGES (not losses - basis given)
 - **Avatar live-read → §D canonical-list + drift-tripwire.** gog can't read dataValidation; the Sheets API doesn't reject invalid values (tested this session), so the old "read the live dropdown" safety isn't portable. Replaced by: canonical list authority + a gog-native distinct-live-values drift tripwire + read-back. STRONGER, not weaker.
 - **Per-slot rigid body length (8-14/5-8/3-5) → 5 SHAPES + length-spread ≥2x.** copy-framework §5.5 explicitly "supersedes the old rigid per-slot signatures."
-- **Second-person rule** (Adam 2026-06-20) is NEW (no source equivalent) — layered into §A + gate#2. The stale third-person examples in the reference files → refresh task.
+- **Second-person rule** (Adam 2026-06-20) is NEW (no source equivalent) - layered into §A + gate#2. The stale third-person examples in the reference files → refresh task.
 
 ## Deferred to the reference-refresh task (`task_1781995021909`, separate PR)
 The KEPT reference files still teach pre-M-19f / pre-second-person patterns (proof-banks push `tested before it ships` / `American farm-direct` / `family-grown` / `ships to states`; §7 + brand-voice §8 examples use 🌿 and third-person headlines; manual-copy-gen lists 🌿). The playbook's PART 4 caveat closes the interim risk ("playbook rules win over stale examples"); the files get scrubbed in the separate refresh PR.

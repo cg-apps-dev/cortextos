@@ -3,7 +3,7 @@ name: brand-voice
 description: Clean Green's tone, sentence rhythm, signature patterns, DO/DON'T pairs, and TRY20 promo code usage. Load on every copy generation run before writing a single headline or body line. Grounded in Clean Green's canonical ad templates and winning ad archive across the four product-specific tabs (Images/Videos × Flower/Sleep Gummies). Includes per-product voice notes. Vocabulary rebuilt 2026-05 against the meta-compliance scan (M-3 / M-5 / M-6a / M-12 / M-13). Never invent brand voice that does not trace back to these sources.
 ---
 
-# Brand Voice — Clean Green
+# Brand Voice - Clean Green
 
 This skill encodes how Clean Green sounds. The copy-framework skill
 tells you how to structure a variation; this skill tells you the
@@ -17,12 +17,12 @@ across the four product-specific tabs: `IMAGES (Flower)`,
 `VIDEOS (Sleep Gummies)`. Do not invent voice elements that do not
 appear in those sources.
 
-The Clean Green house voice is shared across products — same
+The Clean Green house voice is shared across products - same
 confidence, same directness, same skeptic-to-believer DNA. What
 shifts per product is the **rhythm and emotional register** of the
 opener and proof. See §1.5 for per-product voice notes.
 
-> **Compliance is single-sourced from the [meta-compliance-agent](../../../meta-compliance-agent/) (2026-06-08).** This file is generation *guidance* (voice, rhythm, openers), **not** compliance rules. Its texture words, openers, and examples were rebuilt to be compliant against the agent's M-codes (M-2 / M-3 / M-5 / M-6a / M-12 / M-13 / M-19 / M-24, …) so the agent **learns from clean patterns** rather than leaning on post-hoc substitution. Enforcement is the agent's scan as a hard pre-write gate — see [`compliance.md`](compliance.md). The retired in-pipeline `§9 cleanup` / `§10 mechanical substitution` passes **no longer exist**; wherever older text below references them, read it as: *this is banned (per the cited M-code) — draft the compliant form, and the agent scan is the gate.*
+> **Compliance is single-sourced from the [meta-compliance-agent](../../../meta-compliance-agent/) (2026-06-08).** This file is generation *guidance* (voice, rhythm, openers), **not** compliance rules. Its texture words, openers, and examples were rebuilt to be compliant against the agent's M-codes (M-2 / M-3 / M-5 / M-6a / M-12 / M-13 / M-19 / M-24, …) so the agent **learns from clean patterns** rather than leaning on post-hoc substitution. Enforcement is the agent's scan as a hard pre-write gate - see [`compliance.md`](compliance.md). The retired in-pipeline `§9 cleanup` / `§10 mechanical substitution` passes **no longer exist**; wherever older text below references them, read it as: *this is banned (per the cited M-code) - draft the compliant form, and the agent scan is the gate.*
 
 ---
 
@@ -31,10 +31,10 @@ opener and proof. See §1.5 for per-product voice notes.
 Clean Green sounds like a trusted peer who knows the product, not a
 corporate brand. The voice is:
 
-- **Confident** — makes concrete claims and backs them with proof.
-- **Direct** — short sentences, no throat-clearing, no hedging.
-- **Human** — talks to the reader like a person, not a prospect.
-- **No-nonsense** — names the objection out loud, then answers it.
+- **Confident** - makes concrete claims and backs them with proof.
+- **Direct** - short sentences, no throat-clearing, no hedging.
+- **Human** - talks to the reader like a person, not a prospect.
+- **No-nonsense** - names the objection out loud, then answers it.
 - **Never clinical, corporate, or wellness-coded.** No
   "wellness journey," no "experience the power of," no
   "discover the benefits of."
@@ -47,13 +47,13 @@ wrong for Clean Green.
 ## 1.5 Per-product voice notes
 
 The house voice doesn't change between products. The **emotional
-register** does — it shifts to match what the customer is actually
+register** does - it shifts to match what the customer is actually
 doing when the ad lands.
 
 ### Flower voice (`IMAGES (Flower)`, `VIDEOS (Flower)`)
 
 **Mood:** daytime, lifestyle, recreational. The reader is in choosing
-mode — comparing options, comparing to the local shop, deciding
+mode - comparing options, comparing to the local shop, deciding
 whether ordering quality online is real. The voice is a peer pushing
 back on skepticism.
 
@@ -72,7 +72,7 @@ local shop, doorstep, real quality, the real thing.
 Bill`, `Agriculture Act`, `no med card`, `Potency Promise`,
 `potency`, `potent`, `harmful chemicals`. These trip the
 meta-compliance classifier and get substituted by `compliance.md`
-§10 — don't draft them in the first place.
+§10 - don't draft them in the first place.
 
 **Default opener vibe:** confrontational with the reader's doubt.
 "Yeah right, ordering quality online is probably a disappointment."
@@ -108,13 +108,13 @@ reset, made for nightly wind-down, designed for deeper rest.
 night`, `Finally Stay Asleep All Night`, `Better mornings start the
 night before`, `End the 3am ceiling stare`, `through the night`,
 `ceiling stare` (when used as a hook). These trip the
-meta-compliance classifier — `compliance.md` §10 substitutes them
+meta-compliance classifier - `compliance.md` §10 substitutes them
 into wind-down vocabulary, and §1.8 / §1.11 explain why.
 
 **Forbidden M-5 framing:** `not foggy`, `no fog`, `no jitters`,
 `no crash`, `no paranoia`, `zombie fog`, `no overthinking`,
 `no morning fog`, `no melatonin hangover`, `no 3AM jolt`,
-`no chemical reset at 2AM`. M-5 is universal — applies to flower
+`no chemical reset at 2AM`. M-5 is universal - applies to flower
 copy too whenever a flower script borrows gummy framing.
 
 **Default opener vibe:** acknowledges the bedtime struggle without
@@ -125,7 +125,7 @@ the wind-down ritual.
 
 **Avoid in sleep-gummies copy:** flower-coded language. Wrong product,
 wrong moment. Also avoid medical or wellness-brand framing
-("non-habit-forming," "natural sleep aid," "doctor-recommended") —
+("non-habit-forming," "natural sleep aid," "doctor-recommended") -
 those are banned per `compliance.md` §8 and they'd kill the voice
 even if they were allowed.
 
@@ -134,7 +134,7 @@ even if they were allowed.
 Every line you draft sits in one of the two registers above. If a
 flower draft ends up reading as wind-down language, or a sleep-gummies
 draft ends up reading as recreational/strain-comparison language, the
-register is wrong for the product — rewrite before shipping.
+register is wrong for the product - rewrite before shipping.
 
 ---
 
@@ -153,7 +153,7 @@ register is wrong for the product — rewrite before shipping.
 - **Numbers are specific.** "30+ years," "Week 2,"
   "Month 6," "$145+." Vague timing ("fast," "quickly") is weaker.
 - **Contrast pairs drive the arc.** "Not weak quality. Not gas
-  station alternatives. Real, premium quality." — negate the cheap
+  station alternatives. Real, premium quality." - negate the cheap
   thing, then claim the real thing.
 - **No ellipses to create drama** unless quoting a customer
   ("I'll be honest…").
@@ -167,26 +167,26 @@ register is wrong for the product — rewrite before shipping.
 
 These are the recurring openings, mid-copy moves, and closes that
 appear across Clean Green's winning ads (vocabulary rebuilt 2026-05).
-Copy should use them — varied, not copy-pasted — on every generation.
+Copy should use them - varied, not copy-pasted - on every generation.
 
 ### 3a. Signature openings
 
-- `Most people see Clean Green ads and think: "…"` — the skeptic
-  quote opener (the quote contents must be M-3-/M-6a-clean — see
+- `Most people see Clean Green ads and think: "…"` - the skeptic
+  quote opener (the quote contents must be M-3-/M-6a-clean - see
   §3a-examples).
-- `"I'll be honest…"` — the customer-voice opener.
-- `Still skeptical?` — the rhetorical-hook opener.
-- `Why pay more to feel worse?` — the reframe opener.
-- `The old me vs. the new me.` — the transformation opener.
+- `"I'll be honest…"` - the customer-voice opener.
+- `Still skeptical?` - the rhetorical-hook opener.
+- `Why pay more to feel worse?` - the reframe opener.
+- `The old me vs. the new me.` - the transformation opener.
 
 > **Forbidden opener pattern:** the diagnostic-question opener
 > (`Tired Of [X]?`, `Sick Of [X]?`, `Done With [X]?`, `Done Wasting
 > [X]?`, `Fed Up With [X]?`, `Can't sleep?`) trips Meta's M-12
 > classifier. The mechanical substitution pass replaces these with
 > the per-product rotator in `compliance.md` §10.0. Don't draft
-> them — pick a different hook angle.
+> them - pick a different hook angle.
 
-#### 3a-examples — compliant skeptic quotes
+#### 3a-examples - compliant skeptic quotes
 
 The quote contents inside a `Most people see Clean Green ads and
 think: "…"` opener must use compliant vocabulary. Use these
@@ -244,7 +244,7 @@ M-3-clean and validated against the meta-compliance scan.**
 - `A wind-down within the hour`
 - `Ships to all 50 states` (gummies-only; flower copy omits any ship-to-states line)
 
-> **Banned phrases that used to live here (v0.6.1) — do not revert:**
+> **Banned phrases that used to live here (v0.6.1) - do not revert:**
 > `Lab-tested every batch`, `Federally compliant`, `100% federally
 > legal`, `2018 Farm Bill compliant`, `Lab-verified every time`,
 > `Discreet, smell-proof packaging`, `No med card needed`. Every one
@@ -254,7 +254,7 @@ M-3-clean and validated against the meta-compliance scan.**
 ### 3d. Closes
 
 Every primary body closes with either a skeptic challenge or a
-direct offer. Pick one — don't do both.
+direct offer. Pick one - don't do both.
 
 - Skeptic challenge close: `Still skeptical? Test it yourself.`
 - Direct offer close: `Get 20% OFF using code 'TRY20' at checkout
@@ -264,7 +264,7 @@ direct offer. Pick one — don't do both.
 
 ## 4. Tone by avatar
 
-Voice stays Clean Green across every avatar — what shifts is which
+Voice stays Clean Green across every avatar - what shifts is which
 objection leads and how much proof is stacked. See `avatars/SKILL.md`
 for the full profiles; this is the voice dial.
 
@@ -283,7 +283,7 @@ for the full profiles; this is the voice dial.
 
 If the avatar column is blank, defer to the avatars.md §4 per-tab
 default (flower: `FCA=The Skeptic 1st Time Online Buyer`; gummies:
-`DSCA=Racing Mind`) — see SKILL.md Step 2.5 / 3.5 avatar-fill loops
+`DSCA=Racing Mind`) - see SKILL.md Step 2.5 / 3.5 avatar-fill loops
 for the resolution path.
 
 ---
@@ -297,14 +297,14 @@ for the resolution path.
   compliance skill is the hard stop; this voice skill keeps it out
   of the draft in the first place.
 - **Vague superlatives with no proof.** "Amazing," "best on the
-  market," "incredible quality," "top-tier" — drop these unless
+  market," "incredible quality," "top-tier" - drop these unless
   backed by a specific number or third-party signal on the same
   line.
 - **Passive voice.** "Our products are made with care" → "We
   grow it ourselves."
 - **Corporate "we."** The voice is peer-to-peer, not PR.
 - **Double-closing.** Never stack the skeptic challenge AND the
-  TRY20 offer in the same variation — pick one.
+  TRY20 offer in the same variation - pick one.
 - **M-3/M-5/M-6a/M-12/M-13 vocabulary anywhere outside the
   Review-Style customer-voice carve-out.** See `compliance.md` §1.7
   through §1.11.
@@ -320,7 +320,7 @@ for the resolution path.
 - Only one code appears per ad. If the row has no promo, use the
   skeptic challenge close instead.
 - Free-gift offers (e.g. "6 Premium Pre-Wrapped Sticks FREE With Every
-  $145+ Order") replace the TRY20 line when present on the asset —
+  $145+ Order") replace the TRY20 line when present on the asset -
   never stack both. (Note: drop banned product-form words like
   `pre-roll` / `hand-roll` from free-gift copy; use the asset's
   actual on-image phrasing if it differs.)
@@ -359,7 +359,7 @@ against the meta-compliance scan.** Pre-rewrite versions used `bud`,
 `Lab-verified every time`, `discreet, smell-proof`, `No med card
 needed`, `Pure and potent`, `garbage`. Don't revert.
 
-### Example 1 — Long skeptic-to-believer (Template #1)
+### Example 1 - Long skeptic-to-believer (Template #1)
 
 > Most people see Clean Green ads and think:
 >
@@ -382,13 +382,13 @@ needed`, `Pure and potent`, `garbage`. Don't revert.
 >
 > Get 20% OFF using code 'TRY20' at checkout (Limited Time Only)
 
-*Why it's on-brand:* skeptic quote opener (M-6a-clean — `a
+*Why it's on-brand:* skeptic quote opener (M-6a-clean - `a
 disappointment` instead of `garbage`), `Here's what actually happens`
 bridge, ✅ proof stack on their own lines, contrast pair ("Not weak
 quality… Real, premium quality"), "skeptics into believers" closer,
 single clean TRY20 close. Every proof line is M-3-clean.
 
-### Example 2 — Short testimonial (Template #2 — Review Style carve-out applies)
+### Example 2 - Short testimonial (Template #2 - Review Style carve-out applies)
 
 > "I'll be honest… I thought you couldn't get real quality online.
 > Figured I'd have to try a pound just to feel anything. Turns out I
@@ -397,13 +397,13 @@ single clean TRY20 close. Every proof line is M-3-clean.
 > Get 20% OFF using code 'TRY20' at checkout (Limited Time Only)
 
 *Why it's on-brand:* customer-voice opener inside `"..."` followed
-by `⭐️⭐️⭐️⭐️⭐️` — Review Style carve-out applies (`compliance.md`
+by `⭐️⭐️⭐️⭐️⭐️` - Review Style carve-out applies (`compliance.md`
 §8a / §10), so first-person language survives the substitution
 pass. Specific objection ("try a pound just to feel anything"),
 unadorned five-star signal, direct offer close. No brand voice over
 the top of the customer voice.
 
-### Example 3 — Short direct (Template #3)
+### Example 3 - Short direct (Template #3)
 
 > Get Real Quality, Delivered Fast. 🌿
 >
@@ -413,9 +413,9 @@ the top of the customer voice.
 
 *Why it's on-brand:* three-line structure, product emoji used once,
 skeptic hook, TRY20 close. This is the shortest viable form of Clean
-Green copy — anything shorter loses the voice.
+Green copy - anything shorter loses the voice.
 
-### Example 4 — Shop switcher reframe
+### Example 4 - Shop switcher reframe
 
 > Why pay more to feel worse?
 >
@@ -430,10 +430,10 @@ Green copy — anything shorter loses the voice.
 *Why it's on-brand:* reframe opener built for Avatar 02, proof stack
 that directly answers the shop comparison (family-grown,
 work-with-our-growers replaces `no med card needed`),
-no TRY20 — the offer comes from the ad set, not the copy. Every
+no TRY20 - the offer comes from the ad set, not the copy. Every
 proof line is M-3-clean.
 
-### Example 5 — Transformation / repeat buyer arc
+### Example 5 - Transformation / repeat buyer arc
 
 > The old me vs. the new me.
 >
@@ -450,7 +450,7 @@ proof line is M-3-clean.
 for Avatar 04 where the angle is loyalty/reorder rather than
 first-time objections.
 
-### Example 6 — Sleep Gummies primary body (NEW in 2026-05)
+### Example 6 - Sleep Gummies primary body (NEW in 2026-05)
 
 > "I'll try it once" is what most say before their first DeepSleep
 > order.
@@ -475,7 +475,7 @@ offer close. Demonstrates the sleep-gummies register: measured
 tempo, evening rhythm, ritual framing. No M-13 banned phrasings
 outside customer-voice carve-out.
 
-### Example 7 — Sleep Gummies short-form (NEW in 2026-05)
+### Example 7 - Sleep Gummies short-form (NEW in 2026-05)
 
 > Your evening reset. 🌿
 >
