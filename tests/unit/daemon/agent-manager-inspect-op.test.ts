@@ -55,9 +55,48 @@ describe('AgentManager.inspectAgentOp — issue #346 (DEDUPED vs NOT_FOUND)', ()
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.code).toBe('DEDUPED');
-      expect(r.message).toMatch(/already in registry/);
+      expect(r.message).toMatch(/already running/);
+      expect(r.message).toContain('restart');
       expect(r.message).toContain('alice');
     }
+  });
+
+  it('startAgent on an already-running agent is message-only and does not queue a restart', async () => {
+    (am as unknown as { agents: Map<string, unknown> }).agents.set('alice', { /* sentinel */ } as unknown);
+
+    await am.startAgent('alice', '');
+
+    expect((am as unknown as { pendingRestarts: Set<string> }).pendingRestarts.has('alice')).toBe(false);
+  });
+
+  it('start while stop is in-flight: QUEUED_BEHIND_STOP with actionable message', async () => {
+    let releaseStop: (() => void) | undefined;
+    const stopPromise = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    const fakeEntry = {
+      process: { stop: vi.fn(() => stopPromise) },
+      checker: { stop: vi.fn() },
+    };
+    (am as unknown as { agents: Map<string, unknown> }).agents.set('alice', fakeEntry);
+
+    const stopWork = am.stopAgent('alice');
+    await Promise.resolve();
+
+    const r = am.inspectAgentOp('start', 'alice');
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('QUEUED_BEHIND_STOP');
+      expect(r.message).toContain('queued behind an in-flight stop');
+      expect(r.message).toContain('restart shortly');
+    }
+
+    await am.startAgent('alice', '');
+    expect((am as unknown as { pendingRestarts: Set<string> }).pendingRestarts.has('alice')).toBe(true);
+
+    releaseStop?.();
+    await stopWork;
+    expect((am as unknown as { pendingRestarts: Set<string> }).pendingRestarts.has('alice')).toBe(false);
   });
 
   it('stop on empty registry: NOT_FOUND (the misreport bug — must distinguish)', () => {

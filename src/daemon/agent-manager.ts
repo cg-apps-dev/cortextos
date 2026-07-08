@@ -31,6 +31,7 @@ export class AgentManager {
   // Tracks agents that received a start request while still stopping.
   // stopAgent() honors these after cleanup completes so restart-all is race-free.
   private pendingRestarts: Set<string> = new Set();
+  private stoppingAgents: Set<string> = new Set();
   private instanceId: string;
   private ctxRoot: string;
   private frameworkRoot: string;
@@ -229,11 +230,22 @@ export class AgentManager {
    * restartAgent is unchanged — this read-only check exists purely to give
    * the IPC layer enough info to set IPCResponse.code. See issue #346.
    */
-  inspectAgentOp(op: 'start' | 'stop' | 'restart', name: string): { ok: true } | { ok: false; code: 'DEDUPED' | 'NOT_FOUND'; message: string } {
+  inspectAgentOp(op: 'start' | 'stop' | 'restart', name: string): { ok: true } | { ok: false; code: 'DEDUPED' | 'QUEUED_BEHIND_STOP' | 'NOT_FOUND'; message: string } {
     const inRegistry = this.agents.has(name);
     if (op === 'start') {
       if (inRegistry) {
-        return { ok: false, code: 'DEDUPED', message: `start request for "${name}" deduped — agent already in registry (in-flight start or already running)` };
+        if (this.stoppingAgents.has(name)) {
+          return {
+            ok: false,
+            code: 'QUEUED_BEHIND_STOP',
+            message: `start request for "${name}" queued behind an in-flight stop; agent will restart shortly`,
+          };
+        }
+        return {
+          ok: false,
+          code: 'DEDUPED',
+          message: `agent "${name}" is already running; .env/config changes are not applied to a running agent. Run "cortextos restart ${name}" to apply them.`,
+        };
       }
       return { ok: true };
     }
@@ -259,7 +271,10 @@ export class AgentManager {
       // the core stability test plan + cycle 2 of PR #13 both confirmed
       // this branch is dormant. Once we have weeks of zero-warning
       // production data, we can delete the queue mechanism entirely.
-      if (this.daemonJustCrashed) {
+      if (this.stoppingAgents.has(name)) {
+        console.warn(`[agent-manager] BUG-011 REGRESSION CHECK: ${name} still in registry during startAgent while stop is in-flight. Queueing restart behind stop.`);
+        this.pendingRestarts.add(name);
+      } else if (this.daemonJustCrashed) {
         // Post-crash startup. The previous daemon exited via
         // uncaughtException without running stopAll(), so the in-memory
         // registry from the prior process is gone — but the post-crash
@@ -268,10 +283,10 @@ export class AgentManager {
         // distinct from the BUG-011 in-flight race PR #11 closed. Log at
         // info level so operators don't think PR #11 has regressed.
         console.log(`[agent-manager] ${name} already in registry (post-crash discovery overlap, expected). Queueing restart.`);
+        this.pendingRestarts.add(name);
       } else {
-        console.warn(`[agent-manager] BUG-011 REGRESSION CHECK: ${name} still in registry during startAgent — pendingRestarts queueing engaged. This should not happen with PR #11 in place.`);
+        console.log(`[agent-manager] ${name} already running; start request deduped. Restart required to apply .env/config changes.`);
       }
-      this.pendingRestarts.add(name);
       return;
     }
 
@@ -693,7 +708,7 @@ export class AgentManager {
       const entry = this.agents.get(name);
       if (entry) entry.poller = poller;
 
-      log('Telegram poller started (with Conflict-restart wrapper)');
+      log('Telegram poller wrapper launched; .telegram-poller-alive confirms first successful getUpdates');
 
       // Orchestrator-only: start a second poller for the org's activity
       // channel bot so Telegram inline-button callbacks (currently just
@@ -826,7 +841,7 @@ export class AgentManager {
     const entry = this.agents.get(name);
     if (entry) entry.activityPoller = activityPoller;
 
-    log(`Activity-channel poller started (chat ${activityChatId}, with Conflict-restart wrapper)`);
+    log(`Activity-channel poller wrapper launched for chat ${activityChatId}; .telegram-poller-alive-activity confirms first successful getUpdates`);
   }
 
   /**
@@ -839,35 +854,40 @@ export class AgentManager {
       return;
     }
 
-    if (entry.poller) entry.poller.stop();
-    if (entry.activityPoller) entry.activityPoller.stop();
-    entry.checker.stop();
-    await entry.process.stop();
-    this.agents.delete(name);
+    this.stoppingAgents.add(name);
+    try {
+      if (entry.poller) entry.poller.stop();
+      if (entry.activityPoller) entry.activityPoller.stop();
+      entry.checker.stop();
+      await entry.process.stop();
+      this.agents.delete(name);
 
-    // Stop and remove the agent's cron scheduler (if one was wired)
-    const scheduler = this.cronSchedulers.get(name);
-    if (scheduler) {
-      scheduler.stop();
-      this.cronSchedulers.delete(name);
-    }
-
-    // BUG-031: honor any restart that was queued while we were stopping.
-    // After PR #11 (BUG-011 fix) this branch should never fire — see the
-    // matching warning comment in startAgent(). The honor logic is preserved
-    // as a safety net in case BUG-011 regresses; the warn line tells us
-    // immediately if it ever does.
-    if (this.pendingRestarts.has(name)) {
-      if (this.daemonJustCrashed) {
-        console.log(`[agent-manager] pendingRestarts fired for ${name} (post-crash safety net, expected). Honoring queued restart.`);
-      } else {
-        console.warn(`[agent-manager] BUG-011 REGRESSION CHECK: pendingRestarts fired for ${name} — race condition leaked through. Honoring queued restart as safety net.`);
+      // Stop and remove the agent's cron scheduler (if one was wired)
+      const scheduler = this.cronSchedulers.get(name);
+      if (scheduler) {
+        scheduler.stop();
+        this.cronSchedulers.delete(name);
       }
-      this.pendingRestarts.delete(name);
-      console.log(`[agent-manager] Honoring queued restart for ${name}`);
-      this.startAgent(name, '').catch(err =>
-        console.error(`[agent-manager] Queued restart failed for ${name}:`, err),
-      );
+
+      // BUG-031: honor any restart that was queued while we were stopping.
+      // After PR #11 (BUG-011 fix) this branch should never fire; see the
+      // matching warning comment in startAgent(). The honor logic is preserved
+      // as a safety net in case BUG-011 regresses; the warn line tells us
+      // immediately if it ever does.
+      if (this.pendingRestarts.has(name)) {
+        if (this.daemonJustCrashed) {
+          console.log(`[agent-manager] pendingRestarts fired for ${name} (post-crash safety net, expected). Honoring queued restart.`);
+        } else {
+          console.warn(`[agent-manager] BUG-011 REGRESSION CHECK: pendingRestarts fired for ${name}; race condition leaked through. Honoring queued restart as safety net.`);
+        }
+        this.pendingRestarts.delete(name);
+        console.log(`[agent-manager] Honoring queued restart for ${name}`);
+        this.startAgent(name, '').catch(err =>
+          console.error(`[agent-manager] Queued restart failed for ${name}:`, err),
+        );
+      }
+    } finally {
+      this.stoppingAgents.delete(name);
     }
   }
 
