@@ -7,7 +7,7 @@ date: 2026-07-05
 
 # Fleet Playbooks
 
-Every process any agent follows, written as a plain-English playbook: easy to read, follow, and update, by a human or an agent. One folder per agent, one playbook per process (Adam directive, 2026-07-05). Kept continuously current - updating the affected playbook is part of the definition of done for any workflow change.
+Every process any agent follows, written as a plain-English playbook: easy to read, follow, and update, by a human or an agent. One folder per agent, one playbook per process (Adam directive, 2026-07-05). Kept continuously current: updating the affected playbook is part of the definition of done for any workflow change - the [fleet standing rule](fleet/standing-rules.md) that keeps this tree trustworthy.
 
 Playbooks distill; they do not replace. The technical spec an agent executes stays in its SKILL.md (linked from each playbook); domain rules agents read live (e.g. the Meta M-code compliance rules in the brain repo) are linked, never copied.
 
@@ -29,7 +29,7 @@ Maintained by the-sop-keeper. Changes land via a local branch reviewed by the-or
 | [codex-dev-agent/](codex-dev-agent/) | 1 | Implementation-partner flow (the execution half of the dev pair) |
 | [meta-compliance-agent/](meta-compliance-agent/) | 2 | Scan-and-verdict process + M-code rules ownership (agent files live in the brain; process documented here) |
 | [the-axon-agent/](the-axon-agent/) | 1 | Axon / AppLovin intake: pull Pod-3-Axon cards, write 9x16 rows to the Axon Ads Upload Sheet (fork-invert of the Meta engine). Analytics half in development |
-| [fleet/](fleet/) | 2 | Cross-agent processes owned by no single agent: the zero-model launchd monitor layer + the RTK post-bounce engagement sweep (manual hook-verification method) |
+| [fleet/](fleet/) | 2 + rules | Cross-agent processes owned by no single agent: the zero-model launchd monitor layer + the RTK post-bounce engagement sweep (manual hook-verification method). Also holds [fleet/standing-rules.md](fleet/standing-rules.md), the home for cross-agent standing rules |
 
 The playbook system now covers the full active fleet.
 
@@ -49,7 +49,8 @@ The playbook system now covers the full active fleet.
 
 | Kind | Naming | Freshness rule |
 |---|---|---|
-| Playbook | `playbooks/<agent>/<process>.md` (`NN-` prefix for pipeline stages) | The ONLY always-current doc type - updated with the workflow it describes |
+| Playbook | `playbooks/<agent>/<process>.md` (`NN-` prefix for pipeline stages) | Always-current - updated with the workflow it describes (part of the change's Definition of Done) |
+| Standing rules | `playbooks/fleet/standing-rules.md` | Always-current - cross-agent hard rules (not per-agent guardrails); each rule titled + dated |
 | Runbook | `RUNBOOK-*.md` (in agent workspaces) | Point-in-time execution procedure; allowed to age |
 | Spec | `SPEC-*.md` | Design-before-build; allowed to age |
 | Reference/findings | `REF-*.md` / `FINDINGS-*.md` | Standing facts; dated |
