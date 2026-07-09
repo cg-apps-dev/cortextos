@@ -1,4 +1,9 @@
 import {
+  execFileSync,
+  spawn,
+  type ChildProcessWithoutNullStreams,
+} from 'child_process';
+import {
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -17,6 +22,7 @@ import {
   hasRecentAuthWobble,
   readRtkAutohealState,
   rtkAutohealStatePath,
+  SqliteRtkHistoryReader,
   writeRtkAutohealState,
   type RtkDiscoveredAgent,
   type RtkHistoryReader,
@@ -57,6 +63,42 @@ function discovered(runtime: RtkDiscoveredAgent['runtime'] = 'claude-code'): Rtk
   }];
 }
 
+function runSqlite(dbPath: string, sql: string): void {
+  execFileSync('sqlite3', [dbPath, sql], {
+    encoding: 'utf-8',
+    timeout: 5_000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function waitForStdout(child: ChildProcessWithoutNullStreams, expected: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let output = '';
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for sqlite stdout: ${expected}`));
+    }, 2_000);
+    const onData = (chunk: Buffer): void => {
+      output += chunk.toString('utf-8');
+      if (output.includes(expected)) {
+        cleanup();
+        resolve();
+      }
+    };
+    const onExit = (): void => {
+      cleanup();
+      reject(new Error('sqlite reader exited before expected output'));
+    };
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      child.stdout.off('data', onData);
+      child.off('exit', onExit);
+    };
+    child.stdout.on('data', onData);
+    child.on('exit', onExit);
+  });
+}
+
 describe('rtk continue-decay autoheal loop', () => {
   let root: string;
   let ctxRoot: string;
@@ -83,6 +125,7 @@ describe('rtk continue-decay autoheal loop', () => {
       ctxRoot,
       frameworkRoot,
       nowMs: () => now,
+      probeRetryDelayMs: 0,
       historyReader: historyReader({ recent: false }),
       discoverAgents: () => discovered(),
       logger: () => undefined,
@@ -179,6 +222,119 @@ describe('rtk continue-decay autoheal loop', () => {
     expect(state.agents['alpha-agent'].lastArmAt).toBe(new Date(now).toISOString());
   });
 
+  it('retries a missed settled probe once before arming force-fresh', () => {
+    const token = 'RTK_HEAL_PROBE_alpha-agent_1783339200000';
+    writeRtkAutohealState(ctxRoot, {
+      version: 1,
+      agents: {
+        'alpha-agent': {
+          pendingProbe: {
+            token,
+            command: `ls -la /etc/hosts /tmp/${token}`,
+            injectedAt: new Date(now - 5_000).toISOString(),
+            projectPath: '/agents/alpha-agent',
+          },
+        },
+      },
+    });
+    const fakeHistory: RtkHistoryReader = {
+      hasRecentProjectCommand: vi.fn(() => false),
+      hasProbeToken: vi.fn()
+        .mockReturnValueOnce(false)
+        .mockReturnValueOnce(true),
+    };
+    const loop = createRtkContinueDecayAutohealLoop({
+      agentManager: manager([{ name: 'alpha-agent', status: 'running', pid: 111 }]),
+      ctxRoot,
+      frameworkRoot,
+      nowMs: () => now,
+      probeRetryDelayMs: 0,
+      historyReader: fakeHistory,
+      discoverAgents: () => discovered(),
+      logger: () => undefined,
+    });
+
+    loop.runOnce();
+
+    expect(fakeHistory.hasProbeToken).toHaveBeenCalledTimes(2);
+    expect(existsSync(forceFreshPath(ctxRoot, 'alpha-agent'))).toBe(false);
+    expect(readRtkAutohealState(ctxRoot).agents['alpha-agent'].pendingProbe).toBeUndefined();
+  });
+
+  it('still arms force-fresh when both settled probe reads miss', () => {
+    const token = 'RTK_HEAL_PROBE_alpha-agent_1783339200000';
+    writeRtkAutohealState(ctxRoot, {
+      version: 1,
+      agents: {
+        'alpha-agent': {
+          pendingProbe: {
+            token,
+            command: `ls -la /etc/hosts /tmp/${token}`,
+            injectedAt: new Date(now - 5_000).toISOString(),
+            projectPath: '/agents/alpha-agent',
+          },
+        },
+      },
+    });
+    const fakeHistory: RtkHistoryReader = {
+      hasRecentProjectCommand: vi.fn(() => false),
+      hasProbeToken: vi.fn(() => false),
+    };
+    const loop = createRtkContinueDecayAutohealLoop({
+      agentManager: manager([{ name: 'alpha-agent', status: 'running', pid: 111 }]),
+      ctxRoot,
+      frameworkRoot,
+      nowMs: () => now,
+      probeRetryDelayMs: 0,
+      historyReader: fakeHistory,
+      discoverAgents: () => discovered(),
+      logger: () => undefined,
+    });
+
+    loop.runOnce();
+
+    expect(fakeHistory.hasProbeToken).toHaveBeenCalledTimes(2);
+    expect(readFileSync(forceFreshPath(ctxRoot, 'alpha-agent'), 'utf-8')).toContain('rtk-reengage');
+  });
+
+  it('uses a WAL-aware live read for probe tokens while passive reads stay immutable', async () => {
+    const historyDb = join(root, 'history.db');
+    runSqlite(
+      historyDb,
+      [
+        'PRAGMA journal_mode=WAL;',
+        'CREATE TABLE commands (timestamp TEXT, original_cmd TEXT, project_path TEXT);',
+        'PRAGMA wal_checkpoint(TRUNCATE);',
+      ].join(' '),
+    );
+    const readerProcess = spawn('sqlite3', [historyDb], { stdio: ['pipe', 'pipe', 'pipe'] });
+    try {
+      const ready = waitForStdout(readerProcess, '0\n');
+      readerProcess.stdin.write('BEGIN;\nSELECT COUNT(*) FROM commands;\n');
+      await ready;
+
+      runSqlite(
+        historyDb,
+        [
+          'PRAGMA wal_autocheckpoint=0;',
+          'INSERT INTO commands VALUES',
+          "('2026-07-08T00:00:00.000Z','ls -la /tmp/RTK_WAL_ONLY','/agents/alpha-agent');",
+        ].join(' '),
+      );
+
+      const sqliteHistory = new SqliteRtkHistoryReader(historyDb);
+      expect(sqliteHistory.hasProbeToken('RTK_WAL_ONLY')).toBe(true);
+      expect(sqliteHistory.hasRecentProjectCommand(
+        '/agents/alpha-agent',
+        '2026-07-07T00:00:00.000Z',
+      )).toBe(false);
+    } finally {
+      readerProcess.stdin.write('ROLLBACK;\n.exit\n');
+      readerProcess.stdin.end();
+      readerProcess.kill();
+    }
+  });
+
   it('does not arm while a pending probe is still settling', () => {
     const token = 'RTK_HEAL_PROBE_alpha-agent_1783339200000';
     writeRtkAutohealState(ctxRoot, {
@@ -226,6 +382,99 @@ describe('rtk continue-decay autoheal loop', () => {
 
     expect(fakeManager.injectAgentDetailed).not.toHaveBeenCalled();
     expect(existsSync(rtkAutohealStatePath(ctxRoot))).toBe(false);
+  });
+
+  it('floors Stage A history at sessionStart to avoid masking post-restart decay', () => {
+    const fakeManager = manager([{
+      name: 'alpha-agent',
+      status: 'running',
+      pid: 111,
+      sessionStart: new Date(now - 10 * 60_000).toISOString(),
+    }]);
+    const fakeHistory = historyReader({ recent: false });
+    const loop = createRtkContinueDecayAutohealLoop({
+      agentManager: fakeManager,
+      ctxRoot,
+      frameworkRoot,
+      nowMs: () => now,
+      historyReader: fakeHistory,
+      discoverAgents: () => discovered(),
+      logger: () => undefined,
+    });
+
+    loop.runOnce();
+
+    expect(fakeHistory.hasRecentProjectCommand).toHaveBeenCalledWith(
+      '/agents/alpha-agent',
+      new Date(now - 10 * 60_000).toISOString(),
+    );
+    expect(fakeManager.injectAgentDetailed).toHaveBeenCalledTimes(1);
+  });
+
+  it('still short-circuits Stage A when history exists after sessionStart', () => {
+    const fakeManager = manager([{
+      name: 'alpha-agent',
+      status: 'running',
+      pid: 111,
+      sessionStart: new Date(now - 10 * 60_000).toISOString(),
+    }]);
+    const fakeHistory = historyReader({ recent: true });
+    const loop = createRtkContinueDecayAutohealLoop({
+      agentManager: fakeManager,
+      ctxRoot,
+      frameworkRoot,
+      nowMs: () => now,
+      historyReader: fakeHistory,
+      discoverAgents: () => discovered(),
+      logger: () => undefined,
+    });
+
+    loop.runOnce();
+
+    expect(fakeHistory.hasRecentProjectCommand).toHaveBeenCalledWith(
+      '/agents/alpha-agent',
+      new Date(now - 10 * 60_000).toISOString(),
+    );
+    expect(fakeManager.injectAgentDetailed).not.toHaveBeenCalled();
+  });
+
+  it('keeps the old Stage A floor when sessionStart is absent and clamps future sessionStart', () => {
+    const noSessionHistory = historyReader({ recent: true });
+    createRtkContinueDecayAutohealLoop({
+      agentManager: manager([{ name: 'alpha-agent', status: 'running', pid: 111 }]),
+      ctxRoot,
+      frameworkRoot,
+      nowMs: () => now,
+      historyReader: noSessionHistory,
+      discoverAgents: () => discovered(),
+      logger: () => undefined,
+    }).runOnce();
+
+    expect(noSessionHistory.hasRecentProjectCommand).toHaveBeenCalledWith(
+      '/agents/alpha-agent',
+      new Date(now - 24 * 60 * 60_000).toISOString(),
+    );
+
+    const futureSessionHistory = historyReader({ recent: true });
+    createRtkContinueDecayAutohealLoop({
+      agentManager: manager([{
+        name: 'alpha-agent',
+        status: 'running',
+        pid: 111,
+        sessionStart: new Date(now + 60_000).toISOString(),
+      }]),
+      ctxRoot,
+      frameworkRoot,
+      nowMs: () => now,
+      historyReader: futureSessionHistory,
+      discoverAgents: () => discovered(),
+      logger: () => undefined,
+    }).runOnce();
+
+    expect(futureSessionHistory.hasRecentProjectCommand).toHaveBeenCalledWith(
+      '/agents/alpha-agent',
+      new Date(now).toISOString(),
+    );
   });
 
   it('skips codex and hermes runtimes', () => {
@@ -355,6 +604,38 @@ describe('rtk continue-decay autoheal loop', () => {
     writeFileSync(join(ctxRoot, 'state', 'usage', 'diagnostics.jsonl'), `${lines}\n`, 'utf-8');
 
     expect(hasRecentAuthWobble(ctxRoot, now)).toBe(false);
+  });
+
+  it('treats cross-tree roaming as a Stage A miss but lets Stage B clear it', () => {
+    const fakeManager = manager([{ name: 'alpha-agent', status: 'running', pid: 111 }]);
+    const loggedTokens = new Set<string>();
+    const fakeHistory: RtkHistoryReader = {
+      hasRecentProjectCommand: vi.fn(() => false),
+      hasProbeToken: vi.fn((token: string) => loggedTokens.has(token)),
+    };
+    const loop = createRtkContinueDecayAutohealLoop({
+      agentManager: fakeManager,
+      ctxRoot,
+      frameworkRoot,
+      nowMs: () => now,
+      probeRetryDelayMs: 0,
+      historyReader: fakeHistory,
+      discoverAgents: () => discovered(),
+      logger: () => undefined,
+    });
+
+    loop.runOnce();
+
+    const token = readRtkAutohealState(ctxRoot).agents['alpha-agent'].pendingProbe?.token;
+    expect(token).toBeDefined();
+    expect(fakeManager.injectAgentDetailed).toHaveBeenCalledTimes(1);
+    loggedTokens.add(token as string);
+    now += 5_000;
+
+    loop.runOnce();
+
+    expect(existsSync(forceFreshPath(ctxRoot, 'alpha-agent'))).toBe(false);
+    expect(readRtkAutohealState(ctxRoot).agents['alpha-agent'].pendingProbe).toBeUndefined();
   });
 
   it('discovers only Claude runtime agents and uses working_directory as project path', () => {

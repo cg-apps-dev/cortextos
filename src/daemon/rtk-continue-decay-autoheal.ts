@@ -13,6 +13,7 @@ import { stripBom } from '../utils/strip-bom.js';
 export const RTK_AUTOHEAL_INTERVAL_MS = 24 * 60 * 60_000;
 export const RTK_PASSIVE_WINDOW_MS = 24 * 60 * 60_000;
 export const RTK_PROBE_SETTLE_MS = 2_000;
+export const RTK_PROBE_RETRY_DELAY_MS = 1_000;
 export const RTK_AUTH_WOBBLE_FREEZE_WINDOW_MS = 60 * 60_000;
 export const RTK_STATE_VERSION = 1;
 
@@ -80,6 +81,7 @@ export interface RtkContinueDecayAutohealOptions {
   logger?: Logger;
   historyReader?: RtkHistoryReader;
   discoverAgents?: (frameworkRoot: string) => RtkDiscoveredAgent[];
+  probeRetryDelayMs?: number;
 }
 
 export class SqliteRtkHistoryReader implements RtkHistoryReader {
@@ -99,7 +101,7 @@ export class SqliteRtkHistoryReader implements RtkHistoryReader {
       'SELECT COUNT(*) FROM commands',
       `WHERE original_cmd LIKE ${sqlQuote(`%${token}%`)};`,
     ].join(' ');
-    return sqliteCount(this.historyDbPath, sql) > 0;
+    return sqliteCountLive(this.historyDbPath, sql) > 0;
   }
 }
 
@@ -109,6 +111,7 @@ export function createRtkContinueDecayAutohealLoop(
   const intervalMs = options.intervalMs ?? RTK_AUTOHEAL_INTERVAL_MS;
   const passiveWindowMs = options.passiveWindowMs ?? RTK_PASSIVE_WINDOW_MS;
   const probeSettleMs = options.probeSettleMs ?? RTK_PROBE_SETTLE_MS;
+  const probeRetryDelayMs = options.probeRetryDelayMs ?? RTK_PROBE_RETRY_DELAY_MS;
   const authWobbleFreezeWindowMs =
     options.authWobbleFreezeWindowMs ?? RTK_AUTH_WOBBLE_FREEZE_WINDOW_MS;
   const nowMs = options.nowMs ?? (() => Date.now());
@@ -145,6 +148,7 @@ export function createRtkContinueDecayAutohealLoop(
             historyReader,
             nowMs: nowMs(),
             probeSettleMs,
+            probeRetryDelayMs,
             passiveWindowMs,
             logger,
           });
@@ -155,9 +159,11 @@ export function createRtkContinueDecayAutohealLoop(
         if (forceFreshPathExists(options.ctxRoot, status.name)) continue;
         if (isRecent(agentState.lastArmAt, nowMs(), passiveWindowMs)) continue;
 
-        const sinceIso = new Date(nowMs() - passiveWindowMs).toISOString();
+        const sinceIso = passiveSinceIso(status.sessionStart, nowMs(), passiveWindowMs);
         let hasRecent: boolean;
         try {
+          // Stage A is a weak cwd-scoped shortcut: RTK history has project_path but no agent id,
+          // so agents roaming in other trees may still need Stage B to prove engagement.
           hasRecent = historyReader.hasRecentProjectCommand(agent.projectPath, sinceIso);
         } catch {
           logger(`[rtk-autoheal] history read failed for ${status.name}; skipping`);
@@ -204,6 +210,7 @@ function processPendingProbe(options: {
   historyReader: RtkHistoryReader;
   nowMs: number;
   probeSettleMs: number;
+  probeRetryDelayMs: number;
   passiveWindowMs: number;
   logger: Logger;
 }): { mutated: boolean; continueAgent: boolean } {
@@ -216,7 +223,10 @@ function processPendingProbe(options: {
   }
 
   try {
-    if (options.historyReader.hasProbeToken(pending.token)) {
+    if (
+      options.historyReader.hasProbeToken(pending.token)
+      || retryProbeTokenRead(options.historyReader, pending.token, options.probeRetryDelayMs)
+    ) {
       delete options.state.pendingProbe;
       options.state.lastProbeOkAt = new Date(options.nowMs).toISOString();
       options.logger(`[rtk-autoheal] probe logged for ${options.agentName}; no heal needed`);
@@ -428,10 +438,49 @@ function isRecent(iso: string | undefined, nowMs: number, windowMs: number): boo
   return Number.isFinite(ts) && nowMs - ts < windowMs;
 }
 
+function passiveSinceIso(
+  sessionStart: string | undefined,
+  nowMs: number,
+  passiveWindowMs: number,
+): string {
+  const sessionStartMs = sessionStart ? Date.parse(sessionStart) : NaN;
+  const windowFloorMs = nowMs - passiveWindowMs;
+  const floorMs = Number.isFinite(sessionStartMs)
+    ? Math.max(windowFloorMs, sessionStartMs)
+    : windowFloorMs;
+  return new Date(Math.min(floorMs, nowMs)).toISOString();
+}
+
+function retryProbeTokenRead(
+  historyReader: RtkHistoryReader,
+  token: string,
+  retryDelayMs: number,
+): boolean {
+  if (retryDelayMs > 0) sleepMs(retryDelayMs);
+  return historyReader.hasProbeToken(token);
+}
+
+function sleepMs(ms: number): void {
+  if (ms <= 0) return;
+  const buffer = new SharedArrayBuffer(4);
+  const view = new Int32Array(buffer);
+  Atomics.wait(view, 0, 0, ms);
+}
+
 function sqliteCount(historyDbPath: string, sql: string): number {
   const output = execFileSync(
     'sqlite3',
     [`file:${historyDbPath}?immutable=1`, sql],
+    { encoding: 'utf-8', timeout: 5_000, stdio: ['ignore', 'pipe', 'pipe'] },
+  ).trim();
+  const count = Number(output);
+  return Number.isFinite(count) ? count : 0;
+}
+
+function sqliteCountLive(historyDbPath: string, sql: string): number {
+  const output = execFileSync(
+    'sqlite3',
+    ['-cmd', '.timeout 1000', `file:${historyDbPath}?mode=ro`, sql],
     { encoding: 'utf-8', timeout: 5_000, stdio: ['ignore', 'pipe', 'pipe'] },
   ).trim();
   const count = Number(output);
