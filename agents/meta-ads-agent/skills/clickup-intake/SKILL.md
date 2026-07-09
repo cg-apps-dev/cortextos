@@ -77,7 +77,9 @@ Decide what is GENUINELY NEW by **variant-identity** (Code / Variant # / Actor /
 2. Card-ID NOT on the sheet at all → brand-new card → intake every variant normally.
 3. Card-ID already on the sheet → intake ONLY variant-identities not yet present for this card (a genuinely new V#/actor/hook = a re-edit that ADDED a variant). For those, dedup the specific creative by file-id.
 4. Same variant-set already present, but file-ids differ (all-new ids, no new variant names, no newer re-edit subfolder) → **re-EXPORT false-positive → do NOT intake**; reconcile status only. If the card is stuck in `📤 ready to post`, **flag for human** (Leeza/Adam) to disposition (stale status, pending upload, or a re-edit-supersede).
-5. A same-variant creative that comes from a genuinely NEWER finished/re-edit subfolder than the sheet rows = a re-edit **supersede** (new version replaces old), NOT an add → do NOT create a duplicate row; **flag for human / route via the supersede path** + re-scan col-B. Do not auto-replace.
+5. A same-variant creative from a genuinely NEWER finished/re-edit subfolder = a re-edit **supersede** (new version replaces old). **DECOUPLE two actions (mc freshness rule, 2026-07-09):**
+   - (a) **ROW disposition** (replace old row / add / skip) = **HUMAN** → do NOT create a duplicate row and do NOT auto-replace; flag for human.
+   - (b) **col-B verdict must NOT wait for the human.** On supersede-detect the existing col-B is STALE BY DEFINITION (it was computed against the OLD file-id), and a bulk-op / launch-gate could wrongly trust it in the gap. So IMMEDIATELY either (i) re-scan against the NEW file-id (native-vision + OCR + grep_verdict; VIDEO/VO → whisper the NEW audio, a supersede often changes the VO while visuals/captions look similar) and write the fresh col-B, or (ii) if you cannot re-scan in-lane, STAMP col-B `SUPERSEDED <date> - col-B STALE, pending re-scan, do not trust`. NEVER leave a silently-stale, valid-looking verdict.
 
 **WHEN IN DOUBT → FLAG for human. Never auto-intake on zero file-id overlap of an already-present card.** Do not key dedupe on the `🪪 Card ID` custom field (not unique - see Step 3), nor on Ad Name.
 
