@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { getOrgs } from '@/lib/config';
 import { getGoals } from '@/lib/data/goals';
 import { getTaskThroughput, getAgentEffectiveness } from '@/lib/data/analytics';
@@ -68,6 +69,14 @@ export default async function AnalyticsPage({
       </div>
 
       {/* Subscription usage (3 Claude accounts + Codex) - top of page per Adam 2026-06-11 */}
+      <div className="-mb-3 flex justify-end">
+        <Link
+          href={org ? `/accounts?org=${encodeURIComponent(org)}` : '/accounts'}
+          className="text-xs font-medium text-primary hover:underline"
+        >
+          View accounts
+        </Link>
+      </div>
       <SubscriptionUsage data={multiAccountUsage} codex={codexUsage} codexActivity={codexActivity} agentAccounts={agentAccounts} />
 
       {/* Fleet Health */}

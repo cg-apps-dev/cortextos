@@ -339,6 +339,38 @@ describe('getAgentAccounts (live resolver matrix + burn)', () => {
     expect(matrix.accounts['icloud-max-20x'].burn?.last24hUsd).toBeCloseTo(9, 6);
     expect(reports.hasCostEntriesUniqueIndex()).toBe(true);
   });
+
+  it('builds grouped account matrix rows with org filtering and special sections', () => {
+    writeAgentSnapshot();
+    const now = new Date().toISOString();
+    insertCostEntry({ timestamp: now, agent: 'alpha-agent', model: 'claude-sonnet', totalTokens: 1000, costUsd: 1.5, sourceFile: '/tmp/matrix-a.jsonl' });
+    insertCostEntry({ timestamp: now, agent: 'beta-agent', model: 'claude-sonnet', totalTokens: 1000, costUsd: 2.5, sourceFile: '/tmp/matrix-b.jsonl' });
+
+    const matrix = reports.getAgentAccounts({
+      liveRows: [
+        { org: 'clean-green-marketing', agent: 'alpha-agent', account: 'me-com-max', source: 'override' },
+        { org: 'clean-green-marketing', agent: 'beta-agent', account: 'me-com-max', source: 'live-resolver' },
+        { org: 'other-org', agent: 'gamma-agent', account: 'icloud-max-20x', source: 'override' },
+        { org: 'clean-green-marketing', agent: 'the-orchestrator', account: null, source: null },
+        { org: 'clean-green-marketing', agent: 'codex-dev-agent', account: null, source: 'runtime-excluded' },
+      ],
+    })!;
+
+    const groups = reports.getAgentAccountMatrixGroups(matrix, { org: 'clean-green-marketing' });
+    expect(groups.map((group) => group.key)).toEqual(['account:me-com-max', 'unassigned', 'runtime-excluded']);
+    expect(groups[0]).toMatchObject({
+      label: 'me-com-max',
+      pendingRestartCount: 1,
+      burn: { last24hUsd: 4, last7dUsd: 4 },
+    });
+    expect(groups[0].rows.map((row) => row.agent)).toEqual(['alpha', 'beta']);
+    expect(groups[0].rows.every((row) => row.org === 'clean-green-marketing')).toBe(true);
+    expect(groups.find((group) => group.key === 'unassigned')?.rows.map((row) => row.agent)).toEqual(['orchestrator']);
+    expect(groups.find((group) => group.key === 'runtime-excluded')?.rows.map((row) => row.agent)).toEqual(['codex-dev']);
+    expect(groups.some((group) => group.label === 'icloud-max-20x')).toBe(false);
+
+    expect(reports.getFleetAccountBurn(matrix)).toEqual({ last24hUsd: 4, last7dUsd: 4 });
+  });
 });
 
 describe('getCodexUsage (read-only codex card)', () => {
