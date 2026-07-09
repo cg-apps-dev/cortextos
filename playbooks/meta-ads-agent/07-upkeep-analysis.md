@@ -33,4 +33,4 @@ Derived from: [brain: agents/meta-ads-agent/skills/analysis/SKILL.md](https://gi
 
 ## Output
 
-One report per run - coverage table, stuck-row table with suggested actions, hygiene flags - sent to the operator and/or the orchestrator.
+One report per run - coverage table, stuck-row table with suggested actions, hygiene flags - sent to the operator and/or the orchestrator. DONE-WHEN: every "launched"/"stuck" claim in the report carries its cross-check source (AdManage activity log / drafts list / the exact sheet cell read). Read-only lane: this single gate is deliberate; the rest is accepted trust.

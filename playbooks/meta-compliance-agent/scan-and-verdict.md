@@ -28,7 +28,7 @@ A col-B verdict is a claim about the COPY surface only. The on-creative baked te
 
 1. **Intake to the tracker sheet** (each creative lands as a row: copy in the copy columns, asset linked - done by meta-ads).
 2. **Scan two layers x the relevant surfaces**: deterministic grep against copy AND on-image/on-screen text (OCR + vision), plus the semantic/visual read; whisper the VO for video.
-3. **Stamp the verdict in col B** (this agent is the SOLE writer of the "Meta Compliance Agent" column, worst-of across surfaces): `PASS` / `FAIL: <M-code> (<offending text>) -> <fix>` (pipe-separated for multiple) / `HOLD: <M-code> (<condition>) -> <fix>`. Empty = not yet scanned.
+3. **Stamp the verdict in col B** (this agent is the SOLE writer of the "Meta Compliance Agent" column, worst-of across surfaces): `PASS` / `FAIL: <M-code> (<offending text>) -> <fix>` (pipe-separated for multiple) / `HOLD: <M-code> (<condition>) -> <fix>`. Empty = not yet scanned. DONE-WHEN: every dispatched row re-reads with a non-empty verdict computed worst-of across ALL surfaces the ad ships (copy + on-creative text + VO audio for video) against the CURRENT asset file-id.
 4. **Route**: only PASS rows are cleared; FAIL/HOLD/UNCLEAR/empty are all blocked from drafts. FAIL/UNCLEAR route back for a re-edit or an owner decision.
 
 ## Verdict meanings

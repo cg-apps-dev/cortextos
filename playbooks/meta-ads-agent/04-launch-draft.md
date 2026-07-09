@@ -33,5 +33,5 @@ Derived from: [brain: agents/meta-ads-agent/skills/launch/SKILL.md](https://gith
 3. **Resolve targeting**: confirm the ad account, select the designated ad set (objective/destination sanity-checked), pull the account's page + Instagram defaults.
 4. **Resolve each creative's launchable URL** from its Drive link, passed through unmodified.
 5. **Assemble one coherent draft per account/batch** - Advantage+ flexible creative where the objective allows: headline + 4 variations, primary + 4 variations, ad name verbatim, landing page link, CTA.
-6. **Create the draft, capture the ID, verify it persisted.**
-7. **Hand off and STOP**: report each draft (title, ID, account, ads, review link) + skipped rows with reasons. No polling for publish, no advancing - launch tracking ([06](06-launch-tracking.md)) picks up after Adam publishes.
+6. **Create the draft, capture the ID, verify it persisted.** DONE-WHEN: the draft ID re-fetches from AdManage with ad-count = rows drafted, AND the target ad set shows no newly ACTIVE ads vs the pre-run read (draft-only proof by ad-set state, never assumed from the absence of errors).
+7. **Hand off and STOP**: report each draft (title, ID, account, ads, review link) + skipped rows with reasons. No polling for publish, no advancing - launch tracking ([06](06-launch-tracking.md)) picks up after Adam publishes. DONE-WHEN: candidates-in = drafted + skipped-with-reason in the run report - every row accounted for, compliance failures listed with their offending terms.

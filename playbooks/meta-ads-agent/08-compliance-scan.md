@@ -35,11 +35,11 @@ Derived from: the creative-compliance-scan skill - committed source in this repo
 1. **Task + announce + pull LIVE rules** (fresh clone of the brain).
 2. **Resolve columns live by header** (halt on missing).
 3. **Enumerate rows + creative file IDs** in scope.
-4. **Extract text from three independent sources, unioned** per creative (never trust one extractor alone).
+4. **Extract text from three independent sources, unioned** per creative (never trust one extractor alone). DONE-WHEN: three extractor outputs exist per creative or the run halts loudly - a verdict is never computed from a partial union.
 5. **Imagery flags** - the only vision-judgment step (packaging text, coded visuals).
 6. **Deterministic grep -> preliminary verdict** per row - no guessing; then the semantic adjudication layer.
 7. **Cross-check Meta's own verdict** where the ad already ran (free ground truth).
-8. **Write col B** (clobber-guarded, evidence attached), verify by re-read, backfill misses.
+8. **Write col B** (clobber-guarded, evidence attached), verify by re-read, backfill misses. DONE-WHEN: every in-scope row's col B re-reads non-blank (PASS / FAIL / UNCLEAR with evidence) - rows-in-scope = rows stamped, zero empties left.
 9. **Report** the verdict distribution; rejection-class findings follow the standing alert rule (any DISAPPROVED ad -> stamp + ping Adam immediately).
 
 ## Failure modes this design guards

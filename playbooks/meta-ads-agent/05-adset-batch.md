@@ -35,6 +35,6 @@ Meta's delivery optimizes creative-vs-audience inside the ad set: a broad ad set
 1. **Resolve the holder ad set** - operator-directed (either an existing pre-created ad set is named, or one is duplicated per the duplication rule).
 2. **Auto-propose bundles from the sheet**: filter launch-ready rows by the grouping key (avatar, LP, funnel mix, actor-age bracket from intake's vision pass - NO-ACTOR rows are wildcards).
 3. **Run the guards**: ClickUp status, per-account rejection history, then the three compliance gates.
-4. **Stamp the `Ad Set Group` column** for the selected rows.
-5. **Assemble ONE draft per bundle** and create it (same assembly conventions as [04](04-launch-draft.md)).
+4. **Stamp the `Ad Set Group` column** for the selected rows. DONE-WHEN: a re-read shows the stamp on exactly the selected rows and no pre-existing stamp was overwritten (set-once held).
+5. **Assemble ONE draft per bundle** and create it (same assembly conventions as [04](04-launch-draft.md)). DONE-WHEN: the created draft re-fetches with ad-count = bundle size, and the run report records all guard results (ClickUp status, rejection history, the three compliance gates) per bundled ad.
 6. **Hand off + STOP**: report the staged draft with its bundle composition; Adam reviews and publishes.

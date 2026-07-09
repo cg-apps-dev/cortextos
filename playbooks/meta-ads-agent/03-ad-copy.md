@@ -29,7 +29,7 @@ Derived from: [brain: agents/meta-ads-agent/meta-ad-copy-agent/SKILL.md](https:/
 2. **Images**: read the creative (OCR the on-image text - hard halt if OCR fails, never guess), generate the copy set per the brain spec, write by header name.
 3. **Videos**: group rows by Card ID, fetch the ClickUp brief once per card (hard halt if the brief is missing), generate one copy set per card, write it to all N rows of that card.
 4. **Avatar + Funnel Stage fill**: resolve per row (images) or per Card-ID group from the ClickUp brief (videos), with per-row overwrite guards.
-5. **Verify + report**: any row whose copy failed goes into a "rows missing copy" report to the orchestrator - a completed card must never silently imply copy-ready.
+5. **Verify + report**: any row whose copy failed goes into a "rows missing copy" report to the orchestrator - a completed card must never silently imply copy-ready. DONE-WHEN: a post-write re-read shows every detected row's full copy block non-blank (Headline+4, Primary+4, Avatar, Funnel Stage, Ad Description, Promo) OR the row is in the missing-copy report - detected = written + reported, no silent third bucket.
 
 ## Hand-offs
 

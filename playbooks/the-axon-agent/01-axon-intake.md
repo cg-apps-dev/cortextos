@@ -43,7 +43,7 @@ Derived from the executing spec: `skills/axon-intake/SKILL.md` in the agent's lo
 2. **Pull fresh** (never a cached list) from ClickUp Pod-3-Axon (list `901712093295`) via ClickUp REST, filtered to done statuses. Note: recently finished Axon ads land in `✅ complete`, not `📤 ready to post` (that status currently holds ~1 stale card). Confirm the live trigger status before changing the recurring cron.
 3. **Per card**: extract the concept number from the card name; call `resolve_cards.resolve(id)` for designer / writer / folder; call `intake_video_card(...)` with `axon_code=<CardID>`, `concept=<n>`, `dry_run=True`.
 4. **Eyeball the dry-run PLAN** (status, start-row=2 on an empty sheet, row count, dedup result, any unparsed files) BEFORE writing.
-5. **Write**: flip `dry_run=False`. Then render-gate - mark a card complete only if `all_ok and rendered`.
+5. **Write**: flip `dry_run=False`. Then render-gate - mark a card complete only if `all_ok and rendered`. DONE-WHEN: a post-write re-read matches the dry-run plan (row count + zero duplicate file-ids), and a card completes ONLY on `all_ok and rendered` - anything short stays open with its flag in the run status.
 6. **Throttle on batch runs.** Sheets API caps ~60 reads/min/user. A batch run MUST run as a background Python script with `time.sleep(3)` between cards plus a 429-retry wrapper (sleep 30, retry). Foreground shell `sleep` is blocked - use Python's.
 
 ## Column ops (add/delete a sheet column)

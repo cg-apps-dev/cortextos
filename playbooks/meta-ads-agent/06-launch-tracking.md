@@ -27,9 +27,9 @@ Derived from: [brain: agents/meta-ads-agent/ad-launch-tracker-agent/SKILL.md](ht
 1. **Resolve columns from live headers** (halt on mismatch).
 2. **Pull recent launches** from the AdManage activity log; resolve per-ad names via batch status.
 3. **Match ads to sheet rows** by composite key (launch-date + ID token + variant + hook signals - the ad name is the primary join key, matched verbatim).
-4. **Read the current per-account cell values**, then write the combined tracking cell (launch date + status), write-once semantics.
+4. **Read the current per-account cell values**, then write the combined tracking cell (launch date + status), write-once semantics. DONE-WHEN: every written cell re-reads back with the intended stamp, and pulled-launches = stamped + unmatched-reported (no silent drops).
 5. **Run the direct-launch scan gate** on any launched ad that never went through the sheet gate.
-6. **Report**: updates by account, unmatched ads, pending creative/VO scans, and any DO-NOT-UNPAUSE items. Rejections ping Adam immediately per the standing rule.
+6. **Report**: updates by account, unmatched ads, pending creative/VO scans, and any DO-NOT-UNPAUSE items. Rejections ping Adam immediately per the standing rule. DONE-WHEN: every DISAPPROVED found this sweep has BOTH a sheet stamp (re-read) and a sent Adam ping; a clean sweep states "rejections: 0" explicitly.
 
 ## Notes
 
