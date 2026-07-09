@@ -12,7 +12,9 @@ tags: [playbook, fleet, auth, bearer, setup-token, migration]
 
 Move an agent's Claude runtime from one Max account to another with 100% accuracy: flip the token, flip the attribution, prove the agent is alive on the new account, and prove nothing else broke. Executing owner: the-orchestrator (account moves are orchestrator-coordinated fleet ops, never per-agent self-serve).
 
-**Proven live 2026-07-09** (Adam commission): 5 agents migrated sequentially in ~15 min, zero failures, zero rollbacks, zero dedup races - every parameter below comes from that run's notes. Canonical technical spec: the `agent-auth` skill (`.claude/skills/agent-auth/SKILL.md` in each agent dir, org-shared via `list-skills`). The one-command tool spec is claude-dev-agent's `SPEC-switch-agent-account.md` (local staging spec, named not linked); its gates and these steps are reconciled 1:1.
+**Proven live 2026-07-09** (Adam commission): 5 agents migrated sequentially in ~15 min, zero failures, zero rollbacks, zero dedup races - every parameter below comes from that run's notes. Canonical technical spec: the `agent-auth` skill (`.claude/skills/agent-auth/SKILL.md` in each agent dir, org-shared via `list-skills`).
+
+**PRIMARY PATH: the shipped one-command tool** - `cortextos switch-agent-account` (shipped 2026-07-09, merge `4576c07`; usage in "The one command" below). It enforces every gate in this SOP as a hard in-script assert. The per-agent sequence below is the normative spec the tool implements AND the manual fallback - execute it by hand only when the tool or daemon is unavailable, or when auditing a tool run.
 
 ## Scope (v1)
 
@@ -67,9 +69,20 @@ Trigger: any step-4 point failing (or a step-2/3 failure). The vault retains the
 - The vacated account's 7d burn sheds at its weekly reset, not immediately - expected, not a leak.
 - Multiple agents CAN share one account's setup-token (they then share that account's 5h/7d caps) - deliberate concentration is a capacity decision, take it knowingly.
 
-## The one command (tool wrapper)
+## The one command (primary path - SHIPPED 2026-07-09, main merge `4576c07`)
 
-`cortextos switch-agent-account <agent> <target-account>` (+ `--all-from <source> <target>` batch = sequential, verify-each, stop-on-first-failure) wraps steps 1-4 + rollback with every DONE-WHEN above as a hard in-script assert - this SOP is the spec, the script is the enforcement. The tool's success state is **"auth flip verified; functional sweep pending"**, never "migration complete": the success path ends with a loud FUNCTIONAL SWEEP REQUIRED block pointing at step 5 and auto-queues a per-agent sweep task. Spec: claude-dev's `SPEC-switch-agent-account.md`; built by the dev pair; verify semantics identical to step 4.
+```
+cortextos switch-agent-account <agent> <target-account> [--dry-run] [--token-file <path>] [--json] [--instance <id>]
+cortextos switch-agent-account --all-from <source-account> <target-account>   # batch = sequential, verify-each, stop-on-first-failure
+```
+
+- Wraps the preconditions (incl. the auth-wobble gate) + steps 1-4 + rollback, with every DONE-WHEN above as a hard in-script assert - this SOP is the spec, the script is the enforcement. Live-run params are baked in: 60s stop-wait, +40s boot-verify, 2-min heartbeat window and inference-probe timeout; a start response queued behind an in-flight stop is accepted and verified after (the dedup race, handled).
+- `--dry-run` = preflight only: no flip, no restart, no sweep task queued; with `--token-file` it validates the delivery without mutating the vault.
+- `--token-file <path>` = ingest a delivered mint into the vault before switching: format-validated (`sk-ant-oat01...`), 0600 enforced, delivery file shredded only after a successful vault write; a preflight failure leaves the vault untouched.
+- Verify = the step-4 layered scheme verbatim: bare-method fingerprint, process-start-time-after-flip, live attribution, restart-anchored heartbeat, bus inference probe. The process-env corroborator is `hashLiveProcessToken` with empty-read = INDETERMINATE semantics: a restricted `ps` read alone can never fail the switch, but a real runtime-token mismatch rolls back.
+- Success state is **"auth flip verified; functional sweep pending"**, never "migration complete": the success path prints a loud FUNCTIONAL SWEEP REQUIRED block pointing at step 5 and auto-queues a per-agent sweep task (`[FUNCTIONAL SWEEP] <agent> after switch to <account>`, project `functional-sweeps`, assigned to the agent, with a bus ping).
+- Rollback on any gate failure: snapshot-restore of BOTH halves, stop-wait-start, the same four-point verify against the OLD account; a rollback that itself fails verification exits loud with the failing gate named - never a silent half-flip. No token values ever appear in output or errors (fingerprints only).
+- Source: `src/cli/switch-agent-account.ts` + `src/bus/switch-agent-account.ts`; acceptance tests: `tests/unit/bus/switch-agent-account.test.ts` (preflight gates, layered verify incl. indeterminate ps, rollback paths, batch stop-on-first-failure, token-hygiene) and `tests/unit/utils/live-token-hash.test.ts` (bare-fingerprint method pin: newline hashes differently). Spec history: claude-dev's `SPEC-switch-agent-account.md` (local staging spec, named not linked), gates reconciled 1:1 with these steps.
 
 ## Related
 
