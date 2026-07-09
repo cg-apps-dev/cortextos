@@ -7,6 +7,7 @@ import { ensureDir } from '../utils/atomic.js';
 export type MessageHandler = (msg: TelegramMessage) => void;
 export type CallbackHandler = (query: TelegramCallbackQuery) => void;
 export type ReactionHandler = (reaction: TelegramMessageReaction) => void;
+const DEFAULT_LIVENESS_THROTTLE_MS = 60_000;
 
 /**
  * Telegram polling loop. Replaces the Telegram portion of fast-checker.sh.
@@ -18,10 +19,14 @@ export class TelegramPoller {
   private running: boolean = false;
   private stateDir: string;
   private offsetFileName: string;
+  private aliveFileName: string;
   private messageHandlers: MessageHandler[] = [];
   private callbackHandlers: CallbackHandler[] = [];
   private reactionHandlers: ReactionHandler[] = [];
   private pollInterval: number;
+  private livenessThrottleMs: number;
+  private lastAliveMarkerWriteAt: number | undefined;
+  lastPollOkAt: number | undefined;
   /**
    * Why the poll loop last exited. Read by AgentManager's poller-supervisor
    * (#459 supervision-gap fix) to decide whether to restart:
@@ -48,13 +53,23 @@ export class TelegramPoller {
    *   write to `.telegram-offset` and lose track of which bot each
    *   offset belonged to.
    */
-  constructor(api: TelegramAPI, stateDir: string, pollInterval: number = 1000, offsetFileSuffix?: string) {
+  constructor(
+    api: TelegramAPI,
+    stateDir: string,
+    pollInterval: number = 1000,
+    offsetFileSuffix?: string,
+    livenessThrottleMs: number = DEFAULT_LIVENESS_THROTTLE_MS,
+  ) {
     this.api = api;
     this.stateDir = stateDir;
     this.pollInterval = pollInterval;
     this.offsetFileName = offsetFileSuffix
       ? `.telegram-offset-${offsetFileSuffix}`
       : '.telegram-offset';
+    this.aliveFileName = offsetFileSuffix
+      ? `.telegram-poller-alive-${offsetFileSuffix}`
+      : '.telegram-poller-alive';
+    this.livenessThrottleMs = livenessThrottleMs;
     this.loadOffset();
   }
 
@@ -130,6 +145,7 @@ export class TelegramPoller {
    */
   async pollOnce(): Promise<void> {
     const result = await this.api.getUpdates(this.offset, 1);
+    this.markPollOk();
     if (!result?.result?.length) return;
 
     for (const update of result.result as TelegramUpdate[]) {
@@ -211,6 +227,25 @@ export class TelegramPoller {
       writeFileSync(offsetFile, String(this.offset), 'utf-8');
     } catch {
       // Ignore write errors
+    }
+  }
+
+  private markPollOk(): void {
+    const now = Date.now();
+    this.lastPollOkAt = now;
+    if (
+      this.lastAliveMarkerWriteAt !== undefined
+      && now - this.lastAliveMarkerWriteAt < this.livenessThrottleMs
+    ) {
+      return;
+    }
+    ensureDir(this.stateDir);
+    const aliveFile = join(this.stateDir, this.aliveFileName);
+    try {
+      writeFileSync(aliveFile, new Date(now).toISOString(), 'utf-8');
+      this.lastAliveMarkerWriteAt = now;
+    } catch {
+      // Ignore liveness marker write errors; polling health remains in memory.
     }
   }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { TelegramPoller } from '../../../src/telegram/poller';
@@ -220,6 +220,57 @@ describe('TelegramPoller — offset-after-handler', () => {
     if (existsSync(offsetFile)) {
       const persisted = readFileSync(offsetFile, 'utf-8').trim();
       expect(persisted).toBe('0');
+    }
+  });
+
+  it('writes a poller liveness marker on a successful empty getUpdates without advancing offset', async () => {
+    const { api } = makeStubApi([]);
+    const poller = new TelegramPoller(api, stateDir);
+
+    await poller.pollOnce();
+
+    const aliveFile = join(stateDir, '.telegram-poller-alive');
+    expect(existsSync(aliveFile)).toBe(true);
+    expect(poller.lastPollOkAt).toEqual(expect.any(Number));
+    expect(existsSync(join(stateDir, '.telegram-offset'))).toBe(false);
+  });
+
+  it('does not write false liveness when getUpdates throws', async () => {
+    const api = {
+      getUpdates: vi.fn(async () => {
+        throw new Error('network down');
+      }),
+    } as unknown as TelegramAPI;
+    const poller = new TelegramPoller(api, stateDir);
+
+    await expect(poller.pollOnce()).rejects.toThrow('network down');
+
+    expect(poller.lastPollOkAt).toBeUndefined();
+    expect(existsSync(join(stateDir, '.telegram-poller-alive'))).toBe(false);
+  });
+
+  it('throttles liveness marker writes while still updating in-memory lastPollOkAt', async () => {
+    const nowSpy = vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(2_000)
+      .mockReturnValueOnce(62_000);
+    try {
+      const { api } = makeStubApi([]);
+      const poller = new TelegramPoller(api, stateDir);
+
+      await poller.pollOnce();
+      const aliveFile = join(stateDir, '.telegram-poller-alive');
+      const firstMtime = statSync(aliveFile).mtimeMs;
+
+      await poller.pollOnce();
+      expect(statSync(aliveFile).mtimeMs).toBe(firstMtime);
+      expect(poller.lastPollOkAt).toBe(2_000);
+
+      await poller.pollOnce();
+      expect(statSync(aliveFile).mtimeMs).toBeGreaterThanOrEqual(firstMtime);
+      expect(readFileSync(aliveFile, 'utf-8')).toContain('1970-01-01T00:01:02.000Z');
+    } finally {
+      nowSpy.mockRestore();
     }
   });
 });

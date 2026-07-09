@@ -34,6 +34,10 @@ export const restartCommand = new Command('restart')
     // PTY respawn semantics match exactly.
     const startResponse = await ipc.send({ type: 'start-agent', agent, source: 'cortextos restart' });
     if (!startResponse.success) {
+      if (startResponse.code === 'QUEUED_BEHIND_STOP') {
+        console.log(`  ${startResponse.error ?? `Start queued behind in-flight stop; ${agent} will restart shortly`}`);
+        return;
+      }
       console.error(`  Start failed: ${startResponse.error}`);
       console.error(`  Agent is now stopped. Recover with: cortextos start ${agent}`);
       process.exit(1);
