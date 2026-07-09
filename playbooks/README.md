@@ -18,16 +18,16 @@ Maintained by the-sop-keeper. Changes land via a local branch reviewed by the-or
 | Folder | Playbooks | Covers |
 |---|---|---|
 | [meta-ads-agent/](meta-ads-agent/) | 8 | Meta ads upload-to-launch pipeline: ClickUp intake, sheet posting, ad copy, launch drafts, ad-set batching, launch tracking, upkeep, compliance scan |
-| [meta-media-buyer-agent/](meta-media-buyer-agent/) | cross-link | Executing owner of the launch-draft + ad-set-batch playbooks, which live under meta-ads-agent for pipeline browsability |
+| [meta-media-buyer-agent/](meta-media-buyer-agent/) | cross-link | Executing owner of the launch-draft, ad-set-batch and launch-tracking playbooks, which live under meta-ads-agent for pipeline browsability |
 | [the-ad-strategist/](the-ad-strategist/) | 1 | Weekly what-is-working ad-intelligence report (nCAC iterate-ranker, pattern extraction, task list to the-team-lead) |
 | [the-analyst/](the-analyst/) | 5 | Daily digest, throughput snapshot, theta-wave cycle, fleet health monitoring, nightly maintenance |
-| [the-orchestrator/](the-orchestrator/) | 8 | Daily/weekly review cadence, goal lifecycle, approvals + human tasks, fleet optimization, account onboarding + agent migration |
+| [the-orchestrator/](the-orchestrator/) | 9 | Daily/weekly review cadence, goal lifecycle, approvals + human tasks, fleet optimization, account onboarding + agent migration, merge review + backup push |
 | [the-team-lead/](the-team-lead/) | 2 | Sunday per-person retrospective + Monday forward-look for the human marketing team |
-| [security-agent/](security-agent/) | 2 | Daily security safety-net sweep + bi-weekly threat-intel research |
+| [security-agent/](security-agent/) | 4 | Security safety-net sweep, bi-weekly threat-intel research, per-heartbeat usage watch, injection FP-triage/baseline loop |
 | [cro-agent/](cro-agent/) | 1 | Weekly CRO opportunities report |
 | [claude-dev-agent/](claude-dev-agent/) | 2 | Dev-pairing contract (plan/review half) + daily upstream check |
 | [codex-dev-agent/](codex-dev-agent/) | 1 | Implementation-partner flow (the execution half of the dev pair) |
-| [meta-compliance-agent/](meta-compliance-agent/) | 2 | Scan-and-verdict process + M-code rules ownership (agent files live in the brain; process documented here) |
+| [meta-compliance-agent/](meta-compliance-agent/) | 3 | Scan-and-verdict process, M-code rules ownership, LP/advertorial review (agent files live in the brain; process documented here) |
 | [the-axon-agent/](the-axon-agent/) | 1 | Axon / AppLovin intake: pull Pod-3-Axon cards, write 9x16 rows to the Axon Ads Upload Sheet (fork-invert of the Meta engine). Analytics half in development |
 | [the-production-house/](the-production-house/) | stub | Creative-asset production engine (Higgsfield Soul personas, image/video/VO from briefs, asset-only mandate). Coverage stub: settled core noted, process playbooks deferred until asset-landing conventions lock |
 | [fleet/](fleet/) | 3 + rules | Cross-agent processes owned by no single agent: the zero-model launchd monitor layer + the RTK post-bounce engagement sweep (manual hook-verification method). Also holds [fleet/standing-rules.md](fleet/standing-rules.md), the home for cross-agent standing rules |
@@ -45,6 +45,7 @@ The playbook system now covers the full active fleet.
   - `status` / `date` - active vs superseded, and when last verified against the live system.
 - **Every folder's README** is that agent's index: each playbook, what it covers, when it runs, and its autonomy level (autonomous vs human-gated).
 - **"FLAG" notes** inside a playbook mark a reference that cannot cleanly resolve to a tracked file (e.g. a script that exists only in an agent's untracked runtime directory) - named on purpose, not linked to nowhere.
+- **Transient reminder crons are not playbooked**: a self-terminating reminder cron (removes itself on task-done/STOP) is a reminder, not a process - classify process-vs-reminder before flagging a cron as a coverage gap in any drift audit.
 
 ## File-type conventions (fleet-wide)
 

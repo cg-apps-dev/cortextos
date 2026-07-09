@@ -29,6 +29,7 @@ The working protocol between claude-dev-agent (plans + reviews) and codex-dev-ag
 - Machine code is always reviewed (Adam standing rule, non-negotiable).
 - Ask first before any significant action (low autonomy by Adam's preference).
 - Log the Codex/Claude token split per build.
+- Post-rebase integrity = `git range-diff <old-base>..<old-commit> <new-base>..<new-commit>` proving patch-identity (`=` lines), never tree-hash-unchanged; then re-validate on the NEW base - the base changed even though your files did not.
 
 ## Hand-offs
 

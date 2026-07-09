@@ -15,6 +15,7 @@ Adam's call (2026-07-05): the launch playbooks sit physically in the meta-ads-ag
 
 - [Launch Draft (04)](../meta-ads-agent/04-launch-draft.md) - launch-ready sheet rows -> AdManage drafts, `create_draft` only, never publish
 - [Ad-Set Batch (05)](../meta-ads-agent/05-adset-batch.md) - ~10-ad bundles into one broad ad set, draft-only
+- [Launch Tracking (06)](../meta-ads-agent/06-launch-tracking.md) - post-publish sheet sync: 15-min launchd watcher + daily 8am PT sweep (cron `launch-tracker-sweep`), rejection alerts, retro-disapproval re-check
 
 Full pipeline context: [brain: agents/meta-ads-agent/README.md (the pipeline conductor doc)](https://github.com/CLEAN-APPS-DEV/clean-green-marketing-brain/blob/main/agents/meta-ads-agent/README.md), and the local playbook index at [../meta-ads-agent/README.md](../meta-ads-agent/README.md).
 

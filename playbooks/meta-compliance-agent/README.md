@@ -15,5 +15,6 @@ The Meta Ad Compliance Authority: the single source of truth for the M-code rule
 |---|---|---|
 | [scan-and-verdict.md](scan-and-verdict.md) | Scan a Meta-bound asset on all surfaces and stamp PASS / FAIL / UNCLEAR | Autonomous (sole col-B writer); UNCLEAR + rule changes are Adam-gated |
 | [rules-ownership.md](rules-ownership.md) | Own the M-code ruleset; the three-way define/run/sign-off split; rejection-driven rule growth | Rule changes are human-gated PRs |
+| [lp-advertorial-review.md](lp-advertorial-review.md) | Review an LP/advertorial destination: vocab latitude by traffic source, M-4 never relaxes, FDA-vs-FTC lane split | Autonomous FDA verdicts; FTC-comparative + whole-page premises are Adam/legal-gated |
 
 Live cron verified 2026-07-07 via `cortextos bus list-crons meta-compliance-agent` (heartbeat only; scans are dispatched, not polled).

@@ -19,5 +19,6 @@ Chief of staff for the cortextOS Telegram fleet: owns the daily/weekly review ca
 | [weekly-optimization.md](weekly-optimization.md) | Fleet token/bloat audit (skills, crons, docs) to cut cache-read cost | Sundays after weekly-review | Autonomous (own-file trims); fleet trims inform Adam |
 | [account-onboarding.md](account-onboarding.md) | Onboard a new Claude account into the fleet | On demand (new account) | Human-in-the-loop |
 | [agent-migration.md](agent-migration.md) | Migrate/rename/re-home an agent | On demand | Human-in-the-loop |
+| [merge-and-backup.md](merge-and-backup.md) | Review agent branches, merge to local main, push through the guarded backup lane | On demand (every branch handoff) | Autonomous review/merge; guards gate the push |
 
 Live crons verified 2026-07-07 via `cortextos bus list-crons the-orchestrator`. Note: `weekly-optimization` references its own cron in its skill but no such cron is in the live set (only `weekly-review`); flagged, runs Sunday after the weekly review in practice. The theta-wave deep-improvement cycle is analyst-owned - see [../the-analyst/theta-wave.md](../the-analyst/theta-wave.md); the orchestrator participates as the conversation partner.

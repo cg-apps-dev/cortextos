@@ -32,6 +32,10 @@ ClickUp's historical status-timestamp feature wasn't available at design time, s
 - **flagged_ops is operational, not QC**: the Agent Flagged status marks handoff defects (wrong/empty Drive folders, missing assets) - its own bucket, excluded from QC depth, tracked as a handoff-completeness metric tied to named owner fixes.
 - **Per-person attribution is only as good as the assignee field** - stage-level metrics are reliable; per-person claims are labeled provisional until assignment hygiene holds.
 
+## Per-gate WIP flow (qc-flow-diff, standing step since 2026-07-08)
+
+The capture script also writes a per-card **card_list map** (forward-only; live in production snapshots since 2026-07-09), and `scripts/qc-flow-diff.py` (local, untracked - flagged) reads two consecutive snapshots to isolate a single gate (default `static_image_ads`) and output measured gross inflow / clearance / net change with a precision label. Folding this diff into the daily snapshot processing is a standing step, so per-gate flow accrues automatically. When either snapshot predates the card_list map, the script falls back to fleet-wide numbers and says so - it never silently reports wrong-scope.
+
 ## The join key worth knowing
 
 AdManage ad names encode the ClickUp brief ID (`...ID=<taskid>...`), joining ad performance to brief to owner - the seed of the "winning ads feed next week's briefs" loop, and the same key the-ad-strategist's [weekly report](../the-ad-strategist/weekly-report.md) relies on.

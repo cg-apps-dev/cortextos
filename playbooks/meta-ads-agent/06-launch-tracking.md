@@ -1,16 +1,26 @@
 ---
 type: playbook
 agent: meta-ads-agent
+executing_owner: meta-media-buyer-agent
 process: launch-tracking
 pipeline_stage: 4 (track)
 status: active
-date: 2026-07-05
+date: 2026-07-09
 tags: [playbook, meta-ads, admanage, tracking]
 ---
 
 # 06 - Launch Tracking
 
-After Adam publishes a draft, this stage syncs the fact back to the sheet: it pulls recent launches from AdManage's activity log and stamps each ad's launch date into the correct per-account tracking cell. Autonomous; write-once (never overwrites an existing stamp).
+After Adam publishes a draft, this stage syncs the fact back to the sheet: it pulls recent launches from AdManage's activity log and stamps each ad's launch date into the correct per-account tracking cell. Autonomous; write-once (never overwrites an existing stamp). Executed by meta-media-buyer-agent (the launch lane's owner), sitting in this folder per the pipeline-browses-in-one-place rule.
+
+## Cadence: watcher fast-path + daily sweep floor
+
+Two complementary layers (verified live 2026-07-09):
+
+- **15-min launchd watcher** `com.cleangreen.meta-media-buyer.launch-tracker-watch` (mmb `scripts/launch-tracker-watch.sh`, zero-model) - the fast path, chasing recently drafted ads within ~48h of drafting.
+- **Daily 8am PT sweep** (mmb cron `launch-tracker-sweep`) - the floor and the watcher-died safety net: activity-log read (last 24h), status refresh, and a retro-disapproval re-check of the Active pool. A draft published more than ~48h after drafting falls out of the watcher window and is caught here, max ~24h lag. Complementary windows, not a gap.
+
+**Tracker boundary (Adam-decided 2026-06-11)**: the tracker covers AdManage-originated launches only. Meta-UI-duplicated ads/ad sets are NOT stamped or rejection-watched - dup-launch safety for those is covered at draft time by the ad-set batch rejection guard ([05](05-adset-batch.md)). An optional per-account list_ads-vs-sheet diff exists but is OFF (one-line reverse if Adam wants Meta-UI visibility).
 
 Derived from: [brain: agents/meta-ads-agent/ad-launch-tracker-agent/SKILL.md](https://github.com/CLEAN-APPS-DEV/clean-green-marketing-brain/blob/main/agents/meta-ads-agent/ad-launch-tracker-agent/SKILL.md) (module absorbed into meta-ads-agent 2026-06-02).
 

@@ -26,6 +26,7 @@ Produces a weekly conversion-rate-optimization report for Adam: where conversion
    - Shopify analytics: store CVR, add-to-cart -> checkout -> purchase drop-off, top products, PDP/collection/checkout performance.
    - Microsoft Clarity: heatmaps + session recordings to locate friction, rage clicks, dead clicks, drop-off points.
    - The KB for prior CRO findings. Channel reads normalized via `reports/utm-source-normalization.md` (canonical source map); report channel composition freely, quote per-channel CVR under one attribution model only, always flag the unattributed/blank-source bucket.
+   - **Canonical pull-definition (locked 2026-07-08)**: headline volume = TOTAL Shopify orders + net sales, headline conversion = blended CVR (orders/sessions). Never headline pixel/Triple-Attribution order counts - they undercount roughly half (a prior report's numbers were ~2x apart on the same window for exactly this reason). Full definition + guardrails: the agent's `reports/weekly-cro-pull-definition.md` (local, untracked - flagged).
 4. **Diagnose and prioritize** every conversion asset by leverage (impact x reach x effort); lead with the big levers.
 5. **Write the report**: trends vs last week (with direction + magnitude); what's working / what's leaking with evidence; ranked opportunities (lever, evidence, recommendation, expected impact, proposed test); and the single highest-leverage next test.
 6. **Send to Adam** via Telegram (no emoji, skimmable, summary-first if long) and CC the-orchestrator the same content.
