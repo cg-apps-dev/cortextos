@@ -30,6 +30,8 @@ Ratified 2026-07-08 PT (Adam accuracy directive, orchestrator-approved plan WS-A
 
 **Gate placement boundary.** Verify-gates live in PLAYBOOKS (on-demand reads) and scripts, never in boot files - hardening adds zero boot weight. Gates are one terse DONE-WHEN line per step; gate-bloat is its own accuracy risk (agents skim long checklists).
 
+**Format contract (machine-countable, feeds the A4 accuracy metric).** The registry is an input to the analyst's fleet accuracy metric, so its format is a contract (the-sop-keeper holds it): every instance in a row carries its own `YYYY-MM-DD PT` date stamp with escaped-vs-self-caught noted where known (escaped = it left the owning agent, per the A4 boundary definition); registry-touching commit messages state the row-count transition, and a candidate promotion says PROMOTION explicitly. Three counters derive mechanically from git history: new classes/wk (discovery), new instances of an encoded class/wk (gate failure - the one that must trend to zero), promotions/wk (recurrence of deliberately-unencoded candidates). Counting method: the-sop-keeper's A4 registry-side method doc (agent workspace, local - flagged); metric spec: the analyst's A4 spec.
+
 ### Registry (seed entries, 2026-07-08 PT)
 
 | Error class | Origin case | The gate |
