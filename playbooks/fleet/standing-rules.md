@@ -91,3 +91,16 @@ Ratified 2026-07-09 PT (orchestrator graduation criterion met during the A1 veri
 **Why.** Baked cross-agent facts are stale-by-default: the owner changes them without knowing who copied them. Origin: the analyst heartbeat canary (registry row 1, instance 4) silently checked the WRONG account every cycle. The A1 sweep then found two more: the fix itself baked fresh which-account facts (a light-agent account roster + a tier label) that go stale on the next rebalance, and a static team roster in a bootstrap doc already missing the two newest enabled agents. This is the fleet's live-authority doctrine (brain repo, sheets, rules - always read live) applied inward to our own system state.
 
 **Applies to.** Bootstrap docs fleet-wide, at authoring time and whenever an existing doc is touched. Playbooks may state cross-agent facts only under the DoD-maintenance rule above, and prefer the canonical-once + pointers pattern even there.
+
+## Standing rule: two-touch security review (auth/infra-mutating surfaces)
+
+Ratified 2026-07-09 PT (orchestrator; authored by claude-dev-agent from the first live case, carried by the-sop-keeper).
+
+**Rule.** Any change that mutates auth state (tokens, sessions, roles) or infrastructure (spawns processes, restarts agents, writes `.env`) gets security-agent at BOTH stages, and both are hard gates before the orchestrator ship-gate:
+
+1. **SPEC-STAGE**: security-agent reviews the spec/threat model BEFORE codex builds - rules the architecture (authZ model, CSRF mechanism, privilege/execution boundary, IPC/job-file threats, concurrency/locking). The dev spec routes to security FIRST, not to codex.
+2. **DIFF-STAGE**: security-agent INDEPENDENTLY re-verifies the FROZEN diff - reads source directly (not the dev reviewer's pointers), scans added lines, confirms each spec-stage must-fix is actually in code (not just documented).
+
+**Order**: dev spec -> security spec-review -> codex -> dev raw review + security diff re-verify (both hard gates) -> orch ship-gate. The ship-gate SHOULD include a live negative proof for write paths (e.g. unauthed request -> correct reject with NO side effect).
+
+**Why.** Proven live 2026-07-09 on the first auth-mutating dashboard write path (agent-account switch). Spec-stage caught the privilege-boundary ruling (detached-spawn vs daemon-worker, decided on the network-bind + same-uid-fleet facts) plus jobId-path-traversal, pid-reuse, and stale-lock must-fixes; diff-stage verified all four in code; the orch ship-gate proved unauthed-POST -> 401 with no side effect on the live route. A same-day relabel-of-a-half-measure would have missed at least the traversal hole.
