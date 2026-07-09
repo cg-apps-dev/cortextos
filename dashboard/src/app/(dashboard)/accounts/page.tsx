@@ -5,12 +5,10 @@ import {
   getAgentAccounts,
   getCodexActivity,
   getCodexUsage,
-  getFleetAccountBurn,
   getMultiAccountUsage,
 } from '@/lib/data/reports';
 import { SubscriptionUsage } from '@/components/analytics/subscription-usage';
 import { AgentAccountMatrix } from '@/components/analytics/agent-account-matrix';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 function ptTime(iso: string | undefined): string {
   if (!iso) return 'unknown';
@@ -42,15 +40,6 @@ function durationLabel(durationMs: number | undefined): string | null {
   return label ? label.replace(/ old$/, '') : null;
 }
 
-function formatUsd(cost: number): string {
-  return cost.toLocaleString('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
 export default async function AccountsPage({
   searchParams,
 }: {
@@ -71,7 +60,6 @@ export default async function AccountsPage({
   ]);
 
   const matrixGroups = getAgentAccountMatrixGroups(agentAccounts, org ? { org } : {});
-  const fleetBurn = getFleetAccountBurn(agentAccounts);
   const newestUsageAge = ageLabel(multiAccountUsage?.newestFetchedAgeMs);
   const staleAfter = durationLabel(multiAccountUsage?.staleAfterMs);
 
@@ -114,29 +102,6 @@ export default async function AccountsPage({
       />
 
       <AgentAccountMatrix groups={matrixGroups} org={org || undefined} />
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
-            Fleet Burn
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-md border border-border/60 px-4 py-3">
-              <p className="text-xs text-muted-foreground">24h account burn</p>
-              <p className="mt-1 text-2xl font-semibold tabular-nums">{formatUsd(fleetBurn.last24hUsd)}</p>
-            </div>
-            <div className="rounded-md border border-border/60 px-4 py-3">
-              <p className="text-xs text-muted-foreground">7d account burn</p>
-              <p className="mt-1 text-2xl font-semibold tabular-nums">{formatUsd(fleetBurn.last7dUsd)}</p>
-            </div>
-          </div>
-          <p className="mt-3 text-[10px] text-muted-foreground">
-            Usage and burn are fleet-global. The matrix respects the selected org when live resolver rows include org metadata.
-          </p>
-        </CardContent>
-      </Card>
     </div>
   );
 }

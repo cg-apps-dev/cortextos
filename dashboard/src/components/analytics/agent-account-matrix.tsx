@@ -10,16 +10,6 @@ import {
 } from '@/components/ui/table';
 import type { AgentAccountMatrixGroup, AccountConfidenceTier } from '@/lib/data/reports';
 
-function formatUsd(cost: number | undefined): string {
-  if (typeof cost !== 'number') return '-';
-  return cost.toLocaleString('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
 function tierTone(tier: AccountConfidenceTier): string {
   switch (tier) {
     case 'CONFIRMED-PKCE':
@@ -64,68 +54,56 @@ export function AgentAccountMatrix({
       </CardHeader>
       <CardContent>
         {groups.length > 0 ? (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Agent</TableHead>
-                <TableHead>Account</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead>Tier</TableHead>
-                <TableHead>Pending restart</TableHead>
-                <TableHead className="text-right">24h burn</TableHead>
-                <TableHead className="text-right">7d burn</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {groups.map((group) => (
-                <Fragment key={group.key}>
-                  <TableRow className="bg-muted/40 hover:bg-muted/40">
-                    <TableCell colSpan={2} className="font-medium">
-                      {group.label}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {group.source ?? group.section}
-                    </TableCell>
-                    <TableCell>
-                      {group.tier ? <TierBadge tier={group.tier} /> : <span className="text-muted-foreground">-</span>}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {group.pendingRestartCount > 0 ? `${group.pendingRestartCount} pending` : 'none'}
-                    </TableCell>
-                    <TableCell className="text-right font-medium tabular-nums">
-                      {formatUsd(group.burn?.last24hUsd)}
-                    </TableCell>
-                    <TableCell className="text-right font-medium tabular-nums">
-                      {formatUsd(group.burn?.last7dUsd)}
-                    </TableCell>
-                  </TableRow>
-                  {group.rows.map((row) => (
-                    <TableRow key={`${group.key}:${row.agent}`}>
-                      <TableCell className="font-medium">{row.agent}</TableCell>
-                      <TableCell className="text-muted-foreground">{row.account ?? group.label}</TableCell>
-                      <TableCell>{row.source}</TableCell>
-                      <TableCell><TierBadge tier={row.tier} /></TableCell>
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>Account</TableHead>
+                  <TableHead>Source</TableHead>
+                  <TableHead>Tier</TableHead>
+                  <TableHead>Pending restart</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {groups.map((group) => (
+                  <Fragment key={group.key}>
+                    <TableRow className="bg-muted/40 hover:bg-muted/40">
+                      <TableCell colSpan={2} className="font-medium">
+                        {group.label}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {group.source ?? group.section}
+                      </TableCell>
                       <TableCell>
-                        {row.pending_restart ? (
-                          <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                            pending
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground">none</span>
-                        )}
+                        {group.tier ? <TierBadge tier={group.tier} /> : <span className="text-muted-foreground">-</span>}
                       </TableCell>
-                      <TableCell className="text-right text-xs text-muted-foreground">
-                        {row.section === 'account' ? 'account total' : '-'}
-                      </TableCell>
-                      <TableCell className="text-right text-xs text-muted-foreground">
-                        {row.section === 'account' ? 'account total' : '-'}
+                      <TableCell className="text-xs text-muted-foreground">
+                        {group.pendingRestartCount > 0 ? `${group.pendingRestartCount} pending` : 'none'}
                       </TableCell>
                     </TableRow>
-                  ))}
-                </Fragment>
-              ))}
-            </TableBody>
-          </Table>
+                    {group.rows.map((row) => (
+                      <TableRow key={`${group.key}:${row.agent}`}>
+                        <TableCell className="font-medium">{row.agent}</TableCell>
+                        <TableCell className="text-muted-foreground">{row.account ?? group.label}</TableCell>
+                        <TableCell>{row.source}</TableCell>
+                        <TableCell><TierBadge tier={row.tier} /></TableCell>
+                        <TableCell>
+                          {row.pending_restart ? (
+                            <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                              pending
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">none</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </Fragment>
+                ))}
+              </TableBody>
+            </Table>
+          </>
         ) : (
           <div className="py-8 text-center">
             <p className="text-sm font-medium">No account assignments available</p>

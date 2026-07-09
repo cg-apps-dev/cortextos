@@ -239,7 +239,7 @@ function ExtraUsage({ extra }: { extra: NonNullable<AccountUsagePanelEntry['extr
   return (
     <div className="rounded-md border border-border/60 px-3 py-2 text-xs space-y-1">
       <div className="flex items-center justify-between">
-        <span className="font-medium text-foreground">Real burn (extra usage)</span>
+        <span className="font-medium text-foreground">Metered extra usage</span>
         <span
           className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
             extra.is_enabled ? 'bg-sky-500/15 text-sky-600 dark:text-sky-400' : 'bg-muted text-muted-foreground'
@@ -257,7 +257,7 @@ function ExtraUsage({ extra }: { extra: NonNullable<AccountUsagePanelEntry['extr
             </span>
           </div>
           <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-            <span>authoritative metered burn</span>
+            <span>authoritative metered overage</span>
             {extra.cap_usd && (
               <span className="tabular-nums">
                 {capPct}% of {extra.cap_usd.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })}
@@ -300,7 +300,6 @@ function AgentChips({
 
 function AccountAttributionBlock({ attribution }: { attribution?: AccountAttribution }) {
   if (!attribution) return null;
-  const burn = attribution.burn;
   return (
     <div className="rounded-md border border-border/60 px-3 py-2 text-xs space-y-1.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -321,17 +320,11 @@ function AccountAttributionBlock({ attribution }: { attribution?: AccountAttribu
           flip pending restart
         </span>
       )}
-      {burn && (
-        <div className="grid grid-cols-2 gap-2 rounded bg-muted px-2 py-1 text-[10px]">
-          <span className="text-muted-foreground">24h burn <b className="text-foreground">{formatUsd(burn.last24hUsd)}</b></span>
-          <span className="text-muted-foreground">7d burn <b className="text-foreground">{formatUsd(burn.last7dUsd)}</b></span>
-        </div>
-      )}
       {attribution.promotion_candidate && attribution.tier === 'ASSERTED' && (
         <div className="rounded bg-muted px-2 py-1 text-[10px] text-muted-foreground">
           <span className="font-medium text-foreground">promotion candidate (pending security)</span>
           <span className="block">
-            7d +{attribution.promotion_candidate.seven_day_delta}; 5h {attribution.promotion_candidate.five_hour_pct ?? '-'}; spend {attribution.promotion_candidate.spend_pct_or_extra_usage ?? '-'}
+            7d +{attribution.promotion_candidate.seven_day_delta}; 5h {attribution.promotion_candidate.five_hour_pct ?? '-'}; extra/value {attribution.promotion_candidate.spend_pct_or_extra_usage ?? '-'}
           </span>
         </div>
       )}
@@ -390,7 +383,7 @@ function AccountCard({ entry, attribution }: { entry: AccountUsagePanelEntry; at
           <UsageRow
             label={isMetered ? '7-Day Weekly (subscription window)' : '7-Day Weekly'}
             usage={sevenDay}
-            note={isMetered ? 'subscription window only - under-reads overage burn' : undefined}
+            note={isMetered ? 'subscription window only - under-reads metered overage' : undefined}
           />
           {scopedLimits.map((limit) => (
             <ScopedLimitRow key={limit.model} limit={limit} />
