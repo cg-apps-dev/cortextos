@@ -30,7 +30,7 @@ Maintained by the-sop-keeper. Changes land via a local branch reviewed by the-or
 | [meta-compliance-agent/](meta-compliance-agent/) | 2 | Scan-and-verdict process + M-code rules ownership (agent files live in the brain; process documented here) |
 | [the-axon-agent/](the-axon-agent/) | 1 | Axon / AppLovin intake: pull Pod-3-Axon cards, write 9x16 rows to the Axon Ads Upload Sheet (fork-invert of the Meta engine). Analytics half in development |
 | [the-production-house/](the-production-house/) | stub | Creative-asset production engine (Higgsfield Soul personas, image/video/VO from briefs, asset-only mandate). Coverage stub: settled core noted, process playbooks deferred until asset-landing conventions lock |
-| [fleet/](fleet/) | 2 + rules | Cross-agent processes owned by no single agent: the zero-model launchd monitor layer + the RTK post-bounce engagement sweep (manual hook-verification method). Also holds [fleet/standing-rules.md](fleet/standing-rules.md), the home for cross-agent standing rules |
+| [fleet/](fleet/) | 3 + rules | Cross-agent processes owned by no single agent: the zero-model launchd monitor layer + the RTK post-bounce engagement sweep (manual hook-verification method). Also holds [fleet/standing-rules.md](fleet/standing-rules.md), the home for cross-agent standing rules |
 
 The playbook system now covers the full active fleet.
 
