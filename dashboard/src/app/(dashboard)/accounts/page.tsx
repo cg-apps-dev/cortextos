@@ -7,6 +7,7 @@ import {
   getCodexUsage,
   getMultiAccountUsage,
 } from '@/lib/data/reports';
+import { readVaultAccounts, type VaultAccountOption } from '@/lib/account-switch';
 import { SubscriptionUsage } from '@/components/analytics/subscription-usage';
 import { AgentAccountMatrix } from '@/components/analytics/agent-account-matrix';
 
@@ -40,6 +41,23 @@ function durationLabel(durationMs: number | undefined): string | null {
   return label ? label.replace(/ old$/, '') : null;
 }
 
+function enrichVaultAccounts(
+  vaultAccounts: VaultAccountOption[] | null,
+  usage: ReturnType<typeof getMultiAccountUsage>,
+): VaultAccountOption[] | null {
+  if (!vaultAccounts) return null;
+  const usageByAccount = new Map((usage?.accounts ?? []).map((account) => [account.account, account]));
+  return vaultAccounts.map((account) => {
+    const usageEntry = usageByAccount.get(account.account);
+    return {
+      ...account,
+      ...(typeof usageEntry?.extra_usage?.is_enabled === 'boolean'
+        ? { metered: usageEntry.extra_usage.is_enabled }
+        : {}),
+    };
+  });
+}
+
 export default async function AccountsPage({
   searchParams,
 }: {
@@ -60,6 +78,7 @@ export default async function AccountsPage({
   ]);
 
   const matrixGroups = getAgentAccountMatrixGroups(agentAccounts, org ? { org } : {});
+  const vaultAccounts = enrichVaultAccounts(readVaultAccounts(), multiAccountUsage);
   const newestUsageAge = ageLabel(multiAccountUsage?.newestFetchedAgeMs);
   const staleAfter = durationLabel(multiAccountUsage?.staleAfterMs);
 
@@ -101,7 +120,7 @@ export default async function AccountsPage({
         suppressPanelStatus
       />
 
-      <AgentAccountMatrix groups={matrixGroups} org={org || undefined} />
+      <AgentAccountMatrix groups={matrixGroups} org={org || undefined} vaultAccounts={vaultAccounts} />
     </div>
   );
 }

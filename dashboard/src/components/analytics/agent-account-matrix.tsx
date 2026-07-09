@@ -9,6 +9,8 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import type { AgentAccountMatrixGroup, AccountConfidenceTier } from '@/lib/data/reports';
+import type { VaultAccountOption } from '@/lib/account-switch';
+import { AccountSwitchControl } from './account-switch-control';
 
 function tierTone(tier: AccountConfidenceTier): string {
   switch (tier) {
@@ -34,9 +36,11 @@ function TierBadge({ tier }: { tier: AccountConfidenceTier }) {
 export function AgentAccountMatrix({
   groups,
   org,
+  vaultAccounts,
 }: {
   groups: AgentAccountMatrixGroup[];
   org?: string;
+  vaultAccounts?: VaultAccountOption[] | null;
 }) {
   const rowCount = groups.reduce((sum, group) => sum + group.rows.length, 0);
 
@@ -63,6 +67,7 @@ export function AgentAccountMatrix({
                   <TableHead>Source</TableHead>
                   <TableHead>Tier</TableHead>
                   <TableHead>Pending restart</TableHead>
+                  <TableHead>Switch</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -81,6 +86,7 @@ export function AgentAccountMatrix({
                       <TableCell className="text-xs text-muted-foreground">
                         {group.pendingRestartCount > 0 ? `${group.pendingRestartCount} pending` : 'none'}
                       </TableCell>
+                      <TableCell />
                     </TableRow>
                     {group.rows.map((row) => (
                       <TableRow key={`${group.key}:${row.agent}`}>
@@ -96,6 +102,13 @@ export function AgentAccountMatrix({
                           ) : (
                             <span className="text-muted-foreground">none</span>
                           )}
+                        </TableCell>
+                        <TableCell>
+                          <AccountSwitchControl
+                            agent={row.agent}
+                            currentAccount={row.account}
+                            targets={vaultAccounts ?? null}
+                          />
                         </TableCell>
                       </TableRow>
                     ))}
