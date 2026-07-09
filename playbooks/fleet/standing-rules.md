@@ -19,3 +19,22 @@ Each rule is titled, dated, and states the rule + why it exists. New rules land 
 **Why.** The playbook tree is only trustworthy if it is continuously current. A workflow that changes without its playbook updating silently turns the SOP into a stale claim - the exact failure mode the playbook system exists to prevent. Treating the doc update as optional or deferrable is how documentation rots; treating it as part of "done" is how it stays load-bearing. The-sop-keeper maintains the tree, but the trigger is any agent's change: flag the-sop-keeper (via the-orchestrator) on any workflow/cron/skill change so the playbook is updated via a reviewed branch, never a silent live edit.
 
 **Applies to.** Every agent, every workflow/cron/skill change. See the fleet playbook index at [../README.md](../README.md).
+
+## Standing rule: every caught error becomes a codified gate (error-class registry)
+
+Ratified 2026-07-08 PT (Adam accuracy directive, orchestrator-approved plan WS-A3).
+
+**Rule.** Every fleet error caught by Adam or any agent gets encoded within ONE DAY of being caught: always as a playbook gate (a terse DONE-WHEN post-condition in the owning playbook), and additionally as a scripted machine check where one is feasible. The error class is registered below so the same class is never re-solved from scratch. Route: the catching/owning agent root-causes its own lane; the-sop-keeper codifies via reviewed branch; the-orchestrator merges.
+
+**Why.** The col-A previews case proved that a documented rule an agent is trusted to remember is necessary but not sufficient - accuracy comes from enforcement. Machine-checkable gates fail loudly when a step's output is wrong; prose does not. Registering the class (not just the instance) is what turns one mistake into fleet-wide immunity.
+
+**Gate placement boundary.** Verify-gates live in PLAYBOOKS (on-demand reads) and scripts, never in boot files - hardening adds zero boot weight. Gates are one terse DONE-WHEN line per step; gate-bloat is its own accuracy risk (agents skim long checklists).
+
+### Registry (seed entries, 2026-07-08 PT)
+
+| Error class | Origin case | The gate |
+|---|---|---|
+| Stale verdict trusted on a rebuilt/re-superseded asset | col-B IMG_376 (stale FAIL wrongly gated 2 clean variants) | Re-scan-on-touch, file-id-anchored freshness check - authoritative rule in [../meta-compliance-agent/scan-and-verdict.md](../meta-compliance-agent/scan-and-verdict.md), pointers in consuming lanes |
+| Impossibility asserted without verification (premise drift) | Axon lane: "no API draft path" meant unwired-for-us, not impossible - the Campaign Management API existed all along | Before recording "X is impossible / has no API / cannot be done", verify against the primary source; record "unwired for us" when that is what is actually known |
+| Template mirrored from a live artifact propagates its defects | col-A previews: manual intake mirrored an already-incomplete row as its column template | Derive column-sets/templates from the SPEC list (skill/playbook), never by copying a live row/file; a live artifact is not a spec |
+| Migration silently drops a side path | col-A previews: bearer migration took the engine (which built previews correctly) out of the loop; the manual fallback lacked its gates. Recurring class: bearer kills the connector bridge; python sync leaving stale bytecode | ANY runtime/auth/tooling migration gets a POST-MIGRATION FUNCTIONAL SWEEP of every lane it touches - not just boot-clean. Any manual fallback carries the SAME machine-checkable gates as the path it replaces. Scripted-check candidate |
