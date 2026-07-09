@@ -493,6 +493,7 @@ export interface PromotionCandidate {
 
 export interface AgentAccountAttribution {
   agent: string;
+  org?: string;
   tier: AccountConfidenceTier;
   source: string;
   cluster_id: string | null;
@@ -654,6 +655,7 @@ function agentSource(entry: { source?: unknown; pkce_match?: unknown; tier?: unk
 }
 
 interface RawSnapshotAgentAccount {
+  org?: unknown;
   agent?: unknown;
   account?: unknown;
   source?: unknown;
@@ -762,6 +764,7 @@ export function getAgentAccounts(options: {
       })
       : snapshotAgents.map((snapshot) => ({
         row: {
+          ...(typeof snapshot.org === 'string' ? { org: snapshot.org } : {}),
           agent: typeof snapshot.agent === 'string' ? snapshot.agent : '',
           account: typeof snapshot.account === 'string' ? snapshot.account : null,
           source: typeof snapshot.source === 'string' ? snapshot.source : null,
@@ -787,7 +790,19 @@ export function getAgentAccounts(options: {
         : snapshot
           ? agentSource(snapshot)
           : 'snapshot';
-      const attribution: AgentAccountAttribution = { agent: name, tier, source, cluster_id, pending_restart };
+      const org = typeof row.org === 'string'
+        ? row.org
+        : snapshot && typeof snapshot.org === 'string'
+          ? snapshot.org
+          : undefined;
+      const attribution: AgentAccountAttribution = {
+        agent: name,
+        ...(org ? { org } : {}),
+        tier,
+        source,
+        cluster_id,
+        pending_restart,
+      };
       agents[name] = attribution;
       const accountLabel = typeof row.account === 'string' && row.account.length > 0 ? row.account : null;
       if (accountLabel) {
@@ -860,6 +875,107 @@ function addAccountBurn(accounts: Record<string, AccountAttribution>): void {
       last7dUsd: sum.last7dUsd + (burn7d.get(agent.agent) ?? 0),
     }), { last24hUsd: 0, last7dUsd: 0 });
   }
+}
+
+export interface AgentAccountMatrixRow {
+  agent: string;
+  account: string | null;
+  org?: string;
+  source: string;
+  tier: AccountConfidenceTier;
+  pending_restart: boolean;
+  section: 'account' | 'unassigned' | 'runtime-excluded';
+}
+
+export interface AgentAccountMatrixGroup {
+  key: string;
+  label: string;
+  account: string | null;
+  section: AgentAccountMatrixRow['section'];
+  tier?: AccountConfidenceTier;
+  source?: string;
+  pendingRestartCount: number;
+  burn?: AccountBurn;
+  rows: AgentAccountMatrixRow[];
+}
+
+export function getFleetAccountBurn(agentAccounts: AgentAccounts | null | undefined): AccountBurn {
+  if (!agentAccounts) return { last24hUsd: 0, last7dUsd: 0 };
+  return Object.values(agentAccounts.accounts).reduce<AccountBurn>((sum, account) => ({
+    last24hUsd: sum.last24hUsd + (account.burn?.last24hUsd ?? 0),
+    last7dUsd: sum.last7dUsd + (account.burn?.last7dUsd ?? 0),
+  }), { last24hUsd: 0, last7dUsd: 0 });
+}
+
+export function getAgentAccountMatrixGroups(
+  agentAccounts: AgentAccounts | null | undefined,
+  options: { org?: string } = {},
+): AgentAccountMatrixGroup[] {
+  if (!agentAccounts) return [];
+
+  const includeAgent = (agent: AgentAccountAttribution): boolean =>
+    !options.org || agent.org === options.org;
+
+  const toRow = (
+    agent: AgentAccountAttribution,
+    account: string | null,
+    section: AgentAccountMatrixRow['section'],
+  ): AgentAccountMatrixRow => ({
+    agent: agent.agent,
+    account,
+    ...(agent.org ? { org: agent.org } : {}),
+    source: agent.source,
+    tier: agent.tier,
+    pending_restart: agent.pending_restart,
+    section,
+  });
+
+  const groups: AgentAccountMatrixGroup[] = Object.entries(agentAccounts.accounts)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([account, attribution]) => {
+      const rows = attribution.agents
+        .filter(includeAgent)
+        .map((agent) => toRow(agent, account, 'account'))
+        .sort((a, b) => a.agent.localeCompare(b.agent));
+      return {
+        key: `account:${account}`,
+        label: account,
+        account,
+        section: 'account' as const,
+        tier: attribution.tier,
+        source: attribution.source,
+        pendingRestartCount: rows.filter((row) => row.pending_restart).length,
+        ...(attribution.burn ? { burn: attribution.burn } : {}),
+        rows,
+      };
+    })
+    .filter((group) => group.rows.length > 0);
+
+  const collectSpecialRows = (
+    names: string[],
+    section: 'unassigned' | 'runtime-excluded',
+  ): AgentAccountMatrixRow[] => names
+    .map((name) => agentAccounts.agents[name] ?? {
+      agent: name,
+      tier: 'UNVERIFIED' as AccountConfidenceTier,
+      source: section,
+      cluster_id: null,
+      pending_restart: false,
+    })
+    .filter(includeAgent)
+    .map((agent) => toRow(agent, null, section))
+    .sort((a, b) => a.agent.localeCompare(b.agent));
+
+  const specialGroups: AgentAccountMatrixGroup[] = [
+    { key: 'unassigned', label: 'Unassigned', section: 'unassigned' as const, rows: collectSpecialRows(agentAccounts.unassigned, 'unassigned') },
+    { key: 'runtime-excluded', label: 'Runtime excluded', section: 'runtime-excluded' as const, rows: collectSpecialRows(agentAccounts.codexAgents, 'runtime-excluded') },
+  ].map((group) => ({
+    ...group,
+    account: null,
+    pendingRestartCount: group.rows.filter((row) => row.pending_restart).length,
+  })).filter((group) => group.rows.length > 0);
+
+  return [...groups, ...specialGroups];
 }
 
 export function hasCostEntriesUniqueIndex(): boolean {
