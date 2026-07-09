@@ -28,6 +28,7 @@ Derived from: the creative-compliance-scan skill - committed source in this repo
 4. **For video, the AUDIO is the source of truth** - whisper the VO; de-coded captions can hide a spoken violation.
 5. **Clobber-guard on col B** with evidence noted; verify writes by re-reading a per-row marker.
 6. **Scan scope is per-run rows** (the rows just written), not whole-tab re-scans, unless a sweep is explicitly requested.
+7. **col-B verdict freshness on rebuilt/re-superseded cards: re-scan-on-touch is mandatory.** Any op that reads, copies, launch-gates, or supersedes a col-B verdict re-verdicts against the CURRENT asset file-id - never trust the existing cell. The authoritative rule text (verbatim, mc-owned) lives in [meta-compliance-agent/scan-and-verdict.md](../meta-compliance-agent/scan-and-verdict.md), col-B verdict freshness section - do not restate it here.
 
 ## The sequence (deterministic pipeline)
 

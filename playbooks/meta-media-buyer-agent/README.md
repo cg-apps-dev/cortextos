@@ -7,7 +7,7 @@ date: 2026-07-05
 
 # The Meta Media Buyer Agent - Playbooks (cross-link)
 
-Runs the sheet-to-AdManage launch lane of the Meta ads pipeline in the live cortextOS fleet: manual-trigger only, draft-only, human-gated - Adam publishes every draft inside AdManage. Persistent Telegram agent at `orgs/clean-green-marketing/agents/meta-media-buyer-agent/` in the cortextos repo (gitignored runtime state); this folder is its brain-repo home.
+Runs the sheet-to-AdManage launch lane of the Meta ads pipeline in the live cortextOS fleet: manual-trigger only, draft-only, human-gated - Adam publishes every draft inside AdManage. Persistent Telegram agent at `orgs/clean-green-marketing/agents/meta-media-buyer-agent/` in the cortextos repo (gitignored runtime state); this folder is its playbook home in the cortextos `playbooks/` tree.
 
 ## Its playbooks live under meta-ads-agent
 
@@ -23,3 +23,4 @@ Full pipeline context: [brain: agents/meta-ads-agent/README.md (the pipeline con
 - Manual-trigger only - no cron drives launches.
 - Draft-only hard gates on every path; no agent ever edits live in-Meta ads (fleet rule).
 - The sheet column-ownership protocol vs. meta-ads-agent (who writes which columns, no concurrent writes) is documented in the agent's working files, pending promotion to a shared ratified doc (fleet-playbook migration plan step 4).
+- col-B verdicts are never trusted from the cell on rebuilt/re-superseded cards - re-scan-on-touch before any launch-gate read. The authoritative rule (verbatim, mc-owned) lives in [../meta-compliance-agent/scan-and-verdict.md](../meta-compliance-agent/scan-and-verdict.md), col-B verdict freshness section.

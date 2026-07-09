@@ -37,6 +37,22 @@ A col-B verdict is a claim about the COPY surface only. The on-creative baked te
 - **FAIL**: a hard-banned term or rule violation - must be re-edited at the source (a copy tweak often isn't enough; if the problem is on-screen packaging or a script premise, the creative itself changes).
 - **UNCLEAR**: genuinely ambiguous or an Adam decision - held for a human ruling, never auto-passed.
 
+## col-B verdict freshness (rebuilt / re-superseded cards)
+
+Authoritative text from meta-compliance-agent (col-B rule owner), delivered verbatim 2026-07-09 - do not paraphrase when carrying this rule into other docs; link here instead.
+
+col-B creative verdicts are stale-able in BOTH directions on rebuilt/re-superseded cards: a stale-PASS hides a live violation; a stale-FAIL wrongly blocks a clean rebuild (live-proven IMG_376: a 2026-06-26 ClickUp rebuild removed the on-creative flower/72h violations, but col-B still carried the old FAIL and wrongly gated 2 launchable variants).
+
+RE-SCAN-ON-TOUCH IS MANDATORY. On any op that reads, copies, launch-gates, or supersedes a col-B verdict, re-verdict against the CURRENT sheet asset file-id(s); never trust the existing cell.
+
+FRESHNESS CHECK (operational, file-id anchored): an existing verdict is trustworthy ONLY if it was computed against the CURRENT asset file-id. A rebuilt/re-superseded card carries a NEW file-id, so any verdict predating the rebuild is stale BY DEFINITION regardless of PASS or FAIL. If the current asset file-id differs from the verdicts basis, the cell is stale, re-scan before acting.
+
+RE-VERDICT COVERAGE: native-vision + OCR + grep_verdict on the CURRENT asset; and for any VIDEO/VO asset the AUDIO is compliance truth, so whisper the CURRENT audio, never trust de-coded captions or a prior verdict (a re-supersede can change the VO while captions look unchanged).
+
+NO bulk col-B operation may trust an existing verdict without this freshness check.
+
+The col-B date label (e.g. "creative v2 2026-06-09 PT") is a SCANNER-VERSION string, NOT the scan date, never read it as recency/freshness.
+
 ## Comms
 
 One digest per scan run, never per-finding spam; clean/idle scans stay silent; loop the orchestrator on rule changes and fleet-wide patterns; confirm + loop before acting on any real decision (rule change / gate override).
