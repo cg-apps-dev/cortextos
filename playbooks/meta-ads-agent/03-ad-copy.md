@@ -10,7 +10,7 @@ tags: [playbook, meta-ads, copy, compliance]
 
 # 03 - Ad Copy
 
-Every intaked row gets its full copy block written to the sheet: Headline + 4 variations, Primary + 4 variations, Customer Avatar, Funnel Stage, Ad Description, Promo. Sheet-only - this stage never launches anything. Runs autonomously right after intake ([01](01-clickup-intake.md)/[02](02-sheet-posting.md)).
+Every intaked row gets its full copy block written to the sheet: Headline + 4 variations, Primary + 4 variations, Customer Avatar, Funnel Stage, Ad Description, Promo. Sheet-only - this stage never launches anything. Runs autonomously right after intake ([01](01-clickup-intake.md)/[02](02-sheet-posting.md)). Cadence backstop (orch ruling, 2026-07-09): the daily 6am PT sweep checks missing copy as a DELTA (new/changed rows); the Sunday 7am PT `meta-weekly-copy-scan` cron re-proves ABSENCE across all four tabs in full, never relying on the delta chain - any delta drift is capped at one week.
 
 Derived from: [brain: agents/meta-ads-agent/meta-ad-copy-agent/SKILL.md](https://github.com/CLEAN-APPS-DEV/clean-green-marketing-brain/blob/main/agents/meta-ads-agent/meta-ad-copy-agent/SKILL.md) (the module spec, absorbed into meta-ads-agent 2026-06-02 per Adam) + the intake runner's §9. Copy is NEVER free-handed (Adam hard rule 2026-06-16): it is written to the brain copy spec, pulled live each run.
 
