@@ -9,7 +9,7 @@ tags: [playbook, security, injection, false-positive, baseline]
 
 # Injection-Scan FP Triage + Baseline Maintenance
 
-The standing loop that keeps the injection scanner's signal clean. The 12h zero-model `fleet-scan` (see [fleet/zero-model-monitors.md](../fleet/zero-model-monitors.md)) surfaces new findings; this agent triages each one and maintains the baseline so real signal never drowns in known-benign noise. Runs whenever a scan surfaces new keys - in practice multiple times daily.
+The standing loop that keeps the injection scanner's signal clean. New findings surface from the zero-model `fleet-scan` (see [fleet/zero-model-monitors.md](../fleet/zero-model-monitors.md)) - which runs on the 12h launchd schedule AND on every agent heartbeat (6h) plus restart-resumes, so the real cadence is denser than the launchd interval implies. This agent triages each finding and maintains the baseline so real signal never drowns in known-benign noise. Runs whenever a scan surfaces new keys - in practice multiple times daily.
 
 ## The loop
 

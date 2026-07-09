@@ -19,7 +19,8 @@ A human-judgment layer over the zero-model usage monitors, run as a standing sec
 
 ## Escalation
 
-- Rising toward ~55% 7d on a meter-OFF runtime account, or a sustained-high 5h: escalate to the-orchestrator for rebalance (the orchestrator owns account moves; this agent detects and triages, it does not move agents).
+- Rising toward ~55% 7d on a meter-OFF runtime account, or a sustained-high 5h: escalate to the-orchestrator for rebalance (the orchestrator owns account moves; this agent detects and triages, it does not move agents). ~55% is escalate-for-awareness, NOT this agent's move-trigger.
+- **Post-escalation cadence**: once the orchestrator owns the move-trigger (it sets the actual move point - a clean break, ~65%, ~80%, per that decision), this agent revises to ANOMALY-ONLY - ping immediately only on a 5h spike or the 7d climb accelerating past ~2%/hr, otherwise silent (the handoff cadence settled during the me-com move).
 - Anomalies on Adam's personal metered seat: note, don't alarm - the meter being ON is deliberate (the valve); RISING is the signal, not enabled.
 
 ## Boundary (ownership, known-fuzzy)
