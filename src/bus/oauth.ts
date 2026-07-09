@@ -591,7 +591,7 @@ function pct(v: number | undefined): string {
  * Writes CLAUDE_CODE_OAUTH_TOKEN=<token> — bare string, not JSON.
  * Scoped to a specific agent if opts.agent is set, otherwise all agents in org.
  */
-function writeTokenToAgents(
+export function writeTokenToAgents(
   frameworkRoot: string,
   org: string,
   token: string,

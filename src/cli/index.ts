@@ -26,6 +26,7 @@ import { spawnWorkerCommand, terminateWorkerCommand, listWorkersCommand, injectW
 import { importAgentCommand } from './import-agent.js';
 import { updateCommand } from './update.js';
 import { devWorktreeCommand, worktreeGuardCommand } from './dev-worktree.js';
+import { switchAgentAccountCommand } from './switch-agent-account.js';
 
 const program = new Command();
 
@@ -61,6 +62,7 @@ program.addCommand(listWorkersCommand);
 program.addCommand(injectWorkerCommand);
 program.addCommand(importAgentCommand);
 program.addCommand(updateCommand);
+program.addCommand(switchAgentAccountCommand);
 program.addCommand(devWorktreeCommand);
 program.addCommand(worktreeGuardCommand);
 

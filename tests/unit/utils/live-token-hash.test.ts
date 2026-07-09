@@ -61,4 +61,12 @@ describe('live-token-hash', () => {
       encoding: 'utf-8',
     }));
   });
+
+  it('is repeat-stable for the same long-running process env read', () => {
+    execFileSyncMock.mockReturnValue(`PID=4321 CTX_AGENT_NAME=worker-a CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}`);
+
+    expect(hashLiveProcessToken(4321)).toBe(expectedHash(TOKEN));
+    expect(hashLiveProcessToken(4321)).toBe(expectedHash(TOKEN));
+    expect(execFileSyncMock).toHaveBeenCalledTimes(2);
+  });
 });

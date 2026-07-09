@@ -1,0 +1,577 @@
+import { existsSync, readFileSync, chmodSync, statSync, unlinkSync, readdirSync, writeFileSync } from 'fs';
+import { dirname, join, resolve as pathResolve } from 'path';
+import { execFileSync } from 'child_process';
+import { randomBytes } from 'crypto';
+import type { AgentStatus, BusPaths, IPCResponse } from '../types/index.js';
+import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
+import { parseEnvFile } from '../utils/env.js';
+import { validateAgentName } from '../utils/validate.js';
+import { shortTokenHash, hashLiveProcessToken, hasProcessEnvVar } from '../utils/live-token-hash.js';
+import { resolveAgentAccount } from '../daemon/cron-capacity-gate.js';
+import { hasRecentAuthWobble } from '../daemon/rtk-continue-decay-autoheal.js';
+import { writeTokenToAgents } from './oauth.js';
+import { createTask } from './task.js';
+import { sendMessage, checkInbox, ackInbox } from './message.js';
+
+const SETUP_TOKEN_RE = /^sk-ant-oat01-[A-Za-z0-9_-]{40,}$/;
+const DEFAULT_STOP_WAIT_MS = 60_000;
+const DEFAULT_BOOT_VERIFY_WAIT_MS = 40_000;
+const DEFAULT_HEARTBEAT_WINDOW_MS = 2 * 60_000;
+const DEFAULT_PROBE_TIMEOUT_MS = 2 * 60_000;
+
+export interface SwitchAgentAccountOptions {
+  ctxRoot: string;
+  frameworkRoot: string;
+  org: string;
+  instanceId: string;
+  operatorAgent: string;
+  agent: string;
+  targetAccount: string;
+  tokenFile?: string;
+  dryRun?: boolean;
+  nowMs?: () => number;
+  sleepMs?: (ms: number) => Promise<void>;
+  ops: SwitchAgentAccountOps;
+  paths?: BusPaths;
+}
+
+export interface SwitchAllFromOptions extends Omit<SwitchAgentAccountOptions, 'agent' | 'targetAccount'> {
+  sourceAccount: string;
+  targetAccount: string;
+}
+
+interface Snapshot {
+  envContent: string;
+  envToken: string;
+  envMode: number;
+  configContent: string;
+  usageAccount?: string;
+  pid?: number;
+  accountLabel: string | null;
+}
+
+interface VaultToken {
+  token: string;
+  path: string;
+  fingerprint: string;
+}
+
+interface VerifyInput {
+  agent: string;
+  targetAccount: string;
+  tokenFingerprint: string;
+  restartAtMs: number;
+  envFlipMtimeMs: number;
+  operatorAgent: string;
+  envPath: string;
+}
+
+interface VerifyResult {
+  ok: boolean;
+  gate?: string;
+  reason?: string;
+  pid?: number;
+  primary?: 'matched' | 'indeterminate';
+}
+
+export interface SwitchAgentAccountResult {
+  agent: string;
+  targetAccount: string;
+  fingerprint: string;
+  status: 'success' | 'dry-run';
+  warnings: string[];
+  runtimeProof?: 'matched' | 'indeterminate';
+  functionalSweepTaskId?: string;
+  message: string;
+}
+
+export interface SwitchBatchResult {
+  sourceAccount: string;
+  targetAccount: string;
+  results: Array<{ agent: string; status: 'success' | 'failed'; error?: string; taskId?: string }>;
+}
+
+export interface SwitchAgentAccountOps {
+  getStatuses(): Promise<AgentStatus[]>;
+  stopAgent(agent: string): Promise<IPCResponse>;
+  startAgent(agent: string): Promise<IPCResponse>;
+  hashLiveProcessToken(pid: number): string | null;
+  hasProcessEnvVar(pid: number, name: string): boolean;
+  processStartTimeMs(pid: number): number | null;
+  resolveAgentAccount(agentDir: string, ctxRoot: string): { label: string | null };
+  hasAuthWobble(ctxRoot: string, nowMs: number): boolean;
+  probeAgent(agent: string, operatorAgent: string, timeoutMs: number): Promise<boolean>;
+  createFunctionalSweepTask(agent: string, targetAccount: string): string | undefined;
+  writeToken(frameworkRoot: string, org: string, token: string, agent: string): void;
+}
+
+export class SwitchAgentAccountError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly rolledBack = false,
+  ) {
+    super(message);
+  }
+}
+
+export function setupTokenVaultDir(ctxRoot: string): string {
+  return join(ctxRoot, 'state', 'oauth', 'setup-tokens');
+}
+
+export function setupTokenVaultPath(ctxRoot: string, account: string): string {
+  return join(setupTokenVaultDir(ctxRoot), `${account}.token`);
+}
+
+export function processStartTimeMs(pid: number): number | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const raw = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 64 * 1024,
+    }).trim();
+    const parsed = Date.parse(raw);
+    return Number.isNaN(parsed) ? null : parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function defaultSwitchAgentAccountOps(
+  ipc: { send(request: { type: string; agent?: string; source?: string }): Promise<IPCResponse> },
+  org: string,
+  paths: BusPaths | undefined,
+  nowMs: () => number,
+): SwitchAgentAccountOps {
+  return {
+    async getStatuses() {
+      const response = await ipc.send({ type: 'status', source: 'cortextos switch-agent-account' });
+      if (!response.success) throw new Error(response.error ?? 'status IPC failed');
+      return response.data as AgentStatus[];
+    },
+    stopAgent(agent) {
+      return ipc.send({ type: 'stop-agent', agent, source: 'cortextos switch-agent-account' });
+    },
+    startAgent(agent) {
+      return ipc.send({ type: 'start-agent', agent, source: 'cortextos switch-agent-account' });
+    },
+    hashLiveProcessToken,
+    hasProcessEnvVar,
+    processStartTimeMs,
+    resolveAgentAccount,
+    hasAuthWobble: (root, now) => hasRecentAuthWobble(root, now),
+    probeAgent: paths
+      ? (agent, operatorAgent, timeoutMs) => busRoundTripProbe(paths, agent, operatorAgent, timeoutMs, nowMs)
+      : async () => false,
+    createFunctionalSweepTask: paths
+      ? (agent, targetAccount) => createFunctionalSweepTask(paths, org, agent, targetAccount)
+      : () => undefined,
+    writeToken: writeTokenToAgents,
+  };
+}
+
+export async function switchAgentAccount(options: SwitchAgentAccountOptions): Promise<SwitchAgentAccountResult> {
+  validateAgentName(options.agent);
+  validateAgentName(options.operatorAgent);
+  if (!options.frameworkRoot) throw new SwitchAgentAccountError('CTX_FRAMEWORK_ROOT is required', 'NO_FRAMEWORK_ROOT');
+  if (!options.org) throw new SwitchAgentAccountError('CTX_ORG is required', 'NO_ORG');
+
+  const nowMs = options.nowMs ?? (() => Date.now());
+  const sleepMs = options.sleepMs ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const ops = options.ops;
+  const warnings: string[] = [];
+  const agentDir = join(options.frameworkRoot, 'orgs', options.org, 'agents', options.agent);
+  const envPath = join(agentDir, '.env');
+  const configPath = join(agentDir, 'config.json');
+  const target = readTargetToken(options);
+
+  try {
+    const snapshot = await preflight({
+      options,
+      agentDir,
+      envPath,
+      configPath,
+      target,
+      ops,
+      nowMs,
+      warnings,
+    });
+
+    if (options.dryRun) {
+      return {
+        agent: options.agent,
+        targetAccount: options.targetAccount,
+        fingerprint: target.fingerprint,
+        status: 'dry-run',
+        warnings,
+        message: `DRY RUN OK: ${options.agent} can switch to ${options.targetAccount} (${target.fingerprint}, bare sha256/12).`,
+      };
+    }
+
+    let flipped = false;
+    try {
+      if (options.tokenFile) persistDeliveredToken(options, target.token);
+      applyBothHalves(options, ops, envPath, configPath, target.token);
+      const envFlipMtimeMs = statSync(envPath).mtimeMs;
+      flipped = true;
+      await restartAgent(options.agent, ops, sleepMs, DEFAULT_STOP_WAIT_MS, snapshot.pid);
+      const restartAtMs = nowMs();
+      await sleepMs(DEFAULT_BOOT_VERIFY_WAIT_MS);
+      const verify = await verifySwitched({
+        agent: options.agent,
+        targetAccount: options.targetAccount,
+        tokenFingerprint: target.fingerprint,
+        restartAtMs,
+        envFlipMtimeMs,
+        operatorAgent: options.operatorAgent,
+        envPath,
+      }, agentDir, options.ctxRoot, ops, nowMs);
+      if (!verify.ok) {
+        throw new SwitchAgentAccountError(`verify failed at ${verify.gate}: ${verify.reason}`, verify.gate ?? 'VERIFY_FAILED');
+      }
+      const taskId = ops.createFunctionalSweepTask(options.agent, options.targetAccount);
+      return {
+        agent: options.agent,
+        targetAccount: options.targetAccount,
+        fingerprint: target.fingerprint,
+        status: 'success',
+        warnings,
+        runtimeProof: verify.primary,
+        functionalSweepTaskId: taskId,
+        message: successMessage(options.agent, options.targetAccount, target.fingerprint, taskId),
+      };
+    } catch (err) {
+      if (flipped) {
+        try {
+          restoreSnapshot(envPath, configPath, snapshot);
+          await restartAgent(options.agent, ops, sleepMs, DEFAULT_STOP_WAIT_MS);
+          const rollbackEnvMtimeMs = statSync(envPath).mtimeMs;
+          const rollbackAtMs = nowMs();
+          await sleepMs(DEFAULT_BOOT_VERIFY_WAIT_MS);
+          const priorFingerprint = shortTokenHash(snapshot.envToken);
+          const rollbackVerify = await verifySwitched({
+            agent: options.agent,
+            targetAccount: snapshot.accountLabel ?? snapshot.usageAccount ?? 'prior-account',
+            tokenFingerprint: priorFingerprint,
+            restartAtMs: rollbackAtMs,
+            envFlipMtimeMs: rollbackEnvMtimeMs,
+            operatorAgent: options.operatorAgent,
+            envPath,
+          }, agentDir, options.ctxRoot, ops, nowMs);
+          if (!rollbackVerify.ok) {
+            throw new SwitchAgentAccountError(
+              `switch failed and rollback verification failed at ${rollbackVerify.gate}: ${rollbackVerify.reason}`,
+              'ROLLBACK_VERIFY_FAILED',
+              true,
+            );
+          }
+        } catch (rollbackErr) {
+          if (rollbackErr instanceof SwitchAgentAccountError) throw rollbackErr;
+          throw new SwitchAgentAccountError(
+            `switch failed and rollback failed: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
+            'ROLLBACK_FAILED',
+            true,
+          );
+        }
+      }
+      if (err instanceof SwitchAgentAccountError) {
+        throw new SwitchAgentAccountError(err.message, err.code, flipped);
+      }
+      throw new SwitchAgentAccountError(err instanceof Error ? err.message : String(err), 'SWITCH_FAILED', flipped);
+    }
+  } finally {
+    if (options.tokenFile && !options.dryRun) shredFile(options.tokenFile);
+  }
+}
+
+export async function switchAllFrom(options: SwitchAllFromOptions): Promise<SwitchBatchResult> {
+  const ops = options.ops;
+  const agentsDir = join(options.frameworkRoot, 'orgs', options.org, 'agents');
+  const agents: string[] = [];
+  for (const entry of safeReaddir(agentsDir)) {
+    const agentDir = join(agentsDir, entry);
+    if (!safeIsDir(agentDir)) continue;
+    const r = ops.resolveAgentAccount(agentDir, options.ctxRoot);
+    if (r.label === options.sourceAccount) agents.push(entry);
+  }
+  const results: SwitchBatchResult['results'] = [];
+  let tokenFile = options.tokenFile;
+  for (const agent of agents) {
+    try {
+      const result = await switchAgentAccount({ ...options, tokenFile, agent, targetAccount: options.targetAccount });
+      tokenFile = undefined;
+      results.push({ agent, status: 'success', taskId: result.functionalSweepTaskId });
+    } catch (err) {
+      results.push({ agent, status: 'failed', error: err instanceof Error ? err.message : String(err) });
+      break;
+    }
+  }
+  return { sourceAccount: options.sourceAccount, targetAccount: options.targetAccount, results };
+}
+
+async function preflight(input: {
+  options: SwitchAgentAccountOptions;
+  agentDir: string;
+  envPath: string;
+  configPath: string;
+  target: VaultToken;
+  ops: SwitchAgentAccountOps;
+  nowMs: () => number;
+  warnings: string[];
+}): Promise<Snapshot> {
+  const { options, agentDir, envPath, configPath, target, ops, nowMs, warnings } = input;
+  if (!existsSync(agentDir)) throw new SwitchAgentAccountError(`agent not found: ${options.agent}`, 'MISSING_AGENT');
+  if (!existsSync(configPath)) throw new SwitchAgentAccountError(`config.json missing for ${options.agent}`, 'MISSING_CONFIG');
+  if (!existsSync(envPath)) throw new SwitchAgentAccountError(`.env missing for ${options.agent}`, 'MISSING_ENV');
+  if (ops.hasAuthWobble(options.ctxRoot, nowMs())) {
+    throw new SwitchAgentAccountError('auth wobble active; refusing account switch', 'AUTH_WOBBLE');
+  }
+  assertSetupToken(target.token);
+  const envContent = readFileSync(envPath, 'utf-8');
+  const configContent = readFileSync(configPath, 'utf-8');
+  const config = JSON.parse(configContent) as { usage_account?: string; connectors?: unknown };
+  const envToken = parseEnvFile(envPath).CLAUDE_CODE_OAUTH_TOKEN;
+  if (!envToken) throw new SwitchAgentAccountError('current .env lacks CLAUDE_CODE_OAUTH_TOKEN', 'MISSING_CURRENT_TOKEN');
+  const envMode = statSync(envPath).mode & 0o777;
+  if (config.connectors !== undefined) {
+    warnings.push('WARN: connector dependency check is warn-only; bearer mode assumes connector lanes are already migrated.');
+  }
+  const statuses = await ops.getStatuses();
+  const status = statuses.find((s) => s.name === options.agent);
+  return {
+    envContent,
+    envToken,
+    envMode,
+    configContent,
+    usageAccount: config.usage_account,
+    pid: status?.pid,
+    accountLabel: ops.resolveAgentAccount(agentDir, options.ctxRoot).label,
+  };
+}
+
+function readTargetToken(options: SwitchAgentAccountOptions): VaultToken {
+  if (options.tokenFile) {
+    const deliveryPath = pathResolve(options.tokenFile);
+    const delivered = readFileSync(deliveryPath, 'utf-8').trim();
+    assertSetupToken(delivered);
+    return { token: delivered, path: deliveryPath, fingerprint: shortTokenHash(delivered) };
+  }
+  const path = setupTokenVaultPath(options.ctxRoot, options.targetAccount);
+  assertVaultPerms(path);
+  const token = readFileSync(path, 'utf-8').trim();
+  assertSetupToken(token);
+  return { token, path, fingerprint: shortTokenHash(token) };
+}
+
+function persistDeliveredToken(options: SwitchAgentAccountOptions, token: string): void {
+  const vaultDir = setupTokenVaultDir(options.ctxRoot);
+  ensureDir(vaultDir);
+  chmodSync(vaultDir, 0o700);
+  const vaultPath = setupTokenVaultPath(options.ctxRoot, options.targetAccount);
+  atomicWriteSync(vaultPath, `${token}\n`);
+  chmodSync(vaultPath, 0o600);
+}
+
+function assertSetupToken(token: string): void {
+  if (!SETUP_TOKEN_RE.test(token)) {
+    throw new SwitchAgentAccountError('target token is not a runtime setup-token (expected sk-ant-oat01)', 'NOT_SETUP_TOKEN');
+  }
+}
+
+function assertVaultPerms(path: string): void {
+  if (!existsSync(path)) throw new SwitchAgentAccountError(`target token not found in vault: ${path}`, 'MISSING_TARGET_TOKEN');
+  const dirMode = statSync(dirname(path)).mode & 0o777;
+  const fileMode = statSync(path).mode & 0o777;
+  if (dirMode !== 0o700) throw new SwitchAgentAccountError('setup-token vault dir must be 0700', 'BAD_VAULT_PERMS');
+  if (fileMode !== 0o600) throw new SwitchAgentAccountError('setup-token file must be 0600', 'BAD_TOKEN_PERMS');
+}
+
+function applyBothHalves(
+  options: SwitchAgentAccountOptions,
+  ops: SwitchAgentAccountOps,
+  envPath: string,
+  configPath: string,
+  token: string,
+): void {
+  const snapshot = {
+    env: readFileSync(envPath, 'utf-8'),
+    config: readFileSync(configPath, 'utf-8'),
+  };
+  try {
+    ops.writeToken(options.frameworkRoot, options.org, token, options.agent);
+    const afterEnv = parseEnvFile(envPath).CLAUDE_CODE_OAUTH_TOKEN ?? '';
+    if (shortTokenHash(afterEnv) !== shortTokenHash(token)) throw new Error('.env token write verification failed');
+    chmodSync(envPath, 0o600);
+
+    const config = JSON.parse(snapshot.config) as Record<string, unknown>;
+    config.usage_account = options.targetAccount;
+    atomicWriteSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  } catch (err) {
+    atomicWriteSync(envPath, snapshot.env);
+    atomicWriteSync(configPath, snapshot.config);
+    chmodSync(envPath, 0o600);
+    throw err;
+  }
+}
+
+function restoreSnapshot(envPath: string, configPath: string, snapshot: Snapshot): void {
+  atomicWriteSync(envPath, snapshot.envContent);
+  chmodSync(envPath, snapshot.envMode || 0o600);
+  atomicWriteSync(configPath, snapshot.configContent);
+}
+
+async function restartAgent(
+  agent: string,
+  ops: SwitchAgentAccountOps,
+  sleepMs: (ms: number) => Promise<void>,
+  stopWaitMs: number,
+  oldPid?: number,
+): Promise<void> {
+  const stop = await ops.stopAgent(agent);
+  if (!stop.success && stop.code !== 'NOT_RUNNING') {
+    throw new SwitchAgentAccountError(`stop failed: ${stop.error ?? stop.code ?? 'unknown'}`, 'STOP_FAILED');
+  }
+  await sleepMs(stopWaitMs);
+  if (oldPid) {
+    const statuses = await ops.getStatuses();
+    const status = statuses.find((s) => s.name === agent);
+    if (status?.status === 'running' && status.pid === oldPid) {
+      throw new SwitchAgentAccountError('old process still running after stop wait', 'STOP_WAIT_FAILED');
+    }
+  }
+  const start = await ops.startAgent(agent);
+  const startCode = String(start.code ?? '');
+  if (!start.success && startCode !== 'DEDUPED' && startCode !== 'QUEUED_BEHIND_STOP') {
+    throw new SwitchAgentAccountError(`start failed: ${start.error ?? startCode ?? 'unknown'}`, 'START_FAILED');
+  }
+}
+
+async function verifySwitched(
+  input: VerifyInput,
+  agentDir: string,
+  ctxRoot: string,
+  ops: SwitchAgentAccountOps,
+  nowMs: () => number,
+): Promise<VerifyResult> {
+  const statuses = await ops.getStatuses();
+  const status = statuses.find((s) => s.name === input.agent);
+  if (!status || status.status !== 'running' || !status.pid) {
+    return { ok: false, gate: 'status', reason: 'agent not running' };
+  }
+
+  const fileToken = parseEnvFile(input.envPath).CLAUDE_CODE_OAUTH_TOKEN ?? '';
+  if (shortTokenHash(fileToken) !== input.tokenFingerprint) {
+    return { ok: false, gate: 'env-file', reason: '.env token fingerprint mismatch', pid: status.pid };
+  }
+
+  const processStartedAtMs = ops.processStartTimeMs(status.pid);
+  if (processStartedAtMs === null || processStartedAtMs <= input.envFlipMtimeMs) {
+    return {
+      ok: false,
+      gate: 'process-start',
+      reason: 'process start time does not postdate the .env flip',
+      pid: status.pid,
+    };
+  }
+
+  let primary: VerifyResult['primary'] = 'indeterminate';
+  if (ops.hasProcessEnvVar(status.pid, 'CTX_AGENT_NAME')) {
+    const liveHash = ops.hashLiveProcessToken(status.pid);
+    if (liveHash === input.tokenFingerprint) primary = 'matched';
+    else if (liveHash && liveHash !== shortTokenHash('')) {
+      return { ok: false, gate: 'runtime-token', reason: 'live process token fingerprint mismatch', pid: status.pid };
+    }
+  }
+
+  const attribution = ops.resolveAgentAccount(agentDir, ctxRoot);
+  if (attribution.label !== input.targetAccount) {
+    return { ok: false, gate: 'attribution', reason: `expected ${input.targetAccount}, got ${attribution.label ?? 'unresolved'}`, pid: status.pid, primary };
+  }
+
+  const hbTime = status.lastHeartbeat ? Date.parse(status.lastHeartbeat) : NaN;
+  if (Number.isNaN(hbTime) || hbTime < input.restartAtMs || nowMs() - hbTime > DEFAULT_HEARTBEAT_WINDOW_MS) {
+    return { ok: false, gate: 'heartbeat', reason: 'heartbeat not fresh after restart', pid: status.pid, primary };
+  }
+
+  const probeOk = await ops.probeAgent(input.agent, input.operatorAgent, DEFAULT_PROBE_TIMEOUT_MS);
+  if (!probeOk) return { ok: false, gate: 'inference-probe', reason: 'bus round-trip probe failed', pid: status.pid, primary };
+  return { ok: true, pid: status.pid, primary };
+}
+
+async function busRoundTripProbe(
+  paths: BusPaths,
+  agent: string,
+  operatorAgent: string,
+  timeoutMs: number,
+  nowMs: () => number,
+): Promise<boolean> {
+  const nonce = `SWITCH_AGENT_ACCOUNT_PROBE_${agent}_${nowMs()}`;
+  const msgId = sendMessage(
+    paths,
+    operatorAgent,
+    agent,
+    'normal',
+    `Inference probe: reply exactly "${nonce}" to confirm runtime after account switch.`,
+  );
+  const deadline = nowMs() + timeoutMs;
+  while (nowMs() < deadline) {
+    const messages = checkInbox(paths);
+    for (const msg of messages) {
+      const ok = msg.from === agent && (msg.reply_to === msgId || msg.text.includes(nonce));
+      if (ok) {
+        ackInbox(paths, msg.id);
+        return true;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  return false;
+}
+
+function createFunctionalSweepTask(paths: BusPaths, org: string, agent: string, targetAccount: string): string {
+  const title = `[FUNCTIONAL SWEEP] ${agent} after switch to ${targetAccount}`;
+  const description = [
+    `Auth flip verified for ${agent} on ${targetAccount}.`,
+    'Run SOP playbooks/fleet/switch-agent-account.md step 5: lane-specific post-migration functional sweep.',
+    'Success from switch-agent-account means auth flip verified; functional sweep remains pending.',
+  ].join(' ');
+  const taskId = createTask(paths, 'switch-agent-account', org, title, {
+    description,
+    assignee: agent,
+    priority: 'normal',
+    project: 'functional-sweeps',
+    autoClassify: false,
+  });
+  try {
+    sendMessage(paths, 'switch-agent-account', agent, 'normal', `Task assigned: ${title} (id: ${taskId})`);
+  } catch { /* task creation is the source of truth */ }
+  return taskId;
+}
+
+function successMessage(agent: string, targetAccount: string, fingerprint: string, taskId: string | undefined): string {
+  return [
+    `AUTH FLIP VERIFIED: ${agent} -> ${targetAccount} (${fingerprint}, bare sha256/12).`,
+    '',
+    'FUNCTIONAL SWEEP REQUIRED',
+    'Run SOP step 5 for this agent. This tool verified auth flip only; migration is not complete until the lane sweep passes.',
+    taskId ? `Queued sweep task: ${taskId}` : 'Sweep task not queued (no bus paths available).',
+  ].join('\n');
+}
+
+function shredFile(path: string): void {
+  try {
+    const size = statSync(path).size;
+    const overwrite = randomBytes(Math.max(size, 1));
+    writeFileSync(path, overwrite, { mode: 0o600 });
+    unlinkSync(path);
+  } catch { /* delivery-file shred is best-effort after vault write */ }
+}
+
+function safeReaddir(path: string): string[] {
+  try { return existsSync(path) ? readdirSync(path) : []; } catch { return []; }
+}
+
+function safeIsDir(path: string): boolean {
+  try { return statSync(path).isDirectory(); } catch { return false; }
+}
