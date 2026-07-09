@@ -26,13 +26,14 @@
  *   deleted on completion; the verifier is never printed.
  */
 
-import { existsSync, readFileSync, chmodSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, chmodSync, unlinkSync, readdirSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { createHash, randomBytes } from 'crypto';
 import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
 import { loadAccounts, saveAccounts, type AccountsStore, type OAuthAccount } from './oauth.js';
 import { readCodexUsage } from './codex-usage.js';
+import { resolveAgentAccount } from '../daemon/cron-capacity-gate.js';
 
 // --- Types ---
 
@@ -971,8 +972,33 @@ interface AlertState {
   [account: string]: AccountAlertState;
 }
 
-const DELTA_SANITY_MAX_CYCLE_MS = 10 * 60_000;
+// This guard must exceed the real 15-min sampler cadence. A shorter window is
+// dormant by construction for normal sampler reads.
+const DELTA_SANITY_MAX_CYCLE_MS = 30 * 60_000;
 const SEVEN_DAY_RISE_SUSPECT_POINTS = 30;
+const SEVEN_DAY_ZERO_DROP_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+const RECENT_BURN_WINDOW_HOURS = 24;
+const RECENT_BURN_SUSPECT_USD = 1;
+
+export interface RecentAccountBurn {
+  usd: number;
+  windowHours: number;
+}
+
+export type RecentAccountBurnReader = (ctxRoot: string, accountName: string, windowHours: number) => RecentAccountBurn | null;
+
+interface UsageGuardOptions {
+  recentBurnReader?: RecentAccountBurnReader;
+  recentBurnWindowHours?: number;
+  recentBurnSuspectUsd?: number;
+  logger?: (msg: string) => void;
+}
+
+interface CheckAllUsageOptions extends UsageGuardOptions {
+  blobReader?: () => KeychainBlob | null;
+}
+
+type CheckAllUsageSecondArg = (() => KeychainBlob | null) | CheckAllUsageOptions;
 
 export function loadMultiAccountUsage(ctxRoot: string): Map<string, AccountUsage> {
   const prior = new Map<string, AccountUsage>();
@@ -1024,24 +1050,147 @@ function withinDeltaCycle(prior: AccountUsage, current: AccountUsage): boolean {
   return elapsed >= 0 && elapsed <= DELTA_SANITY_MAX_CYCLE_MS;
 }
 
-function markSuspect(usage: AccountUsage, prior: AccountUsage, reason: string): AccountUsage {
+function withinSevenDayZeroDropWindow(prior: AccountUsage, current: AccountUsage): boolean {
+  const prev = Date.parse(prior.fetched_at);
+  const now = Date.parse(current.fetched_at);
+  if (Number.isNaN(prev) || Number.isNaN(now)) return false;
+  const elapsed = now - prev;
+  return elapsed >= 0 && elapsed <= SEVEN_DAY_ZERO_DROP_MAX_AGE_MS;
+}
+
+function hasAdvancedReset(priorReset: string | undefined, currentReset: string | undefined): boolean {
+  if (!priorReset || !currentReset) return false;
+  const priorMs = Date.parse(priorReset);
+  const currentMs = Date.parse(currentReset);
+  if (Number.isNaN(priorMs) || Number.isNaN(currentMs)) return false;
+  return currentMs > priorMs;
+}
+
+function markSuspect(usage: AccountUsage, prior: AccountUsage | undefined, reason: string): AccountUsage {
+  const lastGood = lastGoodFrom(prior);
   return {
     ...usage,
     ok: false,
     status: 'suspect',
     suspect: true,
     error: `suspect-read: ${reason}`,
-    last_good: lastGoodFrom(prior),
+    ...(lastGood ? { last_good: lastGood } : {}),
   };
 }
 
-function applyUsageGuards(usages: AccountUsage[], prior: Map<string, AccountUsage>): AccountUsage[] {
+function formatUsd(value: number): string {
+  return value >= 100 ? value.toFixed(0) : value.toFixed(2).replace(/\.?0+$/, '');
+}
+
+function missingBurnCheckEnv(): string[] {
+  return [
+    ...(process.env.CTX_ORG ? [] : ['CTX_ORG']),
+    ...(process.env.CTX_FRAMEWORK_ROOT ? [] : ['CTX_FRAMEWORK_ROOT']),
+  ];
+}
+
+function sqlString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function dashboardDbPath(ctxRoot: string): string {
+  const instanceId = process.env.CTX_INSTANCE_ID ?? 'default';
+  return join(ctxRoot, 'dashboard', `cortextos-${instanceId}.db`);
+}
+
+function frameworkRootFromCtx(ctxRoot: string): string {
+  return process.env.CTX_FRAMEWORK_ROOT ?? join(ctxRoot, '..', '..');
+}
+
+function orgFromCtx(ctxRoot: string): string {
+  return process.env.CTX_ORG ?? basename(ctxRoot);
+}
+
+export function readRecentAccountBurn(ctxRoot: string, accountName: string, windowHours: number): RecentAccountBurn | null {
+  const dbPath = dashboardDbPath(ctxRoot);
+  if (!existsSync(dbPath)) return null;
+
+  const org = orgFromCtx(ctxRoot);
+  const agentsDir = join(frameworkRootFromCtx(ctxRoot), 'orgs', org, 'agents');
+  if (!existsSync(agentsDir)) return null;
+
+  const agents: string[] = [];
+  for (const entry of readdirSync(agentsDir)) {
+    const agentDir = join(agentsDir, entry);
+    try {
+      if (!statSync(agentDir).isDirectory()) continue;
+      const resolution = resolveAgentAccount(agentDir, ctxRoot);
+      if (resolution.label === accountName) agents.push(entry);
+    } catch {
+      continue;
+    }
+  }
+  if (agents.length === 0) return { usd: 0, windowHours };
+
+  const since = new Date(Date.now() - windowHours * 60 * 60_000).toISOString();
+  const agentList = agents.map(sqlString).join(',');
+  const query = [
+    'SELECT COALESCE(SUM(cost_usd), 0)',
+    'FROM cost_entries',
+    `WHERE org = ${sqlString(org)}`,
+    `AND timestamp >= ${sqlString(since)}`,
+    `AND agent IN (${agentList});`,
+  ].join(' ');
+
+  const dbUri = `file:${dbPath}?mode=ro`;
+  const output = execFileSync('sqlite3', [dbUri, query], { encoding: 'utf-8', timeout: 5000 }).trim();
+  const usd = Number.parseFloat(output);
+  return { usd: Number.isFinite(usd) ? usd : 0, windowHours };
+}
+
+function applyUsageGuards(
+  ctxRoot: string,
+  usages: AccountUsage[],
+  prior: Map<string, AccountUsage>,
+  options: UsageGuardOptions = {},
+): AccountUsage[] {
+  const burnWindowHours = options.recentBurnWindowHours ?? RECENT_BURN_WINDOW_HOURS;
+  const burnSuspectUsd = options.recentBurnSuspectUsd ?? RECENT_BURN_SUSPECT_USD;
   return usages.map((usage) => {
     const previous = prior.get(usage.account);
     const lastGood = lastGoodFrom(previous);
     if (!usage.ok) {
       return lastGood ? { ...usage, last_good: lastGood } : usage;
     }
+
+    if (
+      previous?.ok &&
+      previous.seven_day_pct !== undefined &&
+      previous.seven_day_pct > 0 &&
+      usage.seven_day_pct === 0 &&
+      withinSevenDayZeroDropWindow(previous, usage) &&
+      !hasAdvancedReset(previous.seven_day_resets, usage.seven_day_resets)
+    ) {
+      return markSuspect(usage, previous, '7d dropped to zero within the rolling 7d window');
+    }
+
+    if (usage.seven_day_pct === 0 && options.recentBurnReader) {
+      try {
+        const missingEnv = options.recentBurnReader === readRecentAccountBurn ? missingBurnCheckEnv() : [];
+        if (missingEnv.length > 0) {
+          options.logger?.(
+            `[usage-accounts] Part-B burn-check degraded: ${missingEnv.join('/')} unset, using fallback - recovery may be inert`,
+          );
+        }
+        const burn = options.recentBurnReader(ctxRoot, usage.account, burnWindowHours);
+        if (burn && burn.usd > burnSuspectUsd) {
+          return markSuspect(
+            usage,
+            previous,
+            `7d=0 but $${formatUsd(burn.usd)} attributed burn in last ${burn.windowHours}h - credential likely mis-scoped`,
+          );
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        options.logger?.(`[usage-accounts] recent burn read skipped for ${usage.account}: ${msg.slice(0, 160)}`);
+      }
+    }
+
     if (!previous?.ok || !withinDeltaCycle(previous, usage)) {
       return usage;
     }
@@ -1062,17 +1211,32 @@ function applyUsageGuards(usages: AccountUsage[], prior: Map<string, AccountUsag
       return markSuspect(usage, previous, '5h dropped to zero before prior reset timestamp passed');
     }
 
-    if (
-      previous.seven_day_pct !== undefined &&
-      previous.seven_day_pct > 0 &&
-      usage.seven_day_pct === 0 &&
-      !hasPassedReset(previous.seven_day_resets, usage.fetched_at)
-    ) {
-      return markSuspect(usage, previous, '7d dropped to zero before prior reset timestamp passed');
-    }
-
     return usage;
   });
+}
+
+function resolveCheckAllUsageOptions(secondArg: CheckAllUsageSecondArg | undefined): {
+  blobReader: () => KeychainBlob | null;
+  guardOptions: UsageGuardOptions;
+} {
+  if (typeof secondArg === 'function') {
+    return {
+      blobReader: secondArg,
+      guardOptions: {
+        recentBurnReader: readRecentAccountBurn,
+        logger: (msg) => console.warn(msg),
+      },
+    };
+  }
+  return {
+    blobReader: secondArg?.blobReader ?? readKeychainBlob,
+    guardOptions: {
+      recentBurnReader: secondArg?.recentBurnReader ?? readRecentAccountBurn,
+      recentBurnWindowHours: secondArg?.recentBurnWindowHours,
+      recentBurnSuspectUsd: secondArg?.recentBurnSuspectUsd,
+      logger: secondArg?.logger ?? ((msg) => console.warn(msg)),
+    },
+  };
 }
 
 /**
@@ -1281,8 +1445,9 @@ export function setAccountBenched(ctxRoot: string, accountName: string, benched:
  */
 export async function checkAllUsage(
   ctxRoot: string,
-  blobReader: () => KeychainBlob | null = readKeychainBlob,
+  secondArg?: CheckAllUsageSecondArg,
 ): Promise<AllUsageResult> {
+  const { blobReader, guardOptions } = resolveCheckAllUsageOptions(secondArg);
   const store = requireStore(ctxRoot);
   const now = new Date().toISOString();
   const names = Object.keys(store.accounts);
@@ -1315,7 +1480,7 @@ export async function checkAllUsage(
     usage.benched = false;
     usages.push(usage);
   }
-  const guardedUsages = applyUsageGuards(usages, priorUsage);
+  const guardedUsages = applyUsageGuards(ctxRoot, usages, priorUsage, guardOptions);
   try {
     appendUsageDiagnostics(ctxRoot, guardedUsages, now);
   } catch { /* diagnostics are best-effort; never break usage monitoring */ }

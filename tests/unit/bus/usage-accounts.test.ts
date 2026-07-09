@@ -1275,6 +1275,351 @@ describe('usage-accounts', () => {
       expect(JSON.stringify(entry)).not.toContain('sk-ant');
     });
 
+    it('flags a prior nonzero 7d dropping to zero as suspect', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-11T03:15:00.000Z'));
+      seedAccounts({
+        'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+      });
+      atomicWriteSync(multiAccountUsagePath(), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'me-com-max',
+          ok: true,
+          five_hour_pct: 8,
+          seven_day_pct: 40,
+          five_hour_resets: '2026-06-11T05:00:00Z',
+          seven_day_resets: '2026-06-15T00:00:00Z',
+          fetched_at: '2026-06-11T03:00:00.000Z',
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 8, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      const row = (await checkAllUsage(ctxRoot, { recentBurnReader: vi.fn(() => ({ usd: 0, windowHours: 24 })) })).accounts[0];
+
+      expect(row.ok).toBe(false);
+      expect(row.status).toBe('suspect');
+      expect(row.error).toContain('7d dropped to zero');
+      expect(row.last_good?.seven_day_pct).toBe(40);
+    });
+
+    it('flags a 7d zero-drop even when seven_day_resets is absent', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-11T03:15:00.000Z'));
+      seedAccounts({
+        'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+      });
+      atomicWriteSync(multiAccountUsagePath(), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'me-com-max',
+          ok: true,
+          five_hour_pct: 8,
+          seven_day_pct: 11,
+          five_hour_resets: '2026-06-11T05:00:00Z',
+          fetched_at: '2026-06-11T03:00:00.000Z',
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 8, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: null },
+      }]);
+
+      const row = (await checkAllUsage(ctxRoot, { recentBurnReader: vi.fn(() => ({ usd: 0, windowHours: 24 })) })).accounts[0];
+
+      expect(row.ok).toBe(false);
+      expect(row.status).toBe('suspect');
+      expect(row.error).toContain('7d dropped to zero');
+      expect(row.last_good?.seven_day_pct).toBe(11);
+    });
+
+    it('flags a 7d zero-drop across the normal 15 minute sampler cadence', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-11T03:15:00.000Z'));
+      seedAccounts({
+        'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+      });
+      atomicWriteSync(multiAccountUsagePath(), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'me-com-max',
+          ok: true,
+          five_hour_pct: 8,
+          seven_day_pct: 22,
+          five_hour_resets: '2026-06-11T05:00:00Z',
+          seven_day_resets: '2026-06-15T00:00:00Z',
+          fetched_at: '2026-06-11T03:00:00.000Z',
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 8, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      const row = (await checkAllUsage(ctxRoot, { recentBurnReader: vi.fn(() => ({ usd: 0, windowHours: 24 })) })).accounts[0];
+
+      expect(row.ok).toBe(false);
+      expect(row.status).toBe('suspect');
+      expect(row.error).toContain('7d dropped to zero');
+    });
+
+    it('does not flag a 7d zero-drop when the weekly reset timestamp advanced', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-11T03:15:00.000Z'));
+      seedAccounts({
+        'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+      });
+      atomicWriteSync(multiAccountUsagePath(), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'me-com-max',
+          ok: true,
+          five_hour_pct: 8,
+          seven_day_pct: 22,
+          five_hour_resets: '2026-06-11T05:00:00Z',
+          seven_day_resets: '2026-06-15T00:00:00Z',
+          fetched_at: '2026-06-11T03:00:00.000Z',
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 8, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: '2026-06-22T00:00:00Z' },
+      }]);
+
+      const row = (await checkAllUsage(ctxRoot, { recentBurnReader: vi.fn(() => ({ usd: 0, windowHours: 24 })) })).accounts[0];
+
+      expect(row.ok).toBe(true);
+      expect(row.status).toBeUndefined();
+      expect(row.seven_day_pct).toBe(0);
+    });
+
+    it('flags a 7d zero-drop with burn when the weekly reset timestamp is unchanged', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-11T03:15:00.000Z'));
+      seedAccounts({
+        'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+      });
+      atomicWriteSync(multiAccountUsagePath(), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'me-com-max',
+          ok: true,
+          five_hour_pct: 8,
+          seven_day_pct: 22,
+          five_hour_resets: '2026-06-11T05:00:00Z',
+          seven_day_resets: '2026-06-15T00:00:00Z',
+          fetched_at: '2026-06-11T03:00:00.000Z',
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 8, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      const row = (await checkAllUsage(ctxRoot, {
+        recentBurnReader: vi.fn(() => ({ usd: 182, windowHours: 24 })),
+        recentBurnSuspectUsd: 1,
+      })).accounts[0];
+
+      expect(row.ok).toBe(false);
+      expect(row.status).toBe('suspect');
+      expect(row.error).toContain('7d dropped to zero');
+    });
+
+    it('flags a 7d zero-drop when the weekly reset timestamp drops to null', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-11T03:15:00.000Z'));
+      seedAccounts({
+        'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+      });
+      atomicWriteSync(multiAccountUsagePath(), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'me-com-max',
+          ok: true,
+          five_hour_pct: 8,
+          seven_day_pct: 22,
+          five_hour_resets: '2026-06-11T05:00:00Z',
+          seven_day_resets: '2026-06-15T00:00:00Z',
+          fetched_at: '2026-06-11T03:00:00.000Z',
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 8, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: null },
+      }]);
+
+      const row = (await checkAllUsage(ctxRoot, { recentBurnReader: vi.fn(() => ({ usd: 0, windowHours: 24 })) })).accounts[0];
+
+      expect(row.ok).toBe(false);
+      expect(row.status).toBe('suspect');
+      expect(row.error).toContain('7d dropped to zero');
+    });
+
+    it('does not flag a 7d zero-drop from a prior snapshot older than seven days', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-18T03:15:00.000Z'));
+      seedAccounts({
+        'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+      });
+      atomicWriteSync(multiAccountUsagePath(), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'me-com-max',
+          ok: true,
+          five_hour_pct: 8,
+          seven_day_pct: 40,
+          five_hour_resets: '2026-06-11T05:00:00Z',
+          seven_day_resets: '2026-06-15T00:00:00Z',
+          fetched_at: '2026-06-11T03:00:00.000Z',
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 8, resets_at: '2026-06-18T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: '2026-06-22T00:00:00Z' },
+      }]);
+
+      const row = (await checkAllUsage(ctxRoot, { recentBurnReader: vi.fn(() => ({ usd: 0, windowHours: 24 })) })).accounts[0];
+
+      expect(row.ok).toBe(true);
+      expect(row.status).toBeUndefined();
+      expect(row.seven_day_pct).toBe(0);
+    });
+
+    it('uses recent attributed burn to reject a poisoned prior 0 plus current 0 read', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-11T03:15:00.000Z'));
+      seedAccounts({
+        'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+      });
+      atomicWriteSync(multiAccountUsagePath(), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'me-com-max',
+          ok: true,
+          five_hour_pct: 0,
+          seven_day_pct: 0,
+          five_hour_resets: '2026-06-11T05:00:00Z',
+          seven_day_resets: '2026-06-15T00:00:00Z',
+          fetched_at: '2026-06-11T03:00:00.000Z',
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 0, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+      const recentBurnReader = vi.fn(() => ({ usd: 182, windowHours: 12 }));
+
+      const row = (await checkAllUsage(ctxRoot, {
+        recentBurnReader,
+        recentBurnWindowHours: 12,
+        recentBurnSuspectUsd: 1,
+      })).accounts[0];
+
+      expect(recentBurnReader).toHaveBeenCalledWith(ctxRoot, 'me-com-max', 12);
+      expect(row.ok).toBe(false);
+      expect(row.status).toBe('suspect');
+      expect(row.error).toContain('7d=0 but $182 attributed burn in last 12h');
+    });
+
+    it('keeps a genuine idle 0/0 read ok when recent attributed burn is zero', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-11T03:15:00.000Z'));
+      seedAccounts({
+        'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+      });
+      atomicWriteSync(multiAccountUsagePath(), JSON.stringify({
+        generated_at: '2026-06-11T03:00:00.000Z',
+        accounts: [{
+          account: 'me-com-max',
+          ok: true,
+          five_hour_pct: 0,
+          seven_day_pct: 0,
+          fetched_at: '2026-06-11T03:00:00.000Z',
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 0, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      const row = (await checkAllUsage(ctxRoot, {
+        recentBurnReader: vi.fn(() => ({ usd: 0, windowHours: 24 })),
+      })).accounts[0];
+
+      expect(row.ok).toBe(true);
+      expect(row.status).toBeUndefined();
+      expect(row.seven_day_pct).toBe(0);
+    });
+
+    it('logs when the default burn-check reader degrades because attribution env is unset', async () => {
+      const originalOrg = process.env.CTX_ORG;
+      const originalFrameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
+      delete process.env.CTX_ORG;
+      delete process.env.CTX_FRAMEWORK_ROOT;
+      try {
+        seedAccounts({
+          'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+        });
+        stubUsageResponses([{
+          five_hour: { utilization: 0, resets_at: '2026-06-11T05:00:00Z' },
+          seven_day: { utilization: 0, resets_at: '2026-06-15T00:00:00Z' },
+        }]);
+        const logger = vi.fn();
+
+        const row = (await checkAllUsage(ctxRoot, { logger })).accounts[0];
+
+        expect(row.ok).toBe(true);
+        expect(logger).toHaveBeenCalledWith(expect.stringContaining('Part-B burn-check degraded'));
+        expect(logger).toHaveBeenCalledWith(expect.stringContaining('CTX_ORG/CTX_FRAMEWORK_ROOT unset'));
+      } finally {
+        if (originalOrg === undefined) delete process.env.CTX_ORG;
+        else process.env.CTX_ORG = originalOrg;
+        if (originalFrameworkRoot === undefined) delete process.env.CTX_FRAMEWORK_ROOT;
+        else process.env.CTX_FRAMEWORK_ROOT = originalFrameworkRoot;
+      }
+    });
+
+    it('does not query recent attributed burn for nonzero 7d reads', async () => {
+      seedAccounts({
+        'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+      });
+      stubUsageResponses([{
+        five_hour: { utilization: 1, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 55, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+      const recentBurnReader = vi.fn(() => ({ usd: 182, windowHours: 24 }));
+
+      const row = (await checkAllUsage(ctxRoot, { recentBurnReader })).accounts[0];
+
+      expect(row.ok).toBe(true);
+      expect(row.seven_day_pct).toBe(55);
+      expect(recentBurnReader).not.toHaveBeenCalled();
+    });
+
+    it('uses recent attributed burn to reject a cold-start 7d zero read', async () => {
+      seedAccounts({
+        'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+      });
+      stubUsageResponses([{
+        five_hour: { utilization: 0, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 0, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      const row = (await checkAllUsage(ctxRoot, {
+        recentBurnReader: vi.fn(() => ({ usd: 50, windowHours: 24 })),
+        recentBurnSuspectUsd: 1,
+      })).accounts[0];
+
+      expect(row.ok).toBe(false);
+      expect(row.status).toBe('suspect');
+      expect(row.error).toContain('7d=0 but $50 attributed burn in last 24h');
+      expect(row.last_good).toBeUndefined();
+    });
+
     it('writes a fetch-fail diagnostic entry with the HTTP 401 auth cause', async () => {
       seedAccounts({
         'icloud-max-20x': { source: 'keychain-capture', token: 'sk-ant-oat01-STOREDSECRETwTOK' },
