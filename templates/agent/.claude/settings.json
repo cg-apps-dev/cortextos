@@ -1,5 +1,4 @@
 {
-  "claudeMdExcludes": ["/Users/adamfolker/cortextos/CLAUDE.md"],
   "permissions": {
     "allow": [
       "Bash",
