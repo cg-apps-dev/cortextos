@@ -21,6 +21,11 @@ export function hashLiveTokenFromPsOutput(psOutput: string): string | null {
   return hash;
 }
 
+export function psOutputHasEnvVar(psOutput: string, name: string): boolean {
+  if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) return false;
+  return psOutput.includes(`${name}=`);
+}
+
 export function hashLiveProcessToken(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   let psOutput: string | null = null;
@@ -36,5 +41,23 @@ export function hashLiveProcessToken(pid: number): string | null {
   } catch {
     psOutput = null;
     return null;
+  }
+}
+
+export function hasProcessEnvVar(pid: number, name: string): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  let psOutput: string | null = null;
+  try {
+    psOutput = execFileSync('ps', ['eww', '-p', String(pid)], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 1024 * 1024,
+    });
+    const found = psOutputHasEnvVar(psOutput, name);
+    psOutput = null;
+    return found;
+  } catch {
+    psOutput = null;
+    return false;
   }
 }
