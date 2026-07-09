@@ -48,6 +48,40 @@ Ratified 2026-07-08 PT (Adam accuracy directive, orchestrator-approved plan WS-A
 | Guard gate-window tighter than production cadence (silent dead guard) | 2026-07-09 PT sampler guard root-cause (b): the delta-sanity block gated on a 10min window while the sampler runs ~every 15min, so the block was skipped EVERY cycle - the guard itself never executed in production. Constant-zero family one level up: the monitor ran, the guard inside it never did. Surfaced only in the impossible-zero post-mortem (security-agent's own premise, corrected by ground truth) | Size a guard's gate-window against PRODUCTION cadence: >= ~2x the NOMINAL cadence, to absorb sampler jitter and not just the nominal gap (a ~15min cycle stretches past 20min under load, so 1.5x can still skip a slow cycle; the shipped fix used 30min for a ~15min cadence). Exercise the guard in test AT production cadence, never a synthetic sub-window. A guard that cannot demonstrate a live or planted fire is presumed dead |
 | Guard premised on "never legit-resets" false-positives when the window DOES reset (unverified reset premise) | 2026-07-09 PT sampler guard root-cause (a): the onset 7d-drop guard assumed a 7d rolling sum never legitimately resets to 0, but weekly_all resets weekly (resets_at advances); a mis-scoped cred also returns resets=None, so the reset-gate could not evaluate at all (security-agent's own premise, corrected by ground truth) | Ground-truth a metric's reset behavior before premising a guard on it. Suppress the legit-reset case ONLY on positive evidence - resets_at present + parseable + strictly advanced; absent, unparseable, or unchanged all FIRE (a dropped-resets mis-scope must never be mistaken for a legit reset). Matches the shipped guard's contract (bcbf8cd hasAdvancedReset), so row and code cannot drift at birth |
 
+## Standing rule: fleet defect-event logging convention (A4 accuracy metric)
+
+Authored by the-analyst 2026-07-09 (A4 Phase-0, orch-ruled vehicle: this section, beside the registry format contract above - the artifact that feeds the metric carries its own conventions). Feeds the analyst's nightly-metrics daily accrual + theta-wave weekly readout; corroborated by the registry counters in the adjacent section.
+
+**Why.** "The fleet got more accurate" only becomes a *number* if defects are logged consistently. This convention makes every agent's error/rework/correction machine-countable so the analyst can compute a per-agent **escaped-defect rate**. Under-logging is the failure mode: a falling count then means "logged less", not "more accurate". Log the event **every time** - self-caught **and** escaped.
+
+**The event.**
+```
+cortextos bus log-event error <defect_class> <severity> --meta '{
+  "agent":"<name>",
+  "escaped": true|false,
+  "reached": "deliverable|agent|user|none",
+  "rework_of": "<task_id|null>",
+  "corrected_at": "<iso|null>",
+  "fleet_caught": true|false
+}'
+```
+
+**Field definitions.**
+- **`defect_class`** - the error type (kebab-case). Reuse an encoded registry class name where one fits; a novel class is fine (it feeds registry Counter 1 = discovery).
+- **`escaped`** - `true` if the error **left the owning agent** (reached a deliverable, another agent, or the user) before correction; `false` if the agent caught and fixed it **before it left**. This is the accuracy hinge (see integrity rule).
+- **`reached`** - how far it got: `deliverable` | `agent` | `user` | `none` (none = self-caught before leaving).
+- **`rework_of`** - the `task_id` being reworked/corrected, or `null`.
+- **`corrected_at`** - ISO timestamp when remediated, or `null` if open. (Enables recovery-time = a blast-radius signal; fast remediation of an escaped defect is materially better than slow.)
+- **`fleet_caught`** - `true` if **another agent** caught it before it reached the user.
+
+**Integrity rule (verbatim - do not soften).** **`escaped=true` even when `fleet_caught=true` - the owning agent does not get credit for someone else's catch.** The owning agent's rate counts the escape; the fleet readout credits the catch separately. This keeps per-agent accuracy honest while still surfacing fleet-level self-correction.
+
+**Self-caught vs escaped.**
+- **Self-caught** (`escaped:false`) = good discipline. It is logged (so the metric can *reward* it via the self-caught ratio), not hidden. An agent that makes an error and fixes it before it leaves must NOT score the same as one whose error reached the user.
+- **Escaped** (`escaped:true`) = a real defect, counted in the escaped-defect rate. Worked example (analyst, 2026-07-09): a digest usage error that reached the user then self-corrected in ~15 min = `escaped:true`, `reached:user`, fast `corrected_at` = counted as escaped **with** a good recovery time, not concealed.
+
+**Honesty gate (before any published rate).** Per orch ruling 2026-07-09, a **plant-a-positive coverage baseline** (1-2 weeks) runs first: a seeded known error must appear in the log. A seeded error that fails to appear = a dead pipeline, and publishing rates off a dead pipeline would measure logging discipline while claiming to measure accuracy (the constant-zero lesson institutionalized). No per-agent EDR is published until coverage is proven.
+
 ## Standing rule: cross-agent facts are referenced live, never baked into bootstrap docs
 
 Ratified 2026-07-09 PT (orchestrator graduation criterion met during the A1 verify-gate sweep: 2+ further instances found beyond the origin case).
