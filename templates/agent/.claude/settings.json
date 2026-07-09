@@ -1,4 +1,5 @@
 {
+  "claudeMdExcludes": ["**/cortextos/CLAUDE.md"],
   "permissions": {
     "allow": [
       "Bash",
