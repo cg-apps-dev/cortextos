@@ -16,11 +16,11 @@ A whole class of fleet monitoring runs with ZERO model invocation: pure self-ale
 **These jobs are invisible to `cortextos bus list-crons` and the agent cron system entirely.** Anyone auditing "what monitoring runs" from crons alone will wrongly conclude backups, security scans, and usage monitoring are not running. The authoritative check is:
 
 ```bash
-launchctl list | grep cortextos          # running jobs (exit code 0 = healthy last run)
-ls ~/Library/LaunchAgents/com.cortextos.*.plist   # the definitions
+launchctl list | grep -iE 'cortextos|cleangreen'   # running jobs (exit code 0 = healthy last run)
+ls ~/Library/LaunchAgents/com.cortextos.*.plist ~/Library/LaunchAgents/com.cleangreen.*.plist   # the definitions
 ```
 
-## The live jobs (verified 2026-07-05 from the loaded plists)
+## The live jobs (verified 2026-07-09 from the loaded plists)
 
 | Job | Cadence | Runs | Design owner |
 |---|---|---|---|
@@ -29,10 +29,16 @@ ls ~/Library/LaunchAgents/com.cortextos.*.plist   # the definitions
 | usage-monitor | 2h | `bus/check-usage-api.sh --warn-7day 80 --warn-5h 90` - threshold alerts | the-analyst (designed) |
 | usage-burn-sampler | 1h | analyst `scripts/usage-burn-sampler.sh` | the-analyst |
 | dependency-health | 12h | `bus/check-dependency-health.sh` - probes Gemini/ClickUp/TW/AdManage/Composio | the-analyst |
+| codex-auth-check | 30 min | `bus/check-dependency-health.sh --only codex_runtime_auth` - catches Codex runtime-token REVOCATION (401 signature + heartbeat staleness), which the expiry-only check is blind to | claude-dev-agent (built, live 2026-07-07); the-analyst (watch lane) |
 | fleet-scan | 12h | security-agent `tools/fleet-scan.sh --quiet` - gitleaks + injection scan across agents | security-agent |
 | daily-backup | daily 2:00am | security-agent `tools/daily-backup.sh` | security-agent |
 | fleet-cost-snapshot | daily 4:55pm | orchestrator `scripts/fleet-token-snapshot.py` | the-orchestrator |
 | ingest-meeting-notes | daily 6:00am | analyst `scripts/ingest-meeting-notes-launchd.sh` | the-analyst |
+| meta-ads.ready-check | 15 min | meta-ads-agent `scripts/clickup-ready-check.sh` - zero-token ClickUp ready-card watcher; wakes the agent only when new ready cards exist (replaced the agent's 9am/1pm/5pm meta-poll crons) | meta-ads-agent |
+| meta-ads.reconcile-completed | 12h | meta-ads-agent `scripts/reconcile-completed-check.sh` - completed-cards vs sheet reconciliation check | meta-ads-agent |
+| meta-media-buyer.launch-tracker-watch | 15 min | mmb `scripts/launch-tracker-watch.sh` - launch-detection watcher stamping the tracker (the agent's daily 8am cron is the watcher-died safety net) | meta-media-buyer-agent |
+
+The three `com.cleangreen.*` jobs are org-owned watchers on the same launchd layer; the full authoritative listing is `launchctl list | grep -iE 'cortextos|cleangreen'`.
 
 ## The contract every job follows
 
