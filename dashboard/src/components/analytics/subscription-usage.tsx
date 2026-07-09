@@ -34,6 +34,20 @@ function isPanelStale(generatedAt: string | undefined): boolean {
   return Date.now() - generated > 15 * 60 * 1000;
 }
 
+function ageLabel(ageMs: number | undefined): string | null {
+  if (typeof ageMs !== 'number' || !Number.isFinite(ageMs)) return null;
+  const minutes = Math.max(0, Math.round(ageMs / 60_000));
+  if (minutes < 60) return `${minutes} min old`;
+  const hours = Math.floor(minutes / 60);
+  const rem = minutes % 60;
+  return rem === 0 ? `${hours}h old` : `${hours}h ${rem}m old`;
+}
+
+function durationLabel(durationMs: number | undefined): string | null {
+  const label = ageLabel(durationMs);
+  return label ? label.replace(/ old$/, '') : null;
+}
+
 function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(1)}B`;
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
@@ -101,10 +115,16 @@ type ResolvedScopedLimit = NonNullable<AccountUsagePanelEntry['scoped_limits']>[
 };
 
 function resolveUsageValue(entry: AccountUsagePanelEntry, metric: UsageMetricKey): ResolvedUsageValue {
+  if (entry.status !== 'ok' && entry.status !== 'stale') return { stale: false };
   const currentPct = metric === 'five_hour' ? entry.five_hour_pct : entry.seven_day_pct;
   const currentResets = metric === 'five_hour' ? entry.five_hour_resets : entry.seven_day_resets;
   if (typeof currentPct === 'number') {
-    return { value: currentPct, resets: currentResets, stale: false };
+    return {
+      value: currentPct,
+      resets: currentResets,
+      stale: entry.status === 'stale',
+      staleAsOf: entry.status === 'stale' ? entry.fetched_at : undefined,
+    };
   }
 
   const lastGoodPct = metric === 'five_hour' ? entry.last_good?.five_hour_pct : entry.last_good?.seven_day_pct;
@@ -122,8 +142,13 @@ function resolveUsageValue(entry: AccountUsagePanelEntry, metric: UsageMetricKey
 }
 
 function resolveScopedLimits(entry: AccountUsagePanelEntry): ResolvedScopedLimit[] {
+  if (entry.status !== 'ok' && entry.status !== 'stale') return [];
   if (entry.scoped_limits && entry.scoped_limits.length > 0) {
-    return entry.scoped_limits.map((limit) => ({ ...limit, stale: false }));
+    return entry.scoped_limits.map((limit) => ({
+      ...limit,
+      stale: entry.status === 'stale',
+      staleAsOf: entry.status === 'stale' ? entry.fetched_at : undefined,
+    }));
   }
   return (entry.last_good?.scoped_limits ?? []).map((limit) => ({
     ...limit,
@@ -275,6 +300,7 @@ function AgentChips({
 
 function AccountAttributionBlock({ attribution }: { attribution?: AccountAttribution }) {
   if (!attribution) return null;
+  const burn = attribution.burn;
   return (
     <div className="rounded-md border border-border/60 px-3 py-2 text-xs space-y-1.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -295,6 +321,12 @@ function AccountAttributionBlock({ attribution }: { attribution?: AccountAttribu
           flip pending restart
         </span>
       )}
+      {burn && (
+        <div className="grid grid-cols-2 gap-2 rounded bg-muted px-2 py-1 text-[10px]">
+          <span className="text-muted-foreground">24h burn <b className="text-foreground">{formatUsd(burn.last24hUsd)}</b></span>
+          <span className="text-muted-foreground">7d burn <b className="text-foreground">{formatUsd(burn.last7dUsd)}</b></span>
+        </div>
+      )}
       {attribution.promotion_candidate && attribution.tier === 'ASSERTED' && (
         <div className="rounded bg-muted px-2 py-1 text-[10px] text-muted-foreground">
           <span className="font-medium text-foreground">promotion candidate (pending security)</span>
@@ -309,12 +341,40 @@ function AccountAttributionBlock({ attribution }: { attribution?: AccountAttribu
   );
 }
 
+function statusLabel(status: AccountUsagePanelEntry['status']): string {
+  switch (status) {
+    case 'suspect': return 'SUSPECT';
+    case 'impossible-read': return 'IMPOSSIBLE READ';
+    case 'fetch-fail': return 'UNREACHABLE';
+    case 'stale': return 'STALE';
+    case 'ok': return 'OK';
+  }
+}
+
+function AccountStatusNotice({ entry }: { entry: AccountUsagePanelEntry }) {
+  if (entry.status === 'ok') return null;
+  const tone = entry.status === 'suspect' || entry.status === 'impossible-read'
+    ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+    : 'border-border/60 bg-muted text-muted-foreground';
+  const reason = entry.suspectReason ?? entry.error;
+  return (
+    <div className={`rounded-md border px-3 py-2 text-xs ${tone}`}>
+      <p className="font-medium">{statusLabel(entry.status)}</p>
+      {reason && <p className="mt-0.5 text-[10px]">{reason}</p>}
+      {entry.freshness?.asOf && (
+        <p className="mt-0.5 text-[10px]">as of {ptTime(entry.freshness.asOf)}</p>
+      )}
+    </div>
+  );
+}
+
 function AccountCard({ entry, attribution }: { entry: AccountUsagePanelEntry; attribution?: AccountAttribution }) {
   const fiveHour = resolveUsageValue(entry, 'five_hour');
   const sevenDay = resolveUsageValue(entry, 'seven_day');
   const scopedLimits = resolveScopedLimits(entry);
   const hasUsageValue = typeof fiveHour.value === 'number' || typeof sevenDay.value === 'number' || scopedLimits.length > 0;
-  const showUnavailable = !entry.ok && !hasUsageValue;
+  const showUsageMetrics = (entry.status === 'ok' || entry.status === 'stale') && hasUsageValue;
+  const showUnavailable = entry.status === 'ok' && !hasUsageValue;
   const isMetered = entry.extra_usage?.is_enabled;
   return (
     <div className="rounded-lg border border-border bg-card p-4 space-y-3">
@@ -323,7 +383,8 @@ function AccountCard({ entry, attribution }: { entry: AccountUsagePanelEntry; at
         <p className="text-xs text-muted-foreground">{entry.plan}</p>
       </div>
       <AccountAttributionBlock attribution={attribution} />
-      {!showUnavailable ? (
+      <AccountStatusNotice entry={entry} />
+      {showUsageMetrics ? (
         <div className="space-y-3">
           <UsageRow label="5-Hour Session" usage={fiveHour} />
           <UsageRow
@@ -336,11 +397,11 @@ function AccountCard({ entry, attribution }: { entry: AccountUsagePanelEntry; at
           ))}
           {entry.extra_usage && <ExtraUsage extra={entry.extra_usage} />}
         </div>
-      ) : (
+      ) : showUnavailable ? (
         <p className="text-xs text-amber-600 dark:text-amber-400">
           Unavailable{entry.error ? ` (${entry.error})` : ''}
         </p>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -402,13 +463,22 @@ export function SubscriptionUsage({
   codexActivity,
   agentAccounts,
 }: {
-  data: { generatedAt: string; accounts: AccountUsagePanelEntry[] } | null;
+  data: {
+    generatedAt: string;
+    accounts: AccountUsagePanelEntry[];
+    stale?: boolean;
+    staleAfterMs?: number;
+    newestFetchedAt?: string;
+    newestFetchedAgeMs?: number;
+  } | null;
   codex?: CodexUsagePanel | null;
   codexActivity?: CodexActivity | null;
   agentAccounts?: AgentAccounts | null;
 }) {
   const unassigned = agentAccounts?.unassigned ?? [];
-  const panelStale = isPanelStale(data?.generatedAt);
+  const panelStale = data?.stale ?? isPanelStale(data?.generatedAt);
+  const newestAge = ageLabel(data?.newestFetchedAgeMs);
+  const staleAfter = durationLabel(data?.staleAfterMs);
   return (
     <Card>
       <CardHeader>
@@ -431,6 +501,11 @@ export function SubscriptionUsage({
                 Security override layer unreadable - tiers are mechanical-only, judgments not applied.
               </div>
             )}
+            {agentAccounts && !agentAccounts.live && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                Snapshot fallback - live account resolver unreachable. Running-state map as of {ptTime(agentAccounts.runningStateGeneratedAt ?? agentAccounts.generatedAt)}.
+              </div>
+            )}
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {data?.accounts.map((a) => (
                 <AccountCard key={a.account} entry={a} attribution={agentAccounts?.accounts[a.account]} />
@@ -444,7 +519,8 @@ export function SubscriptionUsage({
               </div>
             )}
             <p className="text-[10px] text-muted-foreground">
-              {data ? `Claude updated ${ptTime(data.generatedAt)} · ` : ''}refreshes every 5 min
+              {data ? `Claude usage as of ${ptTime(data.newestFetchedAt ?? data.generatedAt)}${newestAge ? ` (${newestAge})` : ''}` : ''}
+              {data && staleAfter ? ` · stale after ${staleAfter}` : ''}
             </p>
             <p className="text-[10px] text-muted-foreground">
               CONFIRMED-PKCE requires an agent running a PKCE access_token as runtime; the fleet runs setup-tokens, so 0 is expected. Tiers: PKCE-proof &gt; correlation &gt; asserted (cluster-consistent) &gt; unverified.

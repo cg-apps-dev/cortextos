@@ -1,7 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { execFileSync } from 'child_process';
 import { db } from '@/lib/db';
+import { getCostByAgent } from '@/lib/cost-parser';
 
 // Resolve CTX_ROOT without importing from config (avoids turbopack chunk issues)
 const CTX_INSTANCE_ID = process.env.CTX_INSTANCE_ID ?? 'default';
@@ -280,6 +282,7 @@ const ACCOUNT_ORDER = ['cg-team-seat', 'me-com-max', 'icloud-max-20x', 'moonligh
 // Anthropic extra-usage billing: 100 credits = $1.00; me.com is capped at $10k.
 const CREDITS_PER_USD = 100;
 const EXTRA_USAGE_CAP_USD: Record<string, number> = { 'me-com-max': 10000 };
+const USAGE_SAMPLER_STALE_AFTER_MS = 30 * 60_000;
 
 export interface ScopedLimit {
   model: string;
@@ -294,6 +297,8 @@ export interface AccountUsagePanelEntry {
   email: string;
   plan: string;
   ok: boolean;
+  status: 'ok' | 'suspect' | 'impossible-read' | 'fetch-fail' | 'stale';
+  suspectReason?: string;
   error?: string;
   five_hour_pct?: number;
   seven_day_pct?: number;
@@ -319,11 +324,20 @@ export interface AccountUsagePanelEntry {
     fetched_at: string;
   };
   fetched_at?: string;
+  freshness?: {
+    asOf?: string;
+    ageMs?: number;
+    staleAfterMs: number;
+  };
 }
 
 interface RawAccountUsage {
   account: string;
   ok: boolean;
+  status?: string;
+  suspectReason?: string;
+  suspect_reason?: string;
+  reason?: string;
   error?: string;
   five_hour_pct?: number;
   seven_day_pct?: number;
@@ -345,11 +359,13 @@ interface RawAccountUsage {
 
 /**
  * Read the consolidated all-accounts usage snapshot (written by
- * `cortextos bus check-all-usage`, refreshed every 2h by launchd). Maps each
- * account to its email/plan label and enriches extra-usage with USD + cap.
+ * `cortextos bus check-all-usage`, refreshed by the active usage sampler).
+ * Maps each account to its email/plan label and enriches extra-usage with USD + cap.
  * Returns null if the snapshot has not been written yet.
  */
-export function getMultiAccountUsage(): { generatedAt: string; accounts: AccountUsagePanelEntry[] } | null {
+export function getMultiAccountUsage(
+  nowMs: number = Date.now(),
+): { generatedAt: string; accounts: AccountUsagePanelEntry[]; stale: boolean; staleAfterMs: number; newestFetchedAt?: string; newestFetchedAgeMs?: number } | null {
   const file = path.join(CTX_ROOT, 'state', 'usage', 'multi-account-usage.json');
   if (!fs.existsSync(file)) return null;
   let raw: { generated_at: string; accounts: RawAccountUsage[] };
@@ -364,24 +380,38 @@ export function getMultiAccountUsage(): { generatedAt: string; accounts: Account
     ...ACCOUNT_ORDER.filter((k) => byKey.has(k)),
     ...raw.accounts.map((a) => a.account).filter((k) => !ACCOUNT_ORDER.includes(k)),
   ];
+  const fetchedTimes = raw.accounts
+    .map((a) => typeof a.fetched_at === 'string' ? Date.parse(a.fetched_at) : NaN)
+    .filter((ms) => Number.isFinite(ms));
+  const newestFetchedMs = fetchedTimes.length > 0 ? Math.max(...fetchedTimes) : NaN;
+  const newestFetchedAt = Number.isFinite(newestFetchedMs) ? new Date(newestFetchedMs).toISOString() : undefined;
+  const newestFetchedAgeMs = Number.isFinite(newestFetchedMs) ? Math.max(0, nowMs - newestFetchedMs) : undefined;
+  const panelStale = typeof newestFetchedAgeMs === 'number' && newestFetchedAgeMs > USAGE_SAMPLER_STALE_AFTER_MS;
   const accounts: AccountUsagePanelEntry[] = keys.map((key) => {
     const a = byKey.get(key)!;
     const label = ACCOUNT_LABELS[key] ?? { email: key, plan: 'Claude Plan' };
+    const status = classifyAccountUsageStatus(a, nowMs, USAGE_SAMPLER_STALE_AFTER_MS);
+    const reason = usageStatusReason(a, status);
+    const ok = status === 'ok';
+    const showMeasuredUsage = status === 'ok' || status === 'stale';
     const entry: AccountUsagePanelEntry = {
       account: key,
       email: label.email,
       plan: label.plan,
-      ok: a.ok,
+      ok,
+      status,
+      ...(reason ? { suspectReason: reason } : {}),
       error: a.error,
-      five_hour_pct: a.five_hour_pct,
-      seven_day_pct: a.seven_day_pct,
-      five_hour_resets: a.five_hour_resets,
-      seven_day_resets: a.seven_day_resets,
-      scoped_limits: a.scoped_limits,
+      ...(showMeasuredUsage && typeof a.five_hour_pct === 'number' ? { five_hour_pct: a.five_hour_pct } : {}),
+      ...(showMeasuredUsage && typeof a.seven_day_pct === 'number' ? { seven_day_pct: a.seven_day_pct } : {}),
+      ...(showMeasuredUsage && a.five_hour_resets ? { five_hour_resets: a.five_hour_resets } : {}),
+      ...(showMeasuredUsage && a.seven_day_resets ? { seven_day_resets: a.seven_day_resets } : {}),
+      ...(showMeasuredUsage && a.scoped_limits ? { scoped_limits: a.scoped_limits } : {}),
       last_good: a.last_good,
       fetched_at: a.fetched_at,
+      freshness: accountFreshness(a.fetched_at, nowMs, USAGE_SAMPLER_STALE_AFTER_MS),
     };
-    if (a.extra_usage) {
+    if (showMeasuredUsage && a.extra_usage) {
       const credits = a.extra_usage.used_credits ?? 0;
       entry.extra_usage = {
         is_enabled: a.extra_usage.is_enabled,
@@ -392,7 +422,62 @@ export function getMultiAccountUsage(): { generatedAt: string; accounts: Account
     }
     return entry;
   });
-  return { generatedAt: raw.generated_at, accounts };
+  return {
+    generatedAt: raw.generated_at,
+    accounts,
+    stale: panelStale,
+    staleAfterMs: USAGE_SAMPLER_STALE_AFTER_MS,
+    ...(newestFetchedAt ? { newestFetchedAt } : {}),
+    ...(typeof newestFetchedAgeMs === 'number' ? { newestFetchedAgeMs } : {}),
+  };
+}
+
+function accountFreshness(
+  fetchedAt: string | undefined,
+  nowMs: number,
+  staleAfterMs: number,
+): AccountUsagePanelEntry['freshness'] | undefined {
+  if (!fetchedAt) return undefined;
+  const fetchedMs = Date.parse(fetchedAt);
+  if (!Number.isFinite(fetchedMs)) return { asOf: fetchedAt, staleAfterMs };
+  return { asOf: fetchedAt, ageMs: Math.max(0, nowMs - fetchedMs), staleAfterMs };
+}
+
+function classifyAccountUsageStatus(
+  usage: RawAccountUsage,
+  nowMs: number,
+  staleAfterMs: number,
+): AccountUsagePanelEntry['status'] {
+  const explicit = normalizeUsageStatus(usage.status);
+  if (explicit && explicit !== 'ok') return explicit;
+  const fetchedMs = typeof usage.fetched_at === 'string' ? Date.parse(usage.fetched_at) : NaN;
+  if (usage.ok === true && Number.isFinite(fetchedMs) && nowMs - fetchedMs > staleAfterMs) return 'stale';
+  if (usage.ok === true || explicit === 'ok') return 'ok';
+  const text = `${usage.error ?? ''} ${usage.reason ?? ''} ${usage.suspectReason ?? ''} ${usage.suspect_reason ?? ''}`.toLowerCase();
+  if (text.includes('suspect-read') || text.includes('suspect') || text.includes('mis-scoped') || text.includes('mis scoped')) return 'suspect';
+  if (text.includes('impossible-read') || text.includes('impossible') || text.includes('without resets')) return 'impossible-read';
+  return 'fetch-fail';
+}
+
+function normalizeUsageStatus(status: unknown): AccountUsagePanelEntry['status'] | undefined {
+  switch (status) {
+    case 'ok':
+    case 'suspect':
+    case 'impossible-read':
+    case 'fetch-fail':
+    case 'stale':
+      return status;
+    default:
+      return undefined;
+  }
+}
+
+function usageStatusReason(
+  usage: RawAccountUsage,
+  status: AccountUsagePanelEntry['status'],
+): string | undefined {
+  if (status === 'ok') return undefined;
+  return usage.suspectReason ?? usage.suspect_reason ?? usage.reason ?? usage.error;
 }
 
 export type AccountConfidenceTier = 'CONFIRMED-PKCE' | 'CONFIRMED-CORRELATION' | 'ASSERTED' | 'UNVERIFIED';
@@ -414,14 +499,21 @@ export interface AgentAccountAttribution {
   pending_restart: boolean;
 }
 
+export interface AccountBurn {
+  last24hUsd: number;
+  last7dUsd: number;
+}
+
 export interface AccountAttribution {
   tier: AccountConfidenceTier;
   verified_at?: string;
+  running_state_verified_at?: string;
   stale: boolean;
   pending_restart: boolean;
   source: string;
   note?: string;
   promotion_candidate?: PromotionCandidate;
+  burn?: AccountBurn;
   agents: AgentAccountAttribution[];
 }
 
@@ -433,6 +525,9 @@ export interface AgentAccounts {
   stale: boolean;
   overrideUnreadable: boolean;
   overrideSource?: 'error';
+  live: boolean;
+  liveSource: 'resolver' | 'snapshot-fallback';
+  runningStateGeneratedAt?: string;
   promotionCandidates: PromotionCandidate[];
   accounts: Record<string, AccountAttribution>;
   agents: Record<string, AgentAccountAttribution>;
@@ -558,80 +653,158 @@ function agentSource(entry: { source?: unknown; pkce_match?: unknown; tier?: unk
   return 'cluster';
 }
 
-export function getAgentAccounts(): AgentAccounts | null {
-  const file = path.join(CTX_ROOT, 'state', 'usage', 'agent-accounts.json');
-  if (!fs.existsSync(file)) return null;
-  try {
-    const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
-      generated_at?: unknown;
-      snapshot_interval_ms?: unknown;
-      override_unreadable?: unknown;
-      override_source?: unknown;
-      promotion_candidates?: unknown[];
-      agents?: Array<{
-        agent?: unknown;
-        account?: unknown;
-        source?: unknown;
-        tier?: unknown;
-        cluster_id?: unknown;
-        live_cluster_id?: unknown;
-        env_cluster_id?: unknown;
-        pending_restart?: unknown;
-        pkce_match?: unknown;
-        override_note?: unknown;
-        promotion_candidate?: unknown;
-      }>;
-    };
-    if (!Array.isArray(raw.agents)) return null;
+interface RawSnapshotAgentAccount {
+  agent?: unknown;
+  account?: unknown;
+  source?: unknown;
+  tier?: unknown;
+  cluster_id?: unknown;
+  live_cluster_id?: unknown;
+  env_cluster_id?: unknown;
+  pending_restart?: unknown;
+  pkce_match?: unknown;
+  override_note?: unknown;
+  promotion_candidate?: unknown;
+}
 
+export interface LiveAgentAccountRow {
+  org?: string;
+  agent: string;
+  account: string | null;
+  source: string | null;
+  reason?: string;
+}
+
+export function readLiveAgentAccountRows(): LiveAgentAccountRow[] | null {
+  try {
+    const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT ?? process.env.CTX_PROJECT_ROOT ?? path.resolve(process.cwd(), '..');
+    const output = execFileSync('cortextos', ['bus', 'list-agent-accounts', '--json'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000,
+      env: {
+        ...process.env,
+        CTX_ROOT,
+        CTX_FRAMEWORK_ROOT: frameworkRoot,
+      },
+    });
+    const parsed = JSON.parse(output) as unknown;
+    if (!Array.isArray(parsed)) return null;
+    const rows: LiveAgentAccountRow[] = [];
+    for (const row of parsed) {
+      if (!row || typeof row !== 'object') continue;
+      const r = row as Record<string, unknown>;
+      if (typeof r.agent !== 'string') continue;
+      rows.push({
+        ...(typeof r.org === 'string' ? { org: r.org } : {}),
+        agent: r.agent,
+        account: typeof r.account === 'string' ? r.account : null,
+        source: typeof r.source === 'string' ? r.source : null,
+        ...(typeof r.reason === 'string' ? { reason: r.reason } : {}),
+      });
+    }
+    return rows;
+  } catch {
+    return null;
+  }
+}
+
+export function getAgentAccounts(options: {
+  nowMs?: number;
+  liveRows?: LiveAgentAccountRow[] | null;
+} = {}): AgentAccounts | null {
+  const file = path.join(CTX_ROOT, 'state', 'usage', 'agent-accounts.json');
+  const liveRows = options.liveRows !== undefined ? options.liveRows : readLiveAgentAccountRows();
+  let raw: {
+    generated_at?: unknown;
+    snapshot_interval_ms?: unknown;
+    override_unreadable?: unknown;
+    override_source?: unknown;
+    promotion_candidates?: unknown[];
+    agents?: RawSnapshotAgentAccount[];
+  } | null = null;
+  if (fs.existsSync(file)) {
+    try {
+      raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    } catch {
+      raw = null;
+    }
+  }
+  if ((!raw || !Array.isArray(raw.agents)) && (!liveRows || liveRows.length === 0)) return null;
+  try {
     const byAccount: Record<string, string[]> = {};
     const unassigned: string[] = [];
     const codexAgents: string[] = [];
-    const generatedAt = typeof raw.generated_at === 'string' ? raw.generated_at : undefined;
-    const overrideUnreadable = raw.override_unreadable === true || raw.override_source === 'error';
-    const overrideSource = raw.override_source === 'error' ? 'error' : undefined;
+    const generatedAt = raw && typeof raw.generated_at === 'string' ? raw.generated_at : undefined;
+    const overrideUnreadable = raw?.override_unreadable === true || raw?.override_source === 'error';
+    const overrideSource = raw?.override_source === 'error' ? 'error' : undefined;
     const generatedMs = generatedAt ? new Date(generatedAt).getTime() : NaN;
-    const snapshotIntervalMs = typeof raw.snapshot_interval_ms === 'number' && raw.snapshot_interval_ms > 0
+    const snapshotIntervalMs = typeof raw?.snapshot_interval_ms === 'number' && raw.snapshot_interval_ms > 0
       ? raw.snapshot_interval_ms
       : readUsageSnapshotIntervalMs();
     const stale = Number.isFinite(generatedMs) && snapshotIntervalMs !== null
-      ? Date.now() - generatedMs > STALENESS_CYCLES * snapshotIntervalMs
+      ? (options.nowMs ?? Date.now()) - generatedMs > STALENESS_CYCLES * snapshotIntervalMs
       : false;
-    const promotionCandidates = Array.isArray(raw.promotion_candidates)
+    const promotionCandidates = Array.isArray(raw?.promotion_candidates)
       ? raw.promotion_candidates.map(parsePromotionCandidate).filter((c): c is PromotionCandidate => !!c)
       : [];
     const accounts: Record<string, AccountAttribution> = {};
     const agents: Record<string, AgentAccountAttribution> = {};
+    const snapshotAgents = Array.isArray(raw?.agents) ? raw.agents : [];
+    const snapshotByName = new Map<string, RawSnapshotAgentAccount>();
+    for (const entry of snapshotAgents) {
+      if (typeof entry.agent === 'string') snapshotByName.set(shortAgentName(entry.agent), entry);
+    }
+    const rows = liveRows && liveRows.length > 0
+      ? liveRows.map((row) => {
+        const name = shortAgentName(row.agent);
+        return { row, snapshot: snapshotByName.get(name) };
+      })
+      : snapshotAgents.map((snapshot) => ({
+        row: {
+          agent: typeof snapshot.agent === 'string' ? snapshot.agent : '',
+          account: typeof snapshot.account === 'string' ? snapshot.account : null,
+          source: typeof snapshot.source === 'string' ? snapshot.source : null,
+        },
+        snapshot,
+      }));
+    const live = !!liveRows && liveRows.length > 0;
 
-    for (const entry of raw.agents) {
-      if (typeof entry.agent !== 'string') continue;
-      const name = shortAgentName(entry.agent);
-      const tier = isAccountTier(entry.tier) ? entry.tier : 'UNVERIFIED';
-      const cluster_id = typeof entry.cluster_id === 'string'
-        ? entry.cluster_id
-        : typeof entry.live_cluster_id === 'string'
-          ? entry.live_cluster_id
-          : typeof entry.env_cluster_id === 'string'
-            ? entry.env_cluster_id
+    for (const { row, snapshot } of rows) {
+      if (typeof row.agent !== 'string' || row.agent.length === 0) continue;
+      const name = shortAgentName(row.agent);
+      const tier = snapshot && isAccountTier(snapshot.tier) ? snapshot.tier : 'ASSERTED';
+      const cluster_id = snapshot && typeof snapshot.cluster_id === 'string'
+        ? snapshot.cluster_id
+        : snapshot && typeof snapshot.live_cluster_id === 'string'
+          ? snapshot.live_cluster_id
+          : snapshot && typeof snapshot.env_cluster_id === 'string'
+            ? snapshot.env_cluster_id
             : null;
-      const pending_restart = entry.pending_restart === true;
-      const source = agentSource(entry);
+      const pending_restart = snapshot?.pending_restart === true;
+      const source = live
+        ? row.source ?? 'live-resolver'
+        : snapshot
+          ? agentSource(snapshot)
+          : 'snapshot';
       const attribution: AgentAccountAttribution = { agent: name, tier, source, cluster_id, pending_restart };
       agents[name] = attribution;
-      if (typeof entry.account === 'string' && entry.account.length > 0) {
-        if (!byAccount[entry.account]) byAccount[entry.account] = [];
-        byAccount[entry.account].push(name);
-        const existing = accounts[entry.account];
-        const candidate = parsePromotionCandidate(entry.promotion_candidate) ??
-          promotionCandidates.find((c) => c.target_account === entry.account);
+      const accountLabel = typeof row.account === 'string' && row.account.length > 0 ? row.account : null;
+      if (accountLabel) {
+        if (!byAccount[accountLabel]) byAccount[accountLabel] = [];
+        byAccount[accountLabel].push(name);
+        const existing = accounts[accountLabel];
+        const candidate = parsePromotionCandidate(snapshot?.promotion_candidate) ??
+          promotionCandidates.find((c) => c.target_account === accountLabel);
         if (!existing) {
-          accounts[entry.account] = {
+          accounts[accountLabel] = {
             tier,
             verified_at: generatedAt,
+            running_state_verified_at: generatedAt,
             stale,
             pending_restart,
             source,
-            ...(typeof entry.override_note === 'string' ? { note: entry.override_note } : {}),
+            ...(snapshot && typeof snapshot.override_note === 'string' ? { note: snapshot.override_note } : {}),
             ...(candidate ? { promotion_candidate: candidate } : {}),
             agents: [attribution],
           };
@@ -645,7 +818,7 @@ export function getAgentAccounts(): AgentAccounts | null {
           if (!existing.promotion_candidate && candidate) existing.promotion_candidate = candidate;
           existing.agents.push(attribution);
         }
-      } else if (entry.source === 'runtime-excluded') {
+      } else if (row.source === 'runtime-excluded' || snapshot?.source === 'runtime-excluded') {
         codexAgents.push(name);
       } else {
         unassigned.push(name);
@@ -657,6 +830,7 @@ export function getAgentAccounts(): AgentAccounts | null {
     for (const account of Object.values(accounts)) {
       account.agents.sort((a, b) => a.agent.localeCompare(b.agent));
     }
+    addAccountBurn(accounts);
     return {
       byAccount,
       unassigned,
@@ -665,12 +839,37 @@ export function getAgentAccounts(): AgentAccounts | null {
       stale,
       overrideUnreadable,
       ...(overrideSource ? { overrideSource } : {}),
+      live,
+      liveSource: live ? 'resolver' : 'snapshot-fallback',
+      ...(generatedAt ? { runningStateGeneratedAt: generatedAt } : {}),
       promotionCandidates,
       accounts,
       agents,
     };
   } catch {
     return null;
+  }
+}
+
+function addAccountBurn(accounts: Record<string, AccountAttribution>): void {
+  const burn24h = new Map(getCostByAgent(1).map((row) => [shortAgentName(row.agent), row.cost]));
+  const burn7d = new Map(getCostByAgent(7).map((row) => [shortAgentName(row.agent), row.cost]));
+  for (const account of Object.values(accounts)) {
+    account.burn = account.agents.reduce<AccountBurn>((sum, agent) => ({
+      last24hUsd: sum.last24hUsd + (burn24h.get(agent.agent) ?? 0),
+      last7dUsd: sum.last7dUsd + (burn7d.get(agent.agent) ?? 0),
+    }), { last24hUsd: 0, last7dUsd: 0 });
+  }
+}
+
+export function hasCostEntriesUniqueIndex(): boolean {
+  try {
+    const row = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_cost_entries_unique'")
+      .get() as { name?: string } | undefined;
+    return row?.name === 'idx_cost_entries_unique';
+  } catch {
+    return false;
   }
 }
 
