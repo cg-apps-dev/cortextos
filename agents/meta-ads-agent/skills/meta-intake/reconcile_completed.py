@@ -36,6 +36,7 @@ EXCLUDED_KEYS = (
     "baseline_dropped_fail",
     "baseline_testimonial",
     "ended_zero_spend",
+    "adam_cleared",
 )
 ACTIVE = "ACTIVE"
 AMBIGUOUS = "AMBIGUOUS"
@@ -349,6 +350,11 @@ def reconcile(
     # excluded ONLY in the AMBIGUOUS branch below - a verified-$0 signal is the one thing that
     # beats the AMBIGUOUS-surface invariant. ACTIVE rows NEVER consult this set (always surface).
     ended_rows = {(str(tab), int(row)) for tab, row in (baseline or {}).get("ended_zero_spend_rows", [])}
+    # Adam-cleared (2026-07-09 directive): reconcile gaps that Adam confirmed are ALL already on
+    # the sheet - ignore permanently, never scan/re-intake/re-surface. Applied as a final post-filter
+    # so it drops BOTH the MISSING-card gaps (by card_id) and the AMBIGUOUS-row gaps (by tab,row).
+    adam_cleared_cards = {str(cid) for cid in (baseline or {}).get("adam_cleared_cards", [])}
+    adam_cleared_rows = {(str(tab), int(row)) for tab, row in (baseline or {}).get("adam_cleared_rows", [])}
     checked_cards = 0
     checked_file_ids = 0
     for card in cards:
@@ -430,6 +436,18 @@ def reconcile(
                     tab=presence.tab,
                     row=presence.row,
                 ))
+    # Adam-cleared post-filter: drop gaps Adam confirmed are already on the sheet (never re-surface).
+    if adam_cleared_cards or adam_cleared_rows:
+        kept: list[Gap] = []
+        for gap in gaps:
+            if gap.card_id in adam_cleared_cards:
+                excluded["adam_cleared"] += 1
+                continue
+            if gap.tab is not None and gap.row is not None and (str(gap.tab), int(gap.row)) in adam_cleared_rows:
+                excluded["adam_cleared"] += 1
+                continue
+            kept.append(gap)
+        gaps = kept
     counts = {
         "MISSING_cards": sum(1 for gap in gaps if gap.gap_type == "MISSING"),
         "ACTIVE_UNSCANNED": sum(1 for gap in gaps if gap.gap_type == "ACTIVE_UNSCANNED"),
