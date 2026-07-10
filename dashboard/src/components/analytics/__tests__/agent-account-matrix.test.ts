@@ -62,3 +62,78 @@ describe('AgentAccountMatrix switch breadcrumb', () => {
     expect(html).not.toContain('text-destructive\">Attribution NOT confirmed');
   });
 });
+
+describe('AgentAccountMatrix responsive structure', () => {
+  const groups: AgentAccountMatrixGroup[] = [
+    {
+      key: 'account:me-com-max',
+      label: 'me-com-max',
+      account: 'me-com-max',
+      section: 'account',
+      tier: 'CONFIRMED-PKCE',
+      source: 'live',
+      pendingRestartCount: 1,
+      rows: [
+        {
+          agent: 'analyst',
+          agentId: 'the-analyst',
+          account: 'me-com-max',
+          source: 'live',
+          tier: 'CONFIRMED-PKCE',
+          pending_restart: true,
+          section: 'account',
+        },
+      ],
+    },
+    {
+      key: 'runtime-excluded',
+      label: 'Runtime excluded',
+      account: null,
+      section: 'runtime-excluded',
+      pendingRestartCount: 0,
+      rows: [
+        {
+          agent: 'codex',
+          agentId: 'codex-dev-agent',
+          account: null,
+          source: 'runtime-excluded',
+          tier: 'UNVERIFIED',
+          pending_restart: false,
+          section: 'runtime-excluded',
+        },
+      ],
+    },
+  ];
+
+  function renderMatrix(): string {
+    return renderToStaticMarkup(createElement(AgentAccountMatrix, {
+      groups,
+      org: 'clean-green-marketing',
+      vaultAccounts: [
+        { account: 'me-com-max', hasToken: true },
+        { account: 'moonlight-max', hasToken: true },
+      ],
+    }));
+  }
+
+  it('renders one responsive tree with desktop headers and mobile field labels', () => {
+    const html = renderMatrix();
+
+    expect(html).toContain('Agent Account Matrix');
+    expect(html).toContain('Pending restart');
+    expect(html).toContain('Switch');
+    expect(html).toContain('Account');
+    expect(html).toContain('Source');
+    expect(html).toContain('Tier');
+    expect(html).toContain('Pending');
+  });
+
+  it('mounts exactly one switch control for each switchable account row', () => {
+    const html = renderMatrix();
+
+    expect(html.match(/data-agent-row=/g)).toHaveLength(2);
+    expect(html.match(/data-agent-switch-control=/g)).toHaveLength(1);
+    expect(html).toContain('data-agent-switch-control="the-analyst"');
+    expect(html).not.toContain('data-agent-switch-control="codex-dev-agent"');
+  });
+});

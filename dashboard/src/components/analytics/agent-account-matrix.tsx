@@ -1,13 +1,5 @@
-import { Fragment } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import type { AgentAccountMatrixGroup, AccountConfidenceTier } from '@/lib/data/reports';
 import type { SwitchJobSummary, VaultAccountOption } from '@/lib/account-switch';
 import { AccountSwitchControl } from './account-switch-control';
@@ -30,6 +22,37 @@ function TierBadge({ tier }: { tier: AccountConfidenceTier }) {
     <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${tierTone(tier)}`}>
       {tier}
     </span>
+  );
+}
+
+function PendingBadge({ pending }: { pending: boolean }) {
+  return pending ? (
+    <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+      pending
+    </span>
+  ) : (
+    <span className="text-muted-foreground">none</span>
+  );
+}
+
+function MatrixField({
+  label,
+  children,
+  className = '',
+}: {
+  label: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`min-w-0 space-y-1 ${className}`}>
+      <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground md:hidden">
+        {label}
+      </div>
+      <div className="min-w-0 text-sm md:text-xs">
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -60,74 +83,72 @@ export function AgentAccountMatrix({
       </CardHeader>
       <CardContent>
         {groups.length > 0 ? (
-          <>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Agent</TableHead>
-                  <TableHead>Account</TableHead>
-                  <TableHead>Source</TableHead>
-                  <TableHead>Tier</TableHead>
-                  <TableHead>Pending restart</TableHead>
-                  <TableHead>Switch</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {groups.map((group) => (
-                  <Fragment key={group.key}>
-                    <TableRow className="bg-muted/40 hover:bg-muted/40">
-                      <TableCell colSpan={2} className="font-medium">
-                        {group.label}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {group.source ?? group.section}
-                      </TableCell>
-                      <TableCell>
-                        {group.tier ? <TierBadge tier={group.tier} /> : <span className="text-muted-foreground">-</span>}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {group.pendingRestartCount > 0 ? `${group.pendingRestartCount} pending` : 'none'}
-                      </TableCell>
-                      <TableCell />
-                    </TableRow>
-                    {group.rows.map((row) => (
-                      <TableRow key={`${group.key}:${row.agentId}`}>
-                        <TableCell className="font-medium">{row.agent}</TableCell>
-                        <TableCell className="text-muted-foreground">{row.account ?? group.label}</TableCell>
-                        <TableCell>{row.source}</TableCell>
-                        <TableCell><TierBadge tier={row.tier} /></TableCell>
-                        <TableCell>
-                          {row.pending_restart ? (
-                            <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                              pending
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground">none</span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {row.section === 'account' ? (
-                            <div className="flex min-w-56 flex-col gap-2">
-                              <SwitchBreadcrumb job={switchJobsByAgent?.[row.agentId]} />
-                              <AccountSwitchControl
-                                agent={row.agent}
-                                agentId={row.agentId}
-                                currentAccount={row.account}
-                                targets={vaultAccounts ?? null}
-                                initialJob={switchJobsByAgent?.[row.agentId] ?? null}
-                              />
-                            </div>
-                          ) : (
-                            <span className="text-muted-foreground">-</span>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </Fragment>
+          <div className="space-y-3">
+            <div className="hidden border-y bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground md:grid md:grid-cols-[1fr_1fr_0.8fr_0.8fr_0.8fr_1.5fr] md:gap-3 lg:grid-cols-[minmax(7rem,1fr)_minmax(8rem,1fr)_minmax(6rem,0.8fr)_minmax(7rem,0.8fr)_minmax(7rem,0.8fr)_minmax(15rem,1.4fr)]">
+              <div>Agent</div>
+              <div>Account</div>
+              <div>Source</div>
+              <div>Tier</div>
+              <div>Pending restart</div>
+              <div>Switch</div>
+            </div>
+            {groups.map((group) => (
+              <Fragment key={group.key}>
+                <div className="rounded-lg border bg-muted/35 p-3 md:grid md:grid-cols-[1fr_1fr_0.8fr_0.8fr_0.8fr_1.5fr] md:items-center md:gap-3 md:rounded-none md:border-x-0 md:bg-muted/40 md:px-3 md:py-2 lg:grid-cols-[minmax(7rem,1fr)_minmax(8rem,1fr)_minmax(6rem,0.8fr)_minmax(7rem,0.8fr)_minmax(7rem,0.8fr)_minmax(15rem,1.4fr)]">
+                  <div className="font-medium md:col-span-2">{group.label}</div>
+                  <div className="mt-1 text-xs text-muted-foreground md:mt-0">
+                    {group.source ?? group.section}
+                  </div>
+                  <div className="mt-2 md:mt-0">
+                    {group.tier ? <TierBadge tier={group.tier} /> : <span className="text-muted-foreground">-</span>}
+                  </div>
+                  <div className="mt-2 text-xs text-muted-foreground md:mt-0">
+                    {group.pendingRestartCount > 0 ? `${group.pendingRestartCount} pending` : 'none pending'}
+                  </div>
+                  <div className="hidden md:block" />
+                </div>
+                {group.rows.map((row) => (
+                  <div
+                    key={`${group.key}:${row.agentId}`}
+                    data-agent-row={row.agentId}
+                    className="grid gap-3 rounded-lg border bg-background p-3 md:grid-cols-[1fr_1fr_0.8fr_0.8fr_0.8fr_1.5fr] md:items-start md:gap-3 md:rounded-none md:border-x-0 md:border-t-0 md:px-3 md:py-3 lg:grid-cols-[minmax(7rem,1fr)_minmax(8rem,1fr)_minmax(6rem,0.8fr)_minmax(7rem,0.8fr)_minmax(7rem,0.8fr)_minmax(15rem,1.4fr)]"
+                  >
+                    <MatrixField label="Agent" className="font-medium">
+                      <span className="break-words text-base md:text-xs">{row.agent}</span>
+                    </MatrixField>
+                    <MatrixField label="Account">
+                      <span className="break-words text-muted-foreground">{row.account ?? group.label}</span>
+                    </MatrixField>
+                    <MatrixField label="Source">
+                      <span className="break-words">{row.source}</span>
+                    </MatrixField>
+                    <MatrixField label="Tier">
+                      <TierBadge tier={row.tier} />
+                    </MatrixField>
+                    <MatrixField label="Pending">
+                      <PendingBadge pending={row.pending_restart} />
+                    </MatrixField>
+                    <MatrixField label="Switch" className="lg:min-w-56">
+                      {row.section === 'account' ? (
+                        <div data-agent-switch-control={row.agentId} className="flex min-w-0 flex-col gap-2">
+                          <SwitchBreadcrumb job={switchJobsByAgent?.[row.agentId]} />
+                          <AccountSwitchControl
+                            agent={row.agent}
+                            agentId={row.agentId}
+                            currentAccount={row.account}
+                            targets={vaultAccounts ?? null}
+                            initialJob={switchJobsByAgent?.[row.agentId] ?? null}
+                          />
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </MatrixField>
+                  </div>
                 ))}
-              </TableBody>
-            </Table>
-          </>
+              </Fragment>
+            ))}
+          </div>
         ) : (
           <div className="py-8 text-center">
             <p className="text-sm font-medium">No account assignments available</p>

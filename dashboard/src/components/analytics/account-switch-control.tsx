@@ -119,15 +119,15 @@ export function AccountSwitchControl({ agent, agentId, currentAccount, targets, 
   }
 
   return (
-    <div className="flex min-w-56 flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="flex w-full min-w-0 flex-col gap-2 lg:min-w-56">
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
         <Select value={selected} onValueChange={(value) => setSelected(value ?? '')} disabled={disabled}>
-          <SelectTrigger size="sm" className="w-44">
+          <SelectTrigger size="sm" className="min-h-11 w-full sm:min-h-0 sm:w-44">
             <SelectValue placeholder={switchableOptions.length > 0 ? 'Switch account' : 'No targets'} />
           </SelectTrigger>
           <SelectContent>
             {options.map((target) => (
-              <SelectItem key={target.account} value={target.account} disabled={target.account === currentAccount}>
+              <SelectItem key={target.account} value={target.account} disabled={target.account === currentAccount} className="min-h-10">
                 <span>{target.account}</span>
                 <span className="text-xs text-muted-foreground">
                   {target.account === currentAccount ? 'current' : capacityLabel(target)}
@@ -139,6 +139,7 @@ export function AccountSwitchControl({ agent, agentId, currentAccount, targets, 
         <Button
           size="sm"
           variant="outline"
+          className="min-h-11 w-full sm:min-h-0 sm:w-auto"
           disabled={disabled || !selectedTarget}
           onClick={() => setConfirmOpen(true)}
         >
@@ -179,8 +180,8 @@ export function AccountSwitchControl({ agent, agentId, currentAccount, targets, 
             )}
           </div>
           <DialogFooter>
-            <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
-            <Button onClick={submitSwitch}>Confirm switch</Button>
+            <DialogClose render={<Button variant="outline" className="w-full sm:w-auto" />}>Cancel</DialogClose>
+            <Button onClick={submitSwitch} className="w-full sm:w-auto">Confirm switch</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
