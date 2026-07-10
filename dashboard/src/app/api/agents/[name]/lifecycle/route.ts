@@ -1,8 +1,17 @@
 import { NextRequest } from 'next/server';
 import fs from 'fs/promises';
 import path from 'path';
+import { execFileSync } from 'child_process';
+import { auth } from '@/lib/auth';
 import { getFrameworkRoot, getCTXRoot } from '@/lib/config';
-import { IPCClient } from '@/lib/ipc-client';
+import { IPCClient, type IPCRequest, type IPCResponse } from '@/lib/ipc-client';
+import {
+  AccountSwitchHttpError,
+  actorFromSession,
+  isAdminSession,
+  verifyCsrfAndOrigin,
+  type SwitchSession,
+} from '@/lib/account-switch';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,6 +24,31 @@ function isValidName(name: string): boolean {
 }
 
 const VALID_ACTIONS = ['enable', 'disable', 'restart', 'start', 'stop', 'restart_continue', 'restart_fresh'];
+
+export interface LifecycleOps {
+  ctxRoot(): string;
+  frameworkRoot(): string;
+  ipcSend(request: IPCRequest): Promise<IPCResponse>;
+  readFile(path: string, encoding: BufferEncoding): Promise<string>;
+  writeFile(path: string, data: string, encoding: BufferEncoding): Promise<void>;
+  mkdir(path: string, options: { recursive: boolean }): Promise<unknown>;
+  rm(path: string, options: { recursive: boolean; force: boolean }): Promise<void>;
+  audit(event: Record<string, unknown>): void;
+}
+
+const defaultLifecycleOps: LifecycleOps = {
+  ctxRoot: getCTXRoot,
+  frameworkRoot: getFrameworkRoot,
+  ipcSend(request) {
+    const instanceId = process.env.CTX_INSTANCE_ID ?? 'default';
+    return new IPCClient(instanceId).send(request);
+  },
+  readFile: fs.readFile,
+  writeFile: fs.writeFile,
+  mkdir: fs.mkdir,
+  rm: fs.rm,
+  audit: auditLifecycleAttempt,
+};
 
 // Security (C4): Validate org and name against allowlist before use in shell commands or path.join.
 function validateIdentifier(value: string | null | undefined, field: string): string {
@@ -34,18 +68,42 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> },
 ) {
-  const { name } = await params;
+  const session = await auth();
+  const result = await lifecyclePost(request, await params, session);
+  return Response.json(result.body, { status: result.status });
+}
+
+export async function lifecyclePost(
+  request: NextRequest,
+  params: { name: string },
+  session: SwitchSession | null | undefined,
+  ops: LifecycleOps = defaultLifecycleOps,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const { name } = params;
   const decoded = decodeURIComponent(name);
+  const actor = session ? actorFromSession(session) : 'anonymous';
+
+  try {
+    if (!session) throw new AccountSwitchHttpError(401, 'Authentication required', 'UNAUTHENTICATED');
+    if (!isAdminSession(session)) throw new AccountSwitchHttpError(403, 'Admin access required', 'FORBIDDEN');
+    verifyCsrfAndOrigin(request);
+  } catch (err) {
+    const http = toLifecycleHttpError(err);
+    auditLifecycle(ops, { actor, agent: decoded, outcome: http.code });
+    return responsePayload(http.status, { error: http.message, code: http.code });
+  }
 
   if (!isValidName(decoded)) {
-    return Response.json({ error: 'Invalid agent name' }, { status: 400 });
+    auditLifecycle(ops, { actor, agent: decoded, outcome: 'INVALID_AGENT_NAME' });
+    return responsePayload(400, { error: 'Invalid agent name' });
   }
 
   let body: Record<string, unknown>;
   try {
     body = await request.json();
   } catch {
-    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+    auditLifecycle(ops, { actor, agent: decoded, outcome: 'INVALID_JSON' });
+    return responsePayload(400, { error: 'Invalid JSON body' });
   }
 
   const { action: rawAction, org } = body as {
@@ -54,9 +112,10 @@ export async function POST(
   };
 
   if (!rawAction || !VALID_ACTIONS.includes(rawAction)) {
-    return Response.json(
+    auditLifecycle(ops, { actor, agent: decoded, action: rawAction, outcome: 'INVALID_ACTION' });
+    return responsePayload(
+      400,
       { error: `action must be one of: ${VALID_ACTIONS.join(', ')}` },
-      { status: 400 },
     );
   }
 
@@ -75,12 +134,10 @@ export async function POST(
     try {
       safeOrg = validateIdentifier(org, 'org');
     } catch (err: any) {
-      return Response.json({ error: err.message }, { status: 400 });
+      auditLifecycle(ops, { actor, agent: decoded, action, outcome: 'INVALID_ORG' });
+      return responsePayload(400, { error: err.message });
     }
   }
-
-  const instanceId = process.env.CTX_INSTANCE_ID ?? 'default';
-  const ipc = new IPCClient(instanceId);
 
   try {
     let ipcResult: { success: boolean; data?: unknown; error?: string };
@@ -88,11 +145,11 @@ export async function POST(
 
     switch (action) {
       case 'enable': {
-        const ctxRoot = getCTXRoot();
+        const ctxRoot = ops.ctxRoot();
         const enabledAgentsPath = path.join(ctxRoot, 'config', 'enabled-agents.json');
         let enabledAgents: Record<string, unknown> = {};
         try {
-          const raw = await fs.readFile(enabledAgentsPath, 'utf-8');
+          const raw = await ops.readFile(enabledAgentsPath, 'utf-8');
           enabledAgents = JSON.parse(raw);
         } catch { /* file may not exist yet */ }
         enabledAgents[decoded] = {
@@ -102,24 +159,24 @@ export async function POST(
           enabled: true,
           ...(safeOrg ? { org: safeOrg } : {}),
         };
-        await fs.mkdir(path.dirname(enabledAgentsPath), { recursive: true });
-        await fs.writeFile(enabledAgentsPath, JSON.stringify(enabledAgents, null, 2) + '\n', 'utf-8');
+        await ops.mkdir(path.dirname(enabledAgentsPath), { recursive: true });
+        await ops.writeFile(enabledAgentsPath, JSON.stringify(enabledAgents, null, 2) + '\n', 'utf-8');
         registryMessage = 'enabled in registry';
-        ipcResult = await ipc.send({ type: 'start-agent', agent: decoded });
+        ipcResult = await ops.ipcSend({ type: 'start-agent', agent: decoded });
         break;
       }
 
       case 'disable': {
-        ipcResult = await ipc.send({ type: 'stop-agent', agent: decoded });
-        const ctxRoot = getCTXRoot();
+        ipcResult = await ops.ipcSend({ type: 'stop-agent', agent: decoded });
+        const ctxRoot = ops.ctxRoot();
         const enabledAgentsPath = path.join(ctxRoot, 'config', 'enabled-agents.json');
         try {
-          const raw = await fs.readFile(enabledAgentsPath, 'utf-8');
+          const raw = await ops.readFile(enabledAgentsPath, 'utf-8');
           const enabledAgents = JSON.parse(raw) as Record<string, unknown>;
           if (enabledAgents[decoded] && typeof enabledAgents[decoded] === 'object') {
             (enabledAgents[decoded] as Record<string, unknown>).enabled = false;
           }
-          await fs.writeFile(enabledAgentsPath, JSON.stringify(enabledAgents, null, 2) + '\n', 'utf-8');
+          await ops.writeFile(enabledAgentsPath, JSON.stringify(enabledAgents, null, 2) + '\n', 'utf-8');
           registryMessage = 'disabled in registry';
         } catch {
           registryMessage = 'registry update failed (non-fatal)';
@@ -128,33 +185,36 @@ export async function POST(
       }
 
       case 'restart': {
-        ipcResult = await ipc.send({ type: 'restart-agent', agent: decoded, ...(restartMode ? { mode: restartMode } : {}) });
+        ipcResult = await ops.ipcSend({ type: 'restart-agent', agent: decoded, ...(restartMode ? { mode: restartMode } : {}) });
         registryMessage = '';
         break;
       }
 
       default:
-        return Response.json({ error: 'Invalid action' }, { status: 400 });
+        return responsePayload(400, { error: 'Invalid action' });
     }
 
     if (!ipcResult.success) {
       const isDaemonDown = ipcResult.error?.includes('Daemon is not running');
       if (isDaemonDown && action === 'enable') {
-        return Response.json({
+        auditLifecycle(ops, { actor, agent: decoded, action, outcome: 'success' });
+        return responsePayload(200, {
           success: true,
           action,
           agent: decoded,
-          output: `${registryMessage}; daemon not running — agent will start when daemon starts`,
+          output: `${registryMessage}; daemon not running - agent will start when daemon starts`,
         });
       }
       console.error(`[api/agents/${decoded}/lifecycle] POST IPC error (${action}):`, ipcResult.error);
-      return Response.json(
+      auditLifecycle(ops, { actor, agent: decoded, action, outcome: 'IPC_FAILED' });
+      return responsePayload(
+        500,
         { error: `Failed to ${action} agent: ${ipcResult.error ?? 'unknown IPC error'}` },
-        { status: 500 },
       );
     }
 
-    return Response.json({
+    auditLifecycle(ops, { actor, agent: decoded, action, outcome: 'success' });
+    return responsePayload(200, {
       success: true,
       action,
       agent: decoded,
@@ -163,7 +223,8 @@ export async function POST(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[api/agents/${decoded}/lifecycle] POST error:`, message);
-    return Response.json({ error: `Failed to ${action} agent` }, { status: 500 });
+    auditLifecycle(ops, { actor, agent: decoded, action, outcome: 'LIFECYCLE_POST_FAILED' });
+    return responsePayload(500, { error: `Failed to ${action} agent` });
   }
 }
 
@@ -177,28 +238,60 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> },
 ) {
-  const { name } = await params;
-  const decoded = decodeURIComponent(name);
+  const session = await auth();
+  const result = await lifecycleDelete(request, await params, session);
+  return Response.json(result.body, { status: result.status });
+}
 
-  if (!isValidName(decoded)) {
-    return Response.json({ error: 'Invalid agent name' }, { status: 400 });
+export async function lifecycleDelete(
+  request: NextRequest,
+  params: { name: string },
+  session: SwitchSession | null | undefined,
+  ops: LifecycleOps = defaultLifecycleOps,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const { name } = params;
+  const decoded = decodeURIComponent(name);
+  const actor = session ? actorFromSession(session) : 'anonymous';
+
+  try {
+    if (!session) throw new AccountSwitchHttpError(401, 'Authentication required', 'UNAUTHENTICATED');
+    if (!isAdminSession(session)) throw new AccountSwitchHttpError(403, 'Admin access required', 'FORBIDDEN');
+    verifyCsrfAndOrigin(request);
+  } catch (err) {
+    const http = toLifecycleHttpError(err);
+    auditLifecycle(ops, { actor, agent: decoded, action: 'delete', deleteFiles: false, outcome: http.code });
+    return responsePayload(http.status, { error: http.message, code: http.code });
   }
 
-  const ctxRoot = getCTXRoot();
+  if (!isValidName(decoded)) {
+    auditLifecycle(ops, { actor, agent: decoded, action: 'delete', deleteFiles: false, outcome: 'INVALID_AGENT_NAME' });
+    return responsePayload(400, { error: 'Invalid agent name' });
+  }
+
+  const ctxRoot = ops.ctxRoot();
   const enabledAgentsPath = path.join(ctxRoot, 'config', 'enabled-agents.json');
   const deleteFiles = request.nextUrl.searchParams.get('deleteFiles') === 'true';
+  const confirmName = await readConfirmName(request);
+  if (deleteFiles && confirmName !== decoded) {
+    auditLifecycle(ops, { actor, agent: decoded, action: 'delete', deleteFiles, outcome: 'CONFIRM_REQUIRED' });
+    return responsePayload(400, { error: 'confirmName must match agent name', code: 'CONFIRM_REQUIRED' });
+  }
 
   // Look up org from enabled-agents.json
   let org = '';
   let enabledAgents: Record<string, { org?: string; enabled?: boolean }> = {};
   try {
-    const raw = await fs.readFile(enabledAgentsPath, 'utf-8');
+    const raw = await ops.readFile(enabledAgentsPath, 'utf-8');
     enabledAgents = JSON.parse(raw);
     if (enabledAgents[decoded]) {
       org = enabledAgents[decoded].org ?? '';
     }
   } catch {
     // File doesn't exist or is malformed
+  }
+  if (!enabledAgents[decoded]) {
+    auditLifecycle(ops, { actor, agent: decoded, action: 'delete', deleteFiles, outcome: 'AGENT_NOT_IN_REGISTRY' });
+    return responsePayload(400, { error: 'Agent not found in registry' });
   }
 
   // Security (C4): Validate org from stored data before use in shell commands and path.join.
@@ -207,16 +300,14 @@ export async function DELETE(
     try {
       safeDeleteOrg = validateIdentifier(org, 'org');
     } catch {
-      // org stored in registry is malformed — skip shell/fs operations that use it
+      // org stored in registry is malformed - skip shell/fs operations that use it
       safeDeleteOrg = '';
     }
   }
 
   // 1. Tell daemon to stop the agent (best-effort; agent may already be stopped)
   {
-    const instanceId = process.env.CTX_INSTANCE_ID ?? 'default';
-    const ipc = new IPCClient(instanceId);
-    const stopResult = await ipc.send({ type: 'stop-agent', agent: decoded });
+    const stopResult = await ops.ipcSend({ type: 'stop-agent', agent: decoded });
     if (!stopResult.success && !stopResult.error?.includes('Daemon is not running')) {
       console.warn(`[api/agents/${decoded}/lifecycle] stop during delete:`, stopResult.error);
     }
@@ -225,7 +316,7 @@ export async function DELETE(
   // 2. Remove from enabled-agents.json
   try {
     delete enabledAgents[decoded];
-    await fs.writeFile(
+    await ops.writeFile(
       enabledAgentsPath,
       JSON.stringify(enabledAgents, null, 2) + '\n',
       'utf-8',
@@ -233,17 +324,18 @@ export async function DELETE(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[api/agents/${decoded}/lifecycle] failed to update enabled-agents.json:`, message);
-    return Response.json(
+    auditLifecycle(ops, { actor, agent: decoded, action: 'delete', deleteFiles, outcome: 'REGISTRY_UPDATE_FAILED' });
+    return responsePayload(
+      500,
       { error: 'Failed to update agent registry' },
-      { status: 500 },
     );
   }
 
   // 3. Optionally remove agent directory
   if (deleteFiles && safeDeleteOrg) {
     try {
-      const agentDir = path.join(getFrameworkRoot(), 'orgs', safeDeleteOrg, 'agents', decoded);
-      await fs.rm(agentDir, { recursive: true, force: true });
+      const agentDir = path.join(ops.frameworkRoot(), 'orgs', safeDeleteOrg, 'agents', decoded);
+      await ops.rm(agentDir, { recursive: true, force: true });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[api/agents/${decoded}/lifecycle] failed to remove agent dir:`, message);
@@ -251,5 +343,56 @@ export async function DELETE(
     }
   }
 
-  return Response.json({ success: true, deleted: decoded });
+  auditLifecycle(ops, { actor, agent: decoded, action: 'delete', deleteFiles, outcome: 'success' });
+  return responsePayload(200, { success: true, deleted: decoded });
+}
+
+function responsePayload(status: number, body: Record<string, unknown>): { status: number; body: Record<string, unknown> } {
+  return { status, body };
+}
+
+function toLifecycleHttpError(err: unknown): AccountSwitchHttpError {
+  if (err instanceof AccountSwitchHttpError) return err;
+  return new AccountSwitchHttpError(500, 'Lifecycle request failed', 'LIFECYCLE_REQUEST_FAILED');
+}
+
+function auditLifecycle(ops: LifecycleOps, event: Record<string, unknown>): void {
+  try {
+    ops.audit(event);
+  } catch {
+    // Audit is best-effort; route responses are still governed by the checks above.
+  }
+}
+
+async function readConfirmName(request: NextRequest): Promise<string | null> {
+  const fromQuery = request.nextUrl.searchParams.get('confirmName');
+  if (fromQuery) return fromQuery;
+  try {
+    const text = await request.text();
+    if (!text.trim()) return null;
+    const body = JSON.parse(text) as { confirmName?: unknown };
+    return typeof body.confirmName === 'string' ? body.confirmName : null;
+  } catch {
+    return null;
+  }
+}
+
+function auditLifecycleAttempt(event: Record<string, unknown>): void {
+  try {
+    execFileSync('cortextos', ['bus', 'log-event', 'action', 'agent_lifecycle_attempt', 'info', '--meta', JSON.stringify(event)], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'ignore', 'ignore'],
+      timeout: 5000,
+      env: {
+        ...process.env,
+        CTX_ROOT: getCTXRoot(),
+        CTX_FRAMEWORK_ROOT: getFrameworkRoot(),
+        CTX_PROJECT_ROOT: getFrameworkRoot(),
+        CTX_INSTANCE_ID: process.env.CTX_INSTANCE_ID ?? 'default',
+        CTX_AGENT_NAME: process.env.CTX_AGENT_NAME ?? 'dashboard',
+      },
+    });
+  } catch {
+    // Audit is best-effort; route responses are still governed by the checks above.
+  }
 }
