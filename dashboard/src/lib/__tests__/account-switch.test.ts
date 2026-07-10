@@ -28,6 +28,7 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  delete process.env.TRUST_PROXY;
   for (const entry of fs.readdirSync(rootTmp)) {
     fs.rmSync(path.join(rootTmp, entry), { recursive: true, force: true });
   }
@@ -62,6 +63,151 @@ describe('account switch write path', () => {
       .toBe(400);
     expect((await mod.startSwitchJob(makeRequest({ agent: 'a1', targetAccount: 'missing' }), admin('target@example.test'), ops)).status)
       .toBe(400);
+    expect(ops.spawnSwitch).not.toHaveBeenCalled();
+  });
+
+  it('accepts the captured Tailscale origin when trusted proxy headers match', async () => {
+    process.env.TRUST_PROXY = 'true';
+    const ops = makeOps({ uuid: 'tailscale-job' });
+
+    const res = await mod.startSwitchJob(
+      makeRequest(
+        { agent: 'a1', targetAccount: 'moonlight' },
+        {
+          origin: 'https://dashboard-host.tail0000.ts.net',
+          forwardedHost: 'dashboard-host.tail0000.ts.net',
+          forwardedProto: 'https',
+        },
+      ),
+      admin('tailscale@example.test'),
+      ops,
+    );
+
+    expect(res.status).toBe(202);
+    expect(res.body.jobId).toBe('tailscale-job');
+  });
+
+  it('fails closed for missing proxy host and missing browser origin context', async () => {
+    process.env.TRUST_PROXY = 'true';
+    const ops = makeOps();
+
+    const missingProxyHost = await mod.startSwitchJob(
+      makeRequest(
+        { agent: 'a1', targetAccount: 'moonlight' },
+        {
+          origin: 'https://dashboard-host.tail0000.ts.net',
+          forwardedProto: 'https',
+        },
+      ),
+      admin('missing-proxy@example.test'),
+      ops,
+    );
+    expect(missingProxyHost.status).toBe(403);
+
+    const missingBrowserOrigin = await mod.startSwitchJob(
+      makeRequest(
+        { agent: 'a1', targetAccount: 'moonlight' },
+        {
+          forwardedHost: 'dashboard-host.tail0000.ts.net',
+          forwardedProto: 'https',
+          includeOrigin: false,
+          includeReferer: false,
+        },
+      ),
+      admin('missing-origin@example.test'),
+      ops,
+    );
+    expect(missingBrowserOrigin.status).toBe(403);
+    expect(ops.spawnSwitch).not.toHaveBeenCalled();
+  });
+
+  it('keeps the no-proxy origin behavior unchanged', async () => {
+    const ops = makeOps();
+
+    const res = await mod.startSwitchJob(
+      makeRequest(
+        { agent: 'a1', targetAccount: 'moonlight' },
+        {
+          origin: 'https://dashboard-host.tail0000.ts.net',
+          forwardedHost: 'dashboard-host.tail0000.ts.net',
+          forwardedProto: 'https',
+        },
+      ),
+      admin('no-proxy@example.test'),
+      ops,
+    );
+
+    expect(res.status).toBe(403);
+    expect(ops.spawnSwitch).not.toHaveBeenCalled();
+  });
+
+  it('rejects forwarded-host injection, malformed host, and non-https forwarded proto', async () => {
+    process.env.TRUST_PROXY = 'true';
+    const ops = makeOps();
+
+    const injectedHost = await mod.startSwitchJob(
+      makeRequest(
+        { agent: 'a1', targetAccount: 'moonlight' },
+        {
+          origin: 'https://evil.example.com',
+          forwardedHost: 'evil.example.com, dashboard-host.tail0000.ts.net',
+          forwardedProto: 'https',
+        },
+      ),
+      admin('inject@example.test'),
+      ops,
+    );
+    expect(injectedHost.status).toBe(403);
+
+    const malformedHost = await mod.startSwitchJob(
+      makeRequest(
+        { agent: 'a1', targetAccount: 'moonlight' },
+        {
+          origin: 'https://evil.example.com',
+          forwardedHost: 'evil/../x',
+          forwardedProto: 'https',
+        },
+      ),
+      admin('malformed@example.test'),
+      ops,
+    );
+    expect(malformedHost.status).toBe(403);
+
+    const insecureProto = await mod.startSwitchJob(
+      makeRequest(
+        { agent: 'a1', targetAccount: 'moonlight' },
+        {
+          origin: 'https://dashboard-host.tail0000.ts.net',
+          forwardedHost: 'dashboard-host.tail0000.ts.net',
+          forwardedProto: 'http',
+        },
+      ),
+      admin('proto@example.test'),
+      ops,
+    );
+    expect(insecureProto.status).toBe(403);
+    expect(ops.spawnSwitch).not.toHaveBeenCalled();
+  });
+
+  it('still rejects a matching proxy origin without a valid csrf token', async () => {
+    process.env.TRUST_PROXY = 'true';
+    const ops = makeOps();
+
+    const res = await mod.startSwitchJob(
+      makeRequest(
+        { agent: 'a1', targetAccount: 'moonlight' },
+        {
+          origin: 'https://dashboard-host.tail0000.ts.net',
+          forwardedHost: 'dashboard-host.tail0000.ts.net',
+          forwardedProto: 'https',
+          csrf: 'wrong-token',
+        },
+      ),
+      admin('csrf-backstop@example.test'),
+      ops,
+    );
+
+    expect(res.status).toBe(403);
     expect(ops.spawnSwitch).not.toHaveBeenCalled();
   });
 
@@ -211,19 +357,29 @@ describe('account switch write path', () => {
 
 function makeRequest(
   body: Record<string, unknown>,
-  options: { csrf?: string; origin?: string } = {},
+  options: {
+    csrf?: string;
+    forwardedHost?: string;
+    forwardedProto?: string;
+    includeOrigin?: boolean;
+    includeReferer?: boolean;
+    origin?: string;
+  } = {},
 ): NextRequest {
   const csrf = options.csrf ?? 'csrf-token';
   const origin = options.origin ?? 'http://localhost:3000';
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    cookie: `authjs.csrf-token=${encodeURIComponent(`${csrf}|hash`)}`,
+    'x-csrf-token': 'csrf-token',
+  };
+  if (options.includeOrigin !== false) headers.origin = origin;
+  if (options.includeReferer !== false) headers.referer = `${origin}/accounts`;
+  if (options.forwardedHost) headers['x-forwarded-host'] = options.forwardedHost;
+  if (options.forwardedProto) headers['x-forwarded-proto'] = options.forwardedProto;
   return new NextRequest('http://localhost:3000/api/accounts/switch', {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      origin,
-      referer: `${origin}/accounts`,
-      cookie: `authjs.csrf-token=${encodeURIComponent(`${csrf}|hash`)}`,
-      'x-csrf-token': 'csrf-token',
-    },
+    headers,
     body: JSON.stringify(body),
   });
 }

@@ -20,7 +20,7 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ['better-sqlite3'],
   // F5 (pentest 2026-06-06): do not advertise the framework via X-Powered-By.
   poweredByHeader: false,
-  ...(allowedDevOrigins.length > 0 && { allowedDevOrigins }),
+  ...(allowedDevOrigins.length > 0 && { allowedDevOrigins: Array.from(new Set(allowedDevOrigins)) }),
   async headers() {
     return [
       {
