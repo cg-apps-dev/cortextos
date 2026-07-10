@@ -22,6 +22,7 @@ import type { VaultAccountOption } from '@/lib/account-switch';
 
 interface AccountSwitchControlProps {
   agent: string;
+  agentId: string;
   currentAccount: string | null;
   targets: VaultAccountOption[] | null;
 }
@@ -34,7 +35,7 @@ interface SwitchStatus {
   functionalSweepTaskId?: string;
 }
 
-export function AccountSwitchControl({ agent, currentAccount, targets }: AccountSwitchControlProps) {
+export function AccountSwitchControl({ agent, agentId, currentAccount, targets }: AccountSwitchControlProps) {
   const [selected, setSelected] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -90,7 +91,7 @@ export function AccountSwitchControl({ agent, currentAccount, targets }: Account
           'content-type': 'application/json',
           'x-csrf-token': csrfToken,
         },
-        body: JSON.stringify({ agent, targetAccount: selectedTarget.account }),
+        body: JSON.stringify(buildSwitchRequestBody(agentId, selectedTarget.account)),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -167,7 +168,7 @@ export function AccountSwitchControl({ agent, currentAccount, targets }: Account
               Target: <span className="font-medium">{selectedTarget?.account}</span> ({selectedTarget ? capacityLabel(selectedTarget) : 'unknown capacity'})
             </p>
             <p>The agent is offline during the switch. Success means auth flip verified; functional sweep remains pending.</p>
-            {agent === 'the-orchestrator' && (
+            {isOrchestratorAgent(agentId) && (
               <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-amber-700 dark:text-amber-300">
                 This restarts the orchestrator. The switch completes in the background and the result remains readable after reconnect.
               </p>
@@ -181,6 +182,14 @@ export function AccountSwitchControl({ agent, currentAccount, targets }: Account
       </Dialog>
     </div>
   );
+}
+
+export function buildSwitchRequestBody(agentId: string, targetAccount: string) {
+  return { agent: agentId, targetAccount };
+}
+
+export function isOrchestratorAgent(agentId: string): boolean {
+  return agentId === 'the-orchestrator';
 }
 
 function capacityLabel(target: VaultAccountOption): string {

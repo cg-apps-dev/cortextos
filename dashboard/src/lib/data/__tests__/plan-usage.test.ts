@@ -364,9 +364,12 @@ describe('getAgentAccounts (live resolver matrix + burn)', () => {
       burn: { last24hUsd: 4, last7dUsd: 4 },
     });
     expect(groups[0].rows.map((row) => row.agent)).toEqual(['alpha', 'beta']);
+    expect(groups[0].rows.map((row) => row.agentId)).toEqual(['alpha-agent', 'beta-agent']);
     expect(groups[0].rows.every((row) => row.org === 'clean-green-marketing')).toBe(true);
     expect(groups.find((group) => group.key === 'unassigned')?.rows.map((row) => row.agent)).toEqual(['orchestrator']);
+    expect(groups.find((group) => group.key === 'unassigned')?.rows.map((row) => row.agentId)).toEqual(['the-orchestrator']);
     expect(groups.find((group) => group.key === 'runtime-excluded')?.rows.map((row) => row.agent)).toEqual(['codex-dev']);
+    expect(groups.find((group) => group.key === 'runtime-excluded')?.rows.map((row) => row.agentId)).toEqual(['codex-dev-agent']);
     expect(groups.some((group) => group.label === 'icloud-max-20x')).toBe(false);
 
     expect(reports.getFleetAccountBurn(matrix)).toEqual({ last24hUsd: 4, last7dUsd: 4 });

@@ -89,7 +89,7 @@ export function AgentAccountMatrix({
                       <TableCell />
                     </TableRow>
                     {group.rows.map((row) => (
-                      <TableRow key={`${group.key}:${row.agent}`}>
+                      <TableRow key={`${group.key}:${row.agentId}`}>
                         <TableCell className="font-medium">{row.agent}</TableCell>
                         <TableCell className="text-muted-foreground">{row.account ?? group.label}</TableCell>
                         <TableCell>{row.source}</TableCell>
@@ -104,11 +104,16 @@ export function AgentAccountMatrix({
                           )}
                         </TableCell>
                         <TableCell>
-                          <AccountSwitchControl
-                            agent={row.agent}
-                            currentAccount={row.account}
-                            targets={vaultAccounts ?? null}
-                          />
+                          {row.section === 'account' ? (
+                            <AccountSwitchControl
+                              agent={row.agent}
+                              agentId={row.agentId}
+                              currentAccount={row.account}
+                              targets={vaultAccounts ?? null}
+                            />
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}
