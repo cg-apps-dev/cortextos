@@ -87,14 +87,18 @@ describe('account switch write path', () => {
     expect(res.body.jobId).toBe('tailscale-job');
   });
 
-  it('accepts direct localhost requests when TRUST_PROXY is set but no forwarded headers are present', async () => {
+  it('accepts direct localhost requests when Next injects non-https forwarded headers', async () => {
     process.env.TRUST_PROXY = 'true';
     const ops = makeOps({ uuid: 'direct-localhost-job' });
 
     const res = await mod.startSwitchJob(
       makeRequest(
         { agent: 'a1', targetAccount: 'moonlight' },
-        { origin: 'http://localhost:3000' },
+        {
+          origin: 'http://localhost:3000',
+          forwardedHost: 'localhost:3000',
+          forwardedProto: 'http',
+        },
       ),
       admin('direct-localhost@example.test'),
       ops,
