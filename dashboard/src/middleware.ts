@@ -51,6 +51,18 @@ function getAllowedOrigin(requestOrigin: string | null): string | null {
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  if (pathname === '/api/debug/request-headers') {
+    console.log('[debug/mw-headers]', {
+      origin: request.headers.get('origin'),
+      referer: request.headers.get('referer'),
+      host: request.headers.get('host'),
+      'x-forwarded-host': request.headers.get('x-forwarded-host'),
+      'x-forwarded-proto': request.headers.get('x-forwarded-proto'),
+      'x-forwarded-for': request.headers.get('x-forwarded-for'),
+      url: request.url,
+      nextUrl_origin: request.nextUrl.origin,
+    });
+  }
   const requestOrigin = request.headers.get('origin');
   const corsOrigin = getAllowedOrigin(requestOrigin) ?? 'null';
 
