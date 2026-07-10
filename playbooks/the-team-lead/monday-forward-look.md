@@ -13,7 +13,7 @@ Suggested focus / recommended per-person tasks for the week ahead, delivered to 
 
 ## The methodology (versioned, under test)
 
-Loaded from `experiments/surfaces/review-usefulness/current.md`. Goal: make the per-person recommendation so complete and well-aligned that Adam can ship it with minimal edits. Measured by adoption rate (recommended tasks Adam assigned / total recommended) and, the real lever, the count of items Adam ADDED that weren't proposed (closable completeness gaps, not Adam-originated creative direction).
+Loaded from `experiments/surfaces/review-usefulness/current.md` - **the surface file is the authoritative current version; the approach list below is the stable core, not the whole method** (v4 as of the week of 2026-07-06 added: run the intent-check with Adam for real before drafting - explicit per-lane volumes, video-vs-static split, platform per person; weight make-mores by EXECUTABILITY, not performance-rank alone - a top-ranked lane gated on an unconfirmed human dependency is "unlock when X lands," never the week's #1; and a per-person "Adam standing narrowing" carry-forward list - never re-propose an item Adam explicitly dropped). Goal: make the per-person recommendation so complete and well-aligned that Adam can ship it with minimal edits. Measured by adoption rate (recommended tasks Adam assigned / total recommended) and, the real lever, the count of items Adam ADDED that weren't proposed (closable completeness gaps, not Adam-originated creative direction).
 
 ## The approach
 
