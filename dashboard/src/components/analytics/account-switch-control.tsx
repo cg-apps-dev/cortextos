@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import type { SwitchJobSummary, VaultAccountOption } from '@/lib/account-switch';
+import type { QueueEntryRecord } from '@/lib/account-switch-queue';
 
 interface AccountSwitchControlProps {
   agent: string;
@@ -26,6 +27,7 @@ interface AccountSwitchControlProps {
   currentAccount: string | null;
   targets: VaultAccountOption[] | null;
   initialJob?: SwitchJobSummary | null;
+  initialQueue?: QueueEntryRecord | null;
 }
 
 interface SwitchStatus {
@@ -37,12 +39,17 @@ interface SwitchStatus {
   functionalSweepTaskId?: string;
 }
 
-export function AccountSwitchControl({ agent, agentId, currentAccount, targets, initialJob }: AccountSwitchControlProps) {
+type QueueStatus = Pick<QueueEntryRecord, 'queueId' | 'status' | 'targetAccount' | 'resultSummary' | 'error'> & {
+  position?: number;
+};
+
+export function AccountSwitchControl({ agent, agentId, currentAccount, targets, initialJob, initialQueue }: AccountSwitchControlProps) {
   const initialState = initialSwitchState(initialJob);
   const [selected, setSelected] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [jobId, setJobId] = useState<string | null>(initialState.jobId);
   const [status, setStatus] = useState<SwitchStatus | null>(initialState.status);
+  const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(initialQueue ? toQueueStatus(initialQueue) : null);
   const [error, setError] = useState<string | null>(null);
   const options = useMemo(() => targets ?? [], [targets]);
   const switchableOptions = useMemo(
@@ -50,7 +57,11 @@ export function AccountSwitchControl({ agent, agentId, currentAccount, targets, 
     [options, currentAccount],
   );
   const selectedTarget = switchableOptions.find((target) => target.account === selected) ?? null;
-  const disabled = !targets || switchableOptions.length === 0 || !!(status && status.status === 'running');
+  const disabled = !targets ||
+    switchableOptions.length === 0 ||
+    !!(status && status.status === 'running') ||
+    queueStatus?.status === 'pending' ||
+    queueStatus?.status === 'draining';
 
   useEffect(() => {
     if (!jobId) return;
@@ -81,6 +92,45 @@ export function AccountSwitchControl({ agent, agentId, currentAccount, targets, 
     };
   }, [initialJob, jobId]);
 
+  useEffect(() => {
+    if (!queueStatus?.queueId || !shouldPollQueue(queueStatus.status)) return;
+    const queueId = queueStatus.queueId;
+    let cancelled = false;
+    async function pollQueue() {
+      try {
+        const res = await fetch('/api/accounts/switch/queue', {
+          credentials: 'same-origin',
+          cache: 'no-store',
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(data?.error ?? 'switch queue status unavailable');
+          return;
+        }
+        const entries: QueueEntryRecord[] = [
+          ...(Array.isArray(data?.pending) ? data.pending : []),
+          ...(data?.draining ? [data.draining] : []),
+          ...(Array.isArray(data?.recent) ? data.recent : []),
+        ];
+        const found = entries.find((entry) => entry.queueId === queueId);
+        if (found) {
+          setQueueStatus(toQueueStatus(found));
+          if (found.jobId) setJobId(found.jobId);
+          if (shouldPollQueue(found.status)) window.setTimeout(pollQueue, 3000);
+          return;
+        }
+        setQueueStatus(null);
+      } catch {
+        if (!cancelled) setError('switch queue status unavailable');
+      }
+    }
+    pollQueue();
+    return () => {
+      cancelled = true;
+    };
+  }, [queueStatus?.queueId, queueStatus?.status]);
+
   async function submitSwitch() {
     if (!selectedTarget) return;
     setError(null);
@@ -88,7 +138,7 @@ export function AccountSwitchControl({ agent, agentId, currentAccount, targets, 
       const csrfRes = await fetch('/api/auth/csrf', { credentials: 'same-origin', cache: 'no-store' });
       const csrf = await csrfRes.json();
       const csrfToken = typeof csrf?.csrfToken === 'string' ? csrf.csrfToken : '';
-      const res = await fetch('/api/accounts/switch', {
+      const res = await fetch('/api/accounts/switch/queue', {
         method: 'POST',
         credentials: 'same-origin',
         headers: {
@@ -102,8 +152,22 @@ export function AccountSwitchControl({ agent, agentId, currentAccount, targets, 
         setError(data?.error ?? 'switch request failed');
         return;
       }
-      setJobId(data.jobId);
-      setStatus({ status: 'running', elapsedMs: 0 });
+      if (data?.noop === true) {
+        setQueueStatus({
+          queueId: 'noop',
+          status: 'already-at-target',
+          targetAccount: selectedTarget.account,
+          resultSummary: `${agent} is already at ${selectedTarget.account}.`,
+        });
+      } else {
+        setQueueStatus({
+          queueId: String(data.queueId),
+          status: 'pending',
+          targetAccount: selectedTarget.account,
+          position: typeof data.position === 'number' ? data.position : undefined,
+        });
+      }
+      setStatus(null);
       setConfirmOpen(false);
     } catch {
       setError('switch request failed');
@@ -151,6 +215,20 @@ export function AccountSwitchControl({ agent, agentId, currentAccount, targets, 
         <p className="text-xs text-muted-foreground">
           Switching... stop, wait, start, verify. Elapsed {durationLabel(status.elapsedMs)}.
         </p>
+      )}
+      {queueStatus && (
+        <div className={`text-xs ${queueStatusTone(queueStatus.status)}`}>
+          <p>{queueStatusLabel(queueStatus)}</p>
+          {queueStatus.status === 'pending' && queueStatus.queueId !== 'noop' && (
+            <button
+              type="button"
+              className="mt-1 text-xs underline underline-offset-2"
+              onClick={() => cancelQueueEntry(queueStatus.queueId, setQueueStatus, setError)}
+            >
+              Cancel queued switch
+            </button>
+          )}
+        </div>
       )}
       {status && status.status !== 'running' && (
         <p className={`text-xs ${switchStatusTone(status.status)}`}>
@@ -211,6 +289,16 @@ export function toSwitchStatus(job: SwitchJobSummary): SwitchStatus {
   };
 }
 
+export function toQueueStatus(entry: QueueEntryRecord): QueueStatus {
+  return {
+    queueId: entry.queueId,
+    status: entry.status,
+    targetAccount: entry.targetAccount,
+    ...(entry.resultSummary ? { resultSummary: entry.resultSummary } : {}),
+    ...(entry.error ? { error: entry.error } : {}),
+  };
+}
+
 export function buildSwitchRequestBody(agentId: string, targetAccount: string) {
   return { agent: agentId, targetAccount };
 }
@@ -229,6 +317,56 @@ function capacityLabel(target: VaultAccountOption): string {
   if (target.metered === true) return 'metered: safe';
   if (target.metered === false) return 'unmetered: hard-cap';
   return 'capacity unknown';
+}
+
+function shouldPollQueue(status: QueueStatus['status']): boolean {
+  return status === 'pending' || status === 'draining';
+}
+
+function queueStatusTone(status: QueueStatus['status']): string {
+  if (status === 'pending' || status === 'draining') return 'text-muted-foreground';
+  if (status === 'succeeded' || status === 'already-at-target') return 'text-emerald-600 dark:text-emerald-400';
+  if (status === 'suspect' || status === 'agent-gone' || status === 'target-gone') return 'text-amber-700 dark:text-amber-300';
+  if (status === 'cancelled' || status === 'superseded') return 'text-muted-foreground';
+  return 'text-destructive';
+}
+
+function queueStatusLabel(status: QueueStatus): string {
+  if (status.status === 'pending') {
+    return `Queued for ${status.targetAccount}${status.position ? ` (#${status.position})` : ''}.`;
+  }
+  if (status.status === 'draining') return `Switching to ${status.targetAccount}.`;
+  return status.resultSummary ?? status.error ?? status.status;
+}
+
+async function cancelQueueEntry(
+  queueId: string,
+  setQueueStatus: (value: QueueStatus | null) => void,
+  setError: (value: string | null) => void,
+): Promise<void> {
+  try {
+    const csrfRes = await fetch('/api/auth/csrf', { credentials: 'same-origin', cache: 'no-store' });
+    const csrf = await csrfRes.json();
+    const csrfToken = typeof csrf?.csrfToken === 'string' ? csrf.csrfToken : '';
+    const res = await fetch(`/api/accounts/switch/queue/${encodeURIComponent(queueId)}`, {
+      method: 'DELETE',
+      credentials: 'same-origin',
+      headers: { 'x-csrf-token': csrfToken },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setError(data?.error ?? 'queue cancel failed');
+      return;
+    }
+    setQueueStatus({
+      queueId,
+      status: 'cancelled',
+      targetAccount: '',
+      resultSummary: 'Cancelled before switching.',
+    });
+  } catch {
+    setError('queue cancel failed');
+  }
 }
 
 function durationLabel(ms: number): string {
