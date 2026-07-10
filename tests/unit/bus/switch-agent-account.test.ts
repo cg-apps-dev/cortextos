@@ -5,6 +5,11 @@ import { tmpdir } from 'os';
 import { atomicWriteSync } from '../../../src/utils/atomic';
 import { shortTokenHash } from '../../../src/utils/live-token-hash';
 import {
+  DEFAULT_PROBE_RETRY_INTERVAL_MS,
+  DEFAULT_PROBE_TIMEOUT_MS,
+  isAcceptedProbeReply,
+  isExactProbeReply,
+  makeSwitchProbeNonce,
   setupTokenVaultDir,
   setupTokenVaultPath,
   switchAgentAccount,
@@ -99,6 +104,25 @@ describe('switch-agent-account', () => {
     expect(shortTokenHash(TARGET_TOKEN)).not.toBe(shortTokenHash(`${TARGET_TOKEN}\n`));
   });
 
+  it('adds random entropy to the switch probe nonce', () => {
+    const first = makeSwitchProbeNonce('worker-a', 1783660000000);
+    const second = makeSwitchProbeNonce('worker-a', 1783660000000);
+
+    expect(first).toMatch(/^SWITCH_AGENT_ACCOUNT_PROBE_worker-a_1783660000000_[a-f0-9]{16}$/);
+    expect(second).toMatch(/^SWITCH_AGENT_ACCOUNT_PROBE_worker-a_1783660000000_[a-f0-9]{16}$/);
+    expect(first).not.toBe(second);
+  });
+
+  it('prefers exact probe reply_to and keeps nonce text as fallback only', () => {
+    const nonce = makeSwitchProbeNonce('worker-a', 1783660000000);
+    const msgId = 'probe-message';
+
+    expect(isExactProbeReply({ from: 'worker-a', reply_to: msgId }, 'worker-a', msgId)).toBe(true);
+    expect(isAcceptedProbeReply({ from: 'worker-a', reply_to: msgId, text: 'ready' }, 'worker-a', msgId, nonce)).toBe(true);
+    expect(isAcceptedProbeReply({ from: 'worker-a', text: `probe ${nonce}` }, 'worker-a', msgId, nonce)).toBe(true);
+    expect(isAcceptedProbeReply({ from: 'other-agent', reply_to: msgId, text: nonce }, 'worker-a', msgId, nonce)).toBe(false);
+  });
+
   it('restores both halves if the env write mutates then throws', async () => {
     ops.writeToken = (_frameworkRoot, _org, token) => {
       writeFileSync(envPath, `CLAUDE_CODE_OAUTH_TOKEN=${token}\n`);
@@ -126,25 +150,72 @@ describe('switch-agent-account', () => {
     expect(startCalls).toEqual(['worker-a']);
   });
 
-  it('accepts a heavy-boot post-restart heartbeat within the widened four-minute window', async () => {
-    const times = [
-      Date.parse('2026-07-09T17:00:00.000Z'),
-      Date.parse('2026-07-09T17:00:00.000Z'),
-      Date.parse('2026-07-09T17:04:59.000Z'),
-    ];
+  it('passes when the live probe succeeds but the post-restart heartbeat is missing', async () => {
     ops.getStatuses = async (): Promise<AgentStatus[]> => [{
       name: 'worker-a',
       status: running ? 'running' : 'stopped',
       ...(running ? { pid } : {}),
       uptime: 10,
-      lastHeartbeat: '2026-07-09T17:01:00.000Z',
     }];
 
-    const result = await runSwitch({
-      nowMs: () => times.shift() ?? Date.parse('2026-07-09T17:04:59.000Z'),
-    });
+    const result = await runSwitch();
 
     expect(result.status).toBe('success');
+    expect(result.warnings).toContain('WARN: verified via live probe; post-restart heartbeat not yet fresh at verify time (heavy-boot agent) - corroborator only.');
+  });
+
+  it('fails at the probe gate even when heartbeat is fresh', async () => {
+    ops.hashLiveProcessToken = () => shortTokenHash(currentEnvToken());
+    ops.probeAgent = async () => {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8')) as { usage_account: string };
+      return config.usage_account !== 'moonlight-max';
+    };
+
+    await expect(runSwitch()).rejects.toMatchObject({
+      code: 'inference-probe',
+      rolledBack: true,
+    });
+  });
+
+  it('bounds probe retry at the cap when the agent never answers', async () => {
+    let currentTime = Date.parse('2026-07-09T17:00:00.000Z');
+    let probeCalls = 0;
+    ops.hashLiveProcessToken = () => shortTokenHash(currentEnvToken());
+    ops.probeAgent = async (_agent, _operator, timeoutMs) => {
+      probeCalls += 1;
+      currentTime += timeoutMs;
+      return false;
+    };
+
+    await expect(runSwitch({ nowMs: () => currentTime })).rejects.toMatchObject({
+      code: 'ROLLBACK_VERIFY_FAILED',
+      rolledBack: true,
+    });
+    expect(probeCalls).toBe(2 * Math.ceil(DEFAULT_PROBE_TIMEOUT_MS / DEFAULT_PROBE_RETRY_INTERVAL_MS));
+  });
+
+  it('rescues a heavy boot that answers just within the bounded probe cap', async () => {
+    const maxProbeAttempts = Math.ceil(DEFAULT_PROBE_TIMEOUT_MS / DEFAULT_PROBE_RETRY_INTERVAL_MS);
+    let currentTime = Date.parse('2026-07-09T17:00:00.000Z');
+    let probeCalls = 0;
+    ops.probeAgent = async (_agent, _operator, timeoutMs) => {
+      probeCalls += 1;
+      currentTime += timeoutMs;
+      return probeCalls === maxProbeAttempts;
+    };
+    ops.getStatuses = async (): Promise<AgentStatus[]> => [{
+      name: 'worker-a',
+      status: running ? 'running' : 'stopped',
+      ...(running ? { pid } : {}),
+      uptime: 10,
+      lastHeartbeat: '2026-07-09T17:00:30.000Z',
+    }];
+
+    const result = await runSwitch({ nowMs: () => currentTime });
+
+    expect(result.status).toBe('success');
+    expect(probeCalls).toBe(maxProbeAttempts);
+    expect(result.warnings).toContain('WARN: verified via live probe; post-restart heartbeat not yet fresh at verify time (heavy-boot agent) - corroborator only.');
   });
 
   it('passes with indeterminate runtime proof when ps env read is restricted but primary gates pass', async () => {
@@ -157,6 +228,7 @@ describe('switch-agent-account', () => {
 
     expect(result.status).toBe('success');
     expect(result.runtimeProof).toBe('indeterminate');
+    expect(result.warnings).toContain('WARN: runtime-token unreadable; attribution via env-file + process-start-postdates-flip + probe, no direct live-token read.');
     expect(readFileSync(envPath, 'utf-8')).toContain(TARGET_TOKEN);
     expect(JSON.parse(readFileSync(configPath, 'utf-8')).usage_account).toBe('moonlight-max');
     expect(stopCalls).toEqual(['worker-a']);
@@ -195,12 +267,19 @@ describe('switch-agent-account', () => {
     expect(JSON.parse(readFileSync(configPath, 'utf-8')).usage_account).toBe('me-com-max');
   });
 
-  it('rolls back on a real runtime-token mismatch and restores prior state', async () => {
+  it('rolls back on a real runtime-token mismatch and does not fail rollback on stale heartbeat', async () => {
     let hashCalls = 0;
     ops.hashLiveProcessToken = () => {
       hashCalls += 1;
       return hashCalls === 1 ? shortTokenHash('sk-ant-oat01-WRONG') : shortTokenHash(OLD_TOKEN);
     };
+    ops.getStatuses = async (): Promise<AgentStatus[]> => [{
+      name: 'worker-a',
+      status: running ? 'running' : 'stopped',
+      ...(running ? { pid } : {}),
+      uptime: 10,
+      lastHeartbeat: '2026-07-09T16:00:00.000Z',
+    }];
     ops.resolveAgentAccount = (_agentDir) => {
       const config = JSON.parse(readFileSync(configPath, 'utf-8')) as { usage_account: string };
       return { label: config.usage_account };
@@ -293,13 +372,7 @@ describe('switch-agent-account', () => {
       const config = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8')) as { usage_account: string };
       return { label: config.usage_account };
     };
-    const originalProbe = ops.probeAgent;
-    let probeCalls = 0;
-    ops.probeAgent = async (...args) => {
-      probeCalls += 1;
-      if (probeCalls === 2) return false;
-      return originalProbe(...args);
-    };
+    ops.probeAgent = async (agent) => agent !== 'worker-b';
 
     const result = await switchAllFrom({
       ctxRoot,
@@ -393,5 +466,10 @@ describe('switch-agent-account', () => {
       sleepMs: async () => {},
       ...overrides,
     });
+  }
+
+  function currentEnvToken(): string {
+    const line = readFileSync(envPath, 'utf-8').split('\n').find((entry) => entry.startsWith('CLAUDE_CODE_OAUTH_TOKEN='));
+    return line?.slice('CLAUDE_CODE_OAUTH_TOKEN='.length) ?? '';
   }
 });
