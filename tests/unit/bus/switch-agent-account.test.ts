@@ -1,15 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { atomicWriteSync } from '../../../src/utils/atomic';
 import { shortTokenHash } from '../../../src/utils/live-token-hash';
+import { checkInbox, sendMessage } from '../../../src/bus/message';
 import {
   DEFAULT_PROBE_RETRY_INTERVAL_MS,
   DEFAULT_PROBE_TIMEOUT_MS,
+  cleanupSwitchProbeInbox,
   isAcceptedProbeReply,
   isExactProbeReply,
+  makeSwitchProbeBusPaths,
   makeSwitchProbeNonce,
+  makeSwitchProbeOperatorAgent,
   setupTokenVaultDir,
   setupTokenVaultPath,
   switchAgentAccount,
@@ -113,6 +117,77 @@ describe('switch-agent-account', () => {
     expect(first).not.toBe(second);
   });
 
+  it('creates a synthetic session-less probe operator name', () => {
+    const first = makeSwitchProbeOperatorAgent();
+    const second = makeSwitchProbeOperatorAgent();
+
+    expect(first).toMatch(/^switch-probe-[a-f0-9]{16}$/);
+    expect(second).toMatch(/^switch-probe-[a-f0-9]{16}$/);
+    expect(first).not.toBe(second);
+  });
+
+  it('builds probe paths only under the bus inbox tree and cleans them', () => {
+    const probeAgent = 'switch-probe-0123456789abcdef';
+    const basePaths = {
+      ctxRoot,
+      inbox: join(ctxRoot, 'inbox', 'operator'),
+      inflight: join(ctxRoot, 'inflight', 'operator'),
+      processed: join(ctxRoot, 'processed', 'operator'),
+      logDir: join(ctxRoot, 'logs', 'operator'),
+      stateDir: join(ctxRoot, 'state', 'operator'),
+      taskDir: join(ctxRoot, 'orgs', 'clean-green-marketing', 'tasks'),
+      approvalDir: join(ctxRoot, 'orgs', 'clean-green-marketing', 'approvals'),
+      analyticsDir: join(ctxRoot, 'orgs', 'clean-green-marketing', 'analytics'),
+      deliverablesDir: join(ctxRoot, 'orgs', 'clean-green-marketing', 'deliverables'),
+    };
+
+    const probePaths = makeSwitchProbeBusPaths(basePaths, probeAgent);
+
+    expect(probePaths.inbox).toBe(join(ctxRoot, 'inbox', probeAgent));
+    expect(probePaths.inflight).toBe(join(ctxRoot, 'inbox', probeAgent, '.inflight'));
+    expect(probePaths.processed).toBe(join(ctxRoot, 'inbox', probeAgent, '.processed'));
+    expect(Object.values(probePaths).join('\n')).not.toContain(join('agents', probeAgent));
+    expect(makeSwitchProbeBusPaths(basePaths, 'switch-probe-fedcba9876543210').inbox).not.toBe(probePaths.inbox);
+
+    mkdirSync(probePaths.inbox, { recursive: true });
+    cleanupSwitchProbeInbox(basePaths, probeAgent);
+    expect(existsSync(probePaths.inbox)).toBe(false);
+    expect(existsSync(join(frameworkRoot, 'orgs', 'clean-green-marketing', 'agents', probeAgent))).toBe(false);
+  });
+
+  it('uses the synthetic probe id in the signed bus path while preserving from-agent verification', () => {
+    mkdirSync(join(ctxRoot, 'config'), { recursive: true });
+    writeFileSync(join(ctxRoot, 'config', 'bus-signing-key'), 'test-signing-key\n');
+    const probeAgent = 'switch-probe-0123456789abcdef';
+    const basePaths = {
+      ctxRoot,
+      inbox: join(ctxRoot, 'inbox', 'operator'),
+      inflight: join(ctxRoot, 'inflight', 'operator'),
+      processed: join(ctxRoot, 'processed', 'operator'),
+      logDir: join(ctxRoot, 'logs', 'operator'),
+      stateDir: join(ctxRoot, 'state', 'operator'),
+      taskDir: join(ctxRoot, 'orgs', 'clean-green-marketing', 'tasks'),
+      approvalDir: join(ctxRoot, 'orgs', 'clean-green-marketing', 'approvals'),
+      analyticsDir: join(ctxRoot, 'orgs', 'clean-green-marketing', 'analytics'),
+      deliverablesDir: join(ctxRoot, 'orgs', 'clean-green-marketing', 'deliverables'),
+    };
+    const probePaths = makeSwitchProbeBusPaths(basePaths, probeAgent);
+
+    const msgId = sendMessage(basePaths, probeAgent, 'worker-a', 'normal', 'probe');
+    const targetInboxFiles = readdirSync(join(ctxRoot, 'inbox', 'worker-a'));
+    const probeMessage = JSON.parse(readFileSync(join(ctxRoot, 'inbox', 'worker-a', targetInboxFiles[0]), 'utf-8')) as { from: string; sig?: string };
+    expect(probeMessage.from).toBe(probeAgent);
+    expect(probeMessage.sig).toBeTruthy();
+
+    sendMessage(basePaths, 'worker-a', probeAgent, 'normal', 'echo', msgId);
+    const replies = checkInbox(probePaths);
+
+    expect(replies).toHaveLength(1);
+    expect(isExactProbeReply(replies[0], 'worker-a', msgId)).toBe(true);
+    expect(isExactProbeReply({ ...replies[0], from: 'other-agent' }, 'worker-a', msgId)).toBe(false);
+    cleanupSwitchProbeInbox(basePaths, probeAgent);
+  });
+
   it('prefers exact probe reply_to and keeps nonce text as fallback only', () => {
     const nonce = makeSwitchProbeNonce('worker-a', 1783660000000);
     const msgId = 'probe-message';
@@ -138,6 +213,12 @@ describe('switch-agent-account', () => {
   });
 
   it('passes verify when runtime hash, attribution, heartbeat, and probe all pass', async () => {
+    const probeOperators: string[] = [];
+    ops.probeAgent = async (_agent, operatorAgent) => {
+      probeOperators.push(operatorAgent);
+      return true;
+    };
+
     const result = await runSwitch();
 
     expect(result.status).toBe('success');
@@ -148,6 +229,11 @@ describe('switch-agent-account', () => {
     expect(JSON.parse(readFileSync(configPath, 'utf-8')).usage_account).toBe('moonlight-max');
     expect(stopCalls).toEqual(['worker-a']);
     expect(startCalls).toEqual(['worker-a']);
+    expect(probeOperators).toHaveLength(1);
+    expect(probeOperators[0]).toMatch(/^switch-probe-[a-f0-9]{16}$/);
+    expect(probeOperators[0]).not.toBe('the-orchestrator');
+    expect(existsSync(join(frameworkRoot, 'orgs', 'clean-green-marketing', 'agents', probeOperators[0]))).toBe(false);
+    expect(result.warnings).toContain(`INFO: resolved operator agent the-orchestrator; probe replies use session-less ${probeOperators[0]}.`);
   });
 
   it('passes when the live probe succeeds but the post-restart heartbeat is missing', async () => {
@@ -192,6 +278,8 @@ describe('switch-agent-account', () => {
       rolledBack: true,
     });
     expect(probeCalls).toBe(2 * Math.ceil(DEFAULT_PROBE_TIMEOUT_MS / DEFAULT_PROBE_RETRY_INTERVAL_MS));
+    expect(DEFAULT_PROBE_RETRY_INTERVAL_MS).toBe(60_000);
+    expect(Math.ceil(DEFAULT_PROBE_TIMEOUT_MS / DEFAULT_PROBE_RETRY_INTERVAL_MS)).toBe(6);
   });
 
   it('rescues a heavy boot that answers just within the bounded probe cap', async () => {
@@ -216,6 +304,19 @@ describe('switch-agent-account', () => {
     expect(result.status).toBe('success');
     expect(probeCalls).toBe(maxProbeAttempts);
     expect(result.warnings).toContain('WARN: verified via live probe; post-restart heartbeat not yet fresh at verify time (heavy-boot agent) - corroborator only.');
+  });
+
+  it('terminates probe retry on the first successful echo', async () => {
+    let probeCalls = 0;
+    ops.probeAgent = async () => {
+      probeCalls += 1;
+      return true;
+    };
+
+    const result = await runSwitch();
+
+    expect(result.status).toBe('success');
+    expect(probeCalls).toBe(1);
   });
 
   it('passes with indeterminate runtime proof when ps env read is restricted but primary gates pass', async () => {

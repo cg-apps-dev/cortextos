@@ -32,6 +32,7 @@ export const switchAgentAccountCommand = new Command('switch-agent-account')
     const instanceId = opts.instance ?? env.instanceId;
     if (!env.frameworkRoot) exitCli('CTX_FRAMEWORK_ROOT is required', opts.json);
     if (!env.org) exitCli('CTX_ORG is required', opts.json);
+    console.error(`[switch-agent-account] resolved operator agent: ${env.agentName}`);
 
     const paths = resolvePaths(env.agentName, instanceId, env.org);
     const ipc = new IPCClient(instanceId);
