@@ -87,6 +87,23 @@ describe('account switch write path', () => {
     expect(res.body.jobId).toBe('tailscale-job');
   });
 
+  it('accepts direct localhost requests when TRUST_PROXY is set but no forwarded headers are present', async () => {
+    process.env.TRUST_PROXY = 'true';
+    const ops = makeOps({ uuid: 'direct-localhost-job' });
+
+    const res = await mod.startSwitchJob(
+      makeRequest(
+        { agent: 'a1', targetAccount: 'moonlight' },
+        { origin: 'http://localhost:3000' },
+      ),
+      admin('direct-localhost@example.test'),
+      ops,
+    );
+
+    expect(res.status).toBe(202);
+    expect(res.body.jobId).toBe('direct-localhost-job');
+  });
+
   it('fails closed for missing proxy host and missing browser origin context', async () => {
     process.env.TRUST_PROXY = 'true';
     const ops = makeOps();
@@ -186,6 +203,59 @@ describe('account switch write path', () => {
       ops,
     );
     expect(insecureProto.status).toBe(403);
+
+    const partialForwarded = await mod.startSwitchJob(
+      makeRequest(
+        { agent: 'a1', targetAccount: 'moonlight' },
+        {
+          origin: 'https://dashboard-host.tail0000.ts.net',
+          forwardedHost: 'dashboard-host.tail0000.ts.net',
+        },
+      ),
+      admin('partial-forwarded@example.test'),
+      ops,
+    );
+    expect(partialForwarded.status).toBe(403);
+    expect(ops.spawnSwitch).not.toHaveBeenCalled();
+  });
+
+  it('rejects headerless TRUST_PROXY fallback when the request URL is not loopback', async () => {
+    process.env.TRUST_PROXY = 'true';
+    const ops = makeOps();
+
+    const res = await mod.startSwitchJob(
+      makeRequest(
+        { agent: 'a1', targetAccount: 'moonlight' },
+        {
+          origin: 'http://dashboard-host.tail0000.ts.net',
+          requestUrl: 'http://dashboard-host.tail0000.ts.net/api/accounts/switch',
+        },
+      ),
+      admin('non-loopback@example.test'),
+      ops,
+    );
+
+    expect(res.status).toBe(403);
+    expect(ops.spawnSwitch).not.toHaveBeenCalled();
+  });
+
+  it('rejects headerless non-proxy direct hits when the request URL is not loopback', async () => {
+    delete process.env.TRUST_PROXY;
+    const ops = makeOps();
+
+    const res = await mod.startSwitchJob(
+      makeRequest(
+        { agent: 'a1', targetAccount: 'moonlight' },
+        {
+          origin: 'http://dashboard-host.tail0000.ts.net',
+          requestUrl: 'http://dashboard-host.tail0000.ts.net/api/accounts/switch',
+        },
+      ),
+      admin('direct-non-loopback@example.test'),
+      ops,
+    );
+
+    expect(res.status).toBe(403);
     expect(ops.spawnSwitch).not.toHaveBeenCalled();
   });
 
@@ -642,6 +712,7 @@ function makeRequest(
     includeOrigin?: boolean;
     includeReferer?: boolean;
     origin?: string;
+    requestUrl?: string;
   } = {},
 ): NextRequest {
   const csrf = options.csrf ?? 'csrf-token';
@@ -655,7 +726,7 @@ function makeRequest(
   if (options.includeReferer !== false) headers.referer = `${origin}/accounts`;
   if (options.forwardedHost) headers['x-forwarded-host'] = options.forwardedHost;
   if (options.forwardedProto) headers['x-forwarded-proto'] = options.forwardedProto;
-  return new NextRequest('http://localhost:3000/api/accounts/switch', {
+  return new NextRequest(options.requestUrl ?? 'http://localhost:3000/api/accounts/switch', {
     method: 'POST',
     headers,
     body: JSON.stringify(body),

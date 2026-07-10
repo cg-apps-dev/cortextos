@@ -194,9 +194,9 @@ export function actorFromSession(session: SwitchSession): string {
 
 export function verifyCsrfAndOrigin(request: NextRequest): void {
   let requestOrigin = new URL(request.url).origin;
-  if (process.env.TRUST_PROXY === 'true') {
-    const forwardedProto = request.headers.get('x-forwarded-proto')?.trim().toLowerCase();
-    const forwardedHost = request.headers.get('x-forwarded-host')?.trim();
+  const forwardedProto = request.headers.get('x-forwarded-proto')?.trim().toLowerCase();
+  const forwardedHost = request.headers.get('x-forwarded-host')?.trim();
+  if (process.env.TRUST_PROXY === 'true' && (forwardedProto || forwardedHost)) {
     const host = forwardedHost ?? request.headers.get('host')?.trim();
     if (forwardedProto !== 'https' || !host || host.includes(',')) {
       throw new AccountSwitchHttpError(403, 'Same-origin check failed', 'BAD_ORIGIN');
@@ -205,6 +205,9 @@ export function verifyCsrfAndOrigin(request: NextRequest): void {
       throw new AccountSwitchHttpError(403, 'Same-origin check failed', 'BAD_ORIGIN');
     }
     requestOrigin = `https://${host}`;
+  } else {
+    // Admin mutation routes are legitimate only via trusted proxy strict mode or same-machine loopback.
+    assertLoopbackFallbackRequest(request);
   }
   const origin = request.headers.get('origin');
   const referer = request.headers.get('referer');
@@ -221,6 +224,22 @@ export function verifyCsrfAndOrigin(request: NextRequest): void {
   if (!headerToken || !cookieToken || headerToken !== cookieToken) {
     throw new AccountSwitchHttpError(403, 'CSRF check failed', 'BAD_CSRF');
   }
+}
+
+function assertLoopbackFallbackRequest(request: NextRequest): void {
+  const hostname = new URL(request.url).hostname;
+  // Next App Router route handlers do not expose a reliable socket remote address here.
+  // This is header-derived, NOT unspoofable: a remote Host:localhost beats this check,
+  // but not the CSRF token plus the browser's real Origin.
+  // It is layered with package script loopback pinning, origin matching, and CSRF.
+  // The script -H default can still be overridden by env, ecosystem, or manual next start.
+  if (!isLoopbackHostname(hostname)) {
+    throw new AccountSwitchHttpError(403, 'Same-origin check failed', 'BAD_ORIGIN');
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
 }
 
 export function csrfCookieToken(request: NextRequest): string | null {
