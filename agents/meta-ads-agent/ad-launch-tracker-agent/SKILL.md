@@ -106,7 +106,12 @@ GUMMIES_TABS = ["VIDEOS (Sleep Gummies)", "IMAGES (Sleep Gummies)"]
 
 ## STEP 0: Resolve columns from live headers (HARD GATE - run first, every run)
 
-Before doing anything else, read row 1 of the tabs you will touch (`GOOGLESHEETS_BATCH_GET`, e.g. `'VIDEOS (Flower)'!A1:BA1`, etc.). For each tab build a `header → column-letter` map. From it resolve:
+Before doing anything else, read row 1 of the tabs you will touch via **gog CLI** (own-credential, bearer-safe — NOT Composio, which is dead under this agent's bearer token and hangs). One `gog sheets get` per tab:
+
+```
+gog sheets get 1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME "'VIDEOS (Flower)'!A1:BA1" --account adam@cleangreen.com -j
+```
+For each tab build a `header → column-letter` map. From it resolve:
 - the **Ad Name** column (header `Ad Name`, or the column left of `1x1` on VIDEOS (Sleep Gummies)), and
 - the **Meta Compliance Agent** verdict column, and
 - each **per-account column** (header == the account Short Name). As of 2026-06-10 (Adam-directed) this SINGLE per-account column holds the COMBINED tracking cell `Status - MM/DD/YYYY H:MM AM/PM PT - Ad ID: <id>` (see STEP 5). There are NO separate per-account Review-Status / Ad-ID columns and NO rollup write (that 2026-06-10-morning scheme was reverted the same day). Cell COLOR comes from sheet-owned conditional formatting on these columns (contains Rejected=red, Pending/In Review=yellow, Active=green) - the tracker does not set color, only the cell text.
@@ -162,9 +167,12 @@ Determine which tabs to search based on the accounts found in Step 2:
 - If any Flower account appears → load Ad Name columns from both Flower tabs
 - If any Gummies account appears → load Ad Name columns from both Gummies tabs
 
-For each tab that needs loading, use Composio `GOOGLESHEETS_VALUES_GET`:
-- `spreadsheet_id`: the SPREADSHEET_ID above
-- `range`: `'{tab_name}'!{ad_name_col}:{ad_name_col}` where `{ad_name_col}` is the Ad Name column letter you RESOLVED in STEP 0 from that tab's live header (do not hardcode - it shifts when columns are inserted)
+For each tab that needs loading, read via **gog CLI** (own-credential Google Sheets; the Composio claude.ai bridge is dead under this agent's bearer token, so it hangs — NEVER use Composio `GOOGLESHEETS_*` here):
+
+```
+gog sheets get 1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME "'{tab_name}'!{ad_name_col}:{ad_name_col}" --account adam@cleangreen.com -j
+```
+where `{ad_name_col}` is the Ad Name column letter you RESOLVED in STEP 0 from that tab's live header (do not hardcode - it shifts when columns are inserted).
 
 This returns all Ad Name values. Build a lookup map: `adName → row number` (row 1 is the header, data starts at row 2).
 
@@ -243,7 +251,13 @@ For each `(adName, adAccountId, ...)` from Step 2:
 4. Resolve the per-account column (header == the account Short Name) from STEP 0
 5. Resolve the `Meta Compliance Agent` verdict column from STEP 0
 
-Batch your reads: use `GOOGLESHEETS_BATCH_GET` to read the per-account cells and verdict cells for all rows you plan to update. You only need the launching account's own column (each account's cell is independent - a creative on two accounts writes two separate cells, one per account column), plus the row's single `Meta Compliance Agent` cell.
+Read via **gog CLI** (NOT Composio — bearer kills the Composio bridge). `gog sheets get` reads one range per call, so read each per-account column range and the `Meta Compliance Agent` column range you need (a whole-column read like `'{tab}'!{col}2:{col}` covers all rows at once — prefer one read per column over one per cell to respect rate limits):
+
+```
+gog sheets get 1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME "'{tab}'!{account_col}2:{account_col}" --account adam@cleangreen.com -j
+gog sheets get 1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME "'{tab}'!{compliance_col}2:{compliance_col}" --account adam@cleangreen.com -j
+```
+You only need the launching account's own column (each account's cell is independent - a creative on two accounts writes two separate cells, one per account column), plus the row's single `Meta Compliance Agent` cell.
 
 ---
 
@@ -262,7 +276,12 @@ Write rules per matched `(adAccountId, row)`:
 
 This makes **status a REFRESH field** (re-evaluated every run) and **date/time + Ad ID set-once fields** (frozen at launch), all inside one cell. Parse defensively: split the existing value on the first ` - ` to separate `Status` from the fixed tail; if the cell does not match the expected shape (legacy bare date, or hand-edited), rewrite it cleanly from this run's values and log it.
 
-Use `GOOGLESHEETS_UPDATE_VALUES_BATCH`, `valueInputOption:"RAW"`, batched in one call where possible. Each account's cell is independent - a creative launched to two accounts gets its own status in each account's column (e.g. Active in E-0681's column, Rejected in E-0494's). The cell's COLOR is applied automatically by the sheet's conditional formatting (contains Rejected=red, Pending/In Review=yellow, Active=green) - the tracker writes only text. The exact Meta disapproval REASON is Ads-Manager-only (not in the API).
+Write via **gog CLI** (NOT Composio — the Composio claude.ai bridge is dead under this agent's bearer token and a Composio sheet-write HANGS the whole session; this is the confirmed root cause of the launch-tracker stalls). Use `gog sheets batch-update --data-json` with `--input RAW`, all target cells in ONE call (it handles multi-range natively — no Composio wrapper limit):
+
+```
+gog sheets batch-update --data-json '[{"range":"'\''{tab}'\''!{account_col}{row}","values":[["{Status} - {MM/DD/YYYY H:MM AM/PM PT} - Ad ID: {adId}"]]}, ... more ranges ...]' 1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME --input RAW --account adam@cleangreen.com -j
+```
+Each account's cell is independent - a creative launched to two accounts gets its own status in each account's column (e.g. Active in E-0681's column, Rejected in E-0494's), so it appears as two separate range entries in the `--data-json` array. The cell's COLOR is applied automatically by the sheet's conditional formatting (contains Rejected=red, Pending/In Review=yellow, Active=green) - the tracker writes only text. The exact Meta disapproval REASON is Ads-Manager-only (not in the API). After the write, read-back-verify each target cell (`gog sheets get`) to confirm the stamp landed.
 
 > History: 2026-06-10 morning briefly used separate per-account Review-Status + Ad-ID columns + a single rollup; Adam reverted that the same afternoon to this single combined per-account cell. There is no separate Review-Status/Ad-ID column and no rollup write anymore.
 
@@ -373,4 +392,4 @@ This is the same string STEP 5.5 already emits; this section only NAMES it as th
 ## TOOLS REQUIRED
 
 - **AdManage MCP:** `list_activity_log`, `get_activity_log_details`, `get_batch_status`, `get_batch_delivery_statuses`
-- **Composio Google Sheets MCP:** `COMPOSIO_SEARCH_TOOLS`, `COMPOSIO_MULTI_EXECUTE_TOOL` (wrapping `GOOGLESHEETS_VALUES_GET`, `GOOGLESHEETS_BATCH_GET`, `GOOGLESHEETS_UPDATE_VALUES_BATCH`)
+- **Google Sheets via `gog` CLI (own-credential, bearer-safe — NOT Composio):** `gog sheets get <SPREADSHEET_ID> "<range>" --account adam@cleangreen.com -j` (read), `gog sheets batch-update --data-json '[{range,values}...]' <SPREADSHEET_ID> --input RAW --account adam@cleangreen.com -j` (write). The claude.ai Composio bridge (`COMPOSIO_MULTI_EXECUTE_TOOL` / `GOOGLESHEETS_*`) is DEAD under this agent's bearer token — a Composio sheet call hangs the session. Do NOT use it.
