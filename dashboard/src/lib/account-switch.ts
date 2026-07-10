@@ -160,7 +160,19 @@ export function actorFromSession(session: SwitchSession): string {
 }
 
 export function verifyCsrfAndOrigin(request: NextRequest): void {
-  const requestOrigin = new URL(request.url).origin;
+  let requestOrigin = new URL(request.url).origin;
+  if (process.env.TRUST_PROXY === 'true') {
+    const forwardedProto = request.headers.get('x-forwarded-proto')?.trim().toLowerCase();
+    const forwardedHost = request.headers.get('x-forwarded-host')?.trim();
+    const host = forwardedHost ?? request.headers.get('host')?.trim();
+    if (forwardedProto !== 'https' || !host || host.includes(',')) {
+      throw new AccountSwitchHttpError(403, 'Same-origin check failed', 'BAD_ORIGIN');
+    }
+    if (!/^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$/.test(host)) {
+      throw new AccountSwitchHttpError(403, 'Same-origin check failed', 'BAD_ORIGIN');
+    }
+    requestOrigin = `https://${host}`;
+  }
   const origin = request.headers.get('origin');
   const referer = request.headers.get('referer');
   const refererOrigin = referer ? safeOrigin(referer) : null;
