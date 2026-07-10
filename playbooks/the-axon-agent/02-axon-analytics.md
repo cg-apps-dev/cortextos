@@ -28,4 +28,4 @@ Per-creative `new_customer_orders` + revenue via `AXON_EVENT_KEY` + `AXON_STORE_
 ## Hand-offs
 
 - the-ad-strategist consumes the feed for the weekly report's Axon view.
-- Adam gets Axon performance answers grounded in phase-1 fields only, with the no-revenue caveat stated, until phase 2 clears its gate.
+- Adam gets Axon performance answers grounded in phase-1 fields only (revenue staged, not shipped), until phase 2 clears its gate.
