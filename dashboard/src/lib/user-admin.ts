@@ -5,6 +5,7 @@ import { db } from '@/lib/db';
 import { getCTXRoot, getFrameworkRoot } from '@/lib/config';
 import {
   AccountSwitchHttpError,
+  adminUsername,
   actorFromSession,
   isAdminSession,
   verifyCsrfAndOrigin,
@@ -243,8 +244,4 @@ function auditDashboardAdminAttempt(event: Record<string, unknown>): void {
   } catch {
     // Audit is best-effort; route responses are still governed by the checks above.
   }
-}
-
-function adminUsername(): string {
-  return process.env.ADMIN_USERNAME ?? 'admin';
 }

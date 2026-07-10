@@ -199,9 +199,12 @@ export function isValidName(value: string): boolean {
 }
 
 export function isAdminSession(session: SwitchSession | null | undefined): boolean {
-  const admin = process.env.ADMIN_USERNAME ?? 'admin';
   const name = session?.user?.name;
-  return typeof name === 'string' && name === admin;
+  return typeof name === 'string' && name === adminUsername();
+}
+
+export function adminUsername(): string {
+  return process.env.ADMIN_USERNAME ?? 'admin';
 }
 
 export function actorFromSession(session: SwitchSession): string {
