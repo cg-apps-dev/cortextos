@@ -19,7 +19,8 @@ const DEFAULT_BOOT_VERIFY_WAIT_MS = 40_000;
 // Heavy-boot agents with long session-start checklists can miss 120s by seconds.
 // hbTime >= restartAtMs below still requires a fresh post-restart heartbeat.
 const DEFAULT_HEARTBEAT_WINDOW_MS = 4 * 60_000;
-const DEFAULT_PROBE_TIMEOUT_MS = 2 * 60_000;
+export const DEFAULT_PROBE_TIMEOUT_MS = 6 * 60_000;
+export const DEFAULT_PROBE_RETRY_INTERVAL_MS = 12_000;
 
 export interface SwitchAgentAccountOptions {
   ctxRoot: string;
@@ -74,6 +75,8 @@ interface VerifyResult {
   reason?: string;
   pid?: number;
   primary?: 'matched' | 'indeterminate';
+  warnings?: string[];
+  heartbeat?: 'fresh' | 'stale';
 }
 
 export interface SwitchAgentAccountResult {
@@ -138,6 +141,29 @@ export function processStartTimeMs(pid: number): number | null {
   } catch {
     return null;
   }
+}
+
+export function makeSwitchProbeNonce(agent: string, nowMs: number): string {
+  return `SWITCH_AGENT_ACCOUNT_PROBE_${agent}_${nowMs}_${randomBytes(8).toString('hex')}`;
+}
+
+export function isAcceptedProbeReply(
+  msg: { from: string; reply_to?: string | null; text: string },
+  agent: string,
+  msgId: string,
+  nonce: string,
+): boolean {
+  if (msg.from !== agent) return false;
+  if (msg.reply_to === msgId) return true;
+  return msg.text.includes(nonce);
+}
+
+export function isExactProbeReply(
+  msg: { from: string; reply_to?: string | null },
+  agent: string,
+  msgId: string,
+): boolean {
+  return msg.from === agent && msg.reply_to === msgId;
 }
 
 export function defaultSwitchAgentAccountOps(
@@ -232,6 +258,7 @@ export async function switchAgentAccount(options: SwitchAgentAccountOptions): Pr
       if (!verify.ok) {
         throw new SwitchAgentAccountError(`verify failed at ${verify.gate}: ${verify.reason}`, verify.gate ?? 'VERIFY_FAILED');
       }
+      warnings.push(...(verify.warnings ?? []));
       const taskId = ops.createFunctionalSweepTask(options.agent, options.targetAccount);
       return {
         agent: options.agent,
@@ -478,6 +505,7 @@ async function verifySwitched(
   }
 
   let primary: VerifyResult['primary'] = 'indeterminate';
+  const warnings: string[] = [];
   if (ops.hasProcessEnvVar(status.pid, 'CTX_AGENT_NAME')) {
     const liveHash = ops.hashLiveProcessToken(status.pid);
     if (liveHash === input.tokenFingerprint) primary = 'matched';
@@ -485,20 +513,51 @@ async function verifySwitched(
       return { ok: false, gate: 'runtime-token', reason: 'live process token fingerprint mismatch', pid: status.pid };
     }
   }
+  if (primary === 'indeterminate') {
+    warnings.push('WARN: runtime-token unreadable; attribution via env-file + process-start-postdates-flip + probe, no direct live-token read.');
+  }
 
   const attribution = ops.resolveAgentAccount(agentDir, ctxRoot);
   if (attribution.label !== input.targetAccount) {
     return { ok: false, gate: 'attribution', reason: `expected ${input.targetAccount}, got ${attribution.label ?? 'unresolved'}`, pid: status.pid, primary };
   }
 
+  const probeOk = await probeAgentWithRetry(input.agent, input.operatorAgent, ops, nowMs);
+  if (!probeOk) return { ok: false, gate: 'inference-probe', reason: 'bus round-trip probe failed', pid: status.pid, primary };
+
   const hbTime = status.lastHeartbeat ? Date.parse(status.lastHeartbeat) : NaN;
-  if (Number.isNaN(hbTime) || hbTime < input.restartAtMs || nowMs() - hbTime > DEFAULT_HEARTBEAT_WINDOW_MS) {
-    return { ok: false, gate: 'heartbeat', reason: 'heartbeat not fresh after restart', pid: status.pid, primary };
+  const heartbeatFresh = !Number.isNaN(hbTime) &&
+    hbTime >= input.restartAtMs &&
+    nowMs() - hbTime <= DEFAULT_HEARTBEAT_WINDOW_MS;
+  if (!heartbeatFresh) {
+    warnings.push('WARN: verified via live probe; post-restart heartbeat not yet fresh at verify time (heavy-boot agent) - corroborator only.');
   }
 
-  const probeOk = await ops.probeAgent(input.agent, input.operatorAgent, DEFAULT_PROBE_TIMEOUT_MS);
-  if (!probeOk) return { ok: false, gate: 'inference-probe', reason: 'bus round-trip probe failed', pid: status.pid, primary };
-  return { ok: true, pid: status.pid, primary };
+  return {
+    ok: true,
+    pid: status.pid,
+    primary,
+    warnings,
+    heartbeat: heartbeatFresh ? 'fresh' : 'stale',
+  };
+}
+
+async function probeAgentWithRetry(
+  agent: string,
+  operatorAgent: string,
+  ops: SwitchAgentAccountOps,
+  nowMs: () => number,
+): Promise<boolean> {
+  const startedAtMs = nowMs();
+  const deadline = startedAtMs + DEFAULT_PROBE_TIMEOUT_MS;
+  const maxAttempts = Math.max(1, Math.ceil(DEFAULT_PROBE_TIMEOUT_MS / DEFAULT_PROBE_RETRY_INTERVAL_MS));
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const remainingMs = Math.max(0, deadline - nowMs());
+    if (remainingMs <= 0) return false;
+    const attemptTimeoutMs = Math.min(DEFAULT_PROBE_RETRY_INTERVAL_MS, remainingMs);
+    if (await ops.probeAgent(agent, operatorAgent, attemptTimeoutMs)) return true;
+  }
+  return false;
 }
 
 async function busRoundTripProbe(
@@ -508,7 +567,7 @@ async function busRoundTripProbe(
   timeoutMs: number,
   nowMs: () => number,
 ): Promise<boolean> {
-  const nonce = `SWITCH_AGENT_ACCOUNT_PROBE_${agent}_${nowMs()}`;
+  const nonce = makeSwitchProbeNonce(agent, nowMs());
   const msgId = sendMessage(
     paths,
     operatorAgent,
@@ -520,8 +579,13 @@ async function busRoundTripProbe(
   while (nowMs() < deadline) {
     const messages = checkInbox(paths);
     for (const msg of messages) {
-      const ok = msg.from === agent && (msg.reply_to === msgId || msg.text.includes(nonce));
-      if (ok) {
+      if (isExactProbeReply(msg, agent, msgId)) {
+        ackInbox(paths, msg.id);
+        return true;
+      }
+    }
+    for (const msg of messages) {
+      if (isAcceptedProbeReply(msg, agent, msgId, nonce)) {
         ackInbox(paths, msg.id);
         return true;
       }
