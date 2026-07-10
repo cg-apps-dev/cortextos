@@ -493,6 +493,7 @@ export interface PromotionCandidate {
 
 export interface AgentAccountAttribution {
   agent: string;
+  agentId: string;
   org?: string;
   tier: AccountConfidenceTier;
   source: string;
@@ -797,6 +798,7 @@ export function getAgentAccounts(options: {
           : undefined;
       const attribution: AgentAccountAttribution = {
         agent: name,
+        agentId: row.agent,
         ...(org ? { org } : {}),
         tier,
         source,
@@ -879,6 +881,7 @@ function addAccountBurn(accounts: Record<string, AccountAttribution>): void {
 
 export interface AgentAccountMatrixRow {
   agent: string;
+  agentId: string;
   account: string | null;
   org?: string;
   source: string;
@@ -922,6 +925,7 @@ export function getAgentAccountMatrixGroups(
     section: AgentAccountMatrixRow['section'],
   ): AgentAccountMatrixRow => ({
     agent: agent.agent,
+    agentId: agent.agentId,
     account,
     ...(agent.org ? { org: agent.org } : {}),
     source: agent.source,
@@ -957,6 +961,7 @@ export function getAgentAccountMatrixGroups(
   ): AgentAccountMatrixRow[] => names
     .map((name) => agentAccounts.agents[name] ?? {
       agent: name,
+      agentId: name,
       tier: 'UNVERIFIED' as AccountConfidenceTier,
       source: section,
       cluster_id: null,
