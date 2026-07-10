@@ -8,6 +8,7 @@ import {
   getMultiAccountUsage,
 } from '@/lib/data/reports';
 import { getLatestSwitchJobsByAgent, readVaultAccounts, type VaultAccountOption } from '@/lib/account-switch';
+import { reconcileSwitchQueue } from '@/lib/account-switch-queue';
 import { SubscriptionUsage } from '@/components/analytics/subscription-usage';
 import { AgentAccountMatrix } from '@/components/analytics/agent-account-matrix';
 import { UsageRefreshButton } from '@/components/analytics/usage-refresh-button';
@@ -81,6 +82,7 @@ export default async function AccountsPage({
   const matrixGroups = getAgentAccountMatrixGroups(agentAccounts, org ? { org } : {});
   const vaultAccounts = enrichVaultAccounts(readVaultAccounts(), multiAccountUsage);
   const switchJobsByAgent = getLatestSwitchJobsByAgent();
+  const switchQueue = reconcileSwitchQueue();
   const newestUsageAge = ageLabel(multiAccountUsage?.newestFetchedAgeMs);
   const staleAfter = durationLabel(multiAccountUsage?.staleAfterMs);
 
@@ -130,6 +132,7 @@ export default async function AccountsPage({
         org={org || undefined}
         vaultAccounts={vaultAccounts}
         switchJobsByAgent={switchJobsByAgent}
+        switchQueue={switchQueue}
       />
     </div>
   );

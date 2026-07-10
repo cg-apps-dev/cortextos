@@ -9,6 +9,7 @@ import {
   type SwitchAgentAccountOps,
   SwitchAgentAccountError,
 } from '../bus/switch-agent-account.js';
+import { drainSwitchQueueCli } from './drain-switch-queue.js';
 
 interface SwitchAgentAccountCliOptions {
   instance?: string;
@@ -16,6 +17,7 @@ interface SwitchAgentAccountCliOptions {
   allFrom?: string[];
   dryRun?: boolean;
   json?: boolean;
+  drainSwitchQueue?: boolean;
 }
 
 export const switchAgentAccountCommand = new Command('switch-agent-account')
@@ -26,10 +28,16 @@ export const switchAgentAccountCommand = new Command('switch-agent-account')
   .option('--all-from <accounts...>', 'Batch mode: source-account target-account')
   .option('--dry-run', 'Run preflight only; do not flip or restart')
   .option('--json', 'Output JSON')
+  .option('--drain-switch-queue', 'Drain the dashboard account-switch queue')
   .description('Gated bearer/setup-token account switch: preflight, flip, restart, verify, rollback, and functional-sweep task')
   .action(async (agentArg: string | undefined, targetArg: string | undefined, opts: SwitchAgentAccountCliOptions) => {
     const env = resolveEnv({ instanceId: opts.instance });
     const instanceId = opts.instance ?? env.instanceId;
+    if (opts.drainSwitchQueue) {
+      const result = await drainSwitchQueueCli({ ctxRoot: env.ctxRoot, json: opts.json });
+      outputResult({ ok: true, drained: result.length, entries: result }, opts.json);
+      return;
+    }
     if (!env.frameworkRoot) exitCli('CTX_FRAMEWORK_ROOT is required', opts.json);
     if (!env.org) exitCli('CTX_ORG is required', opts.json);
     console.error(`[switch-agent-account] resolved operator agent: ${env.agentName}`);

@@ -2,6 +2,7 @@ import { Fragment, type ReactNode } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import type { AgentAccountMatrixGroup, AccountConfidenceTier } from '@/lib/data/reports';
 import type { SwitchJobSummary, VaultAccountOption } from '@/lib/account-switch';
+import type { SwitchQueueStatus, QueueEntryRecord } from '@/lib/account-switch-queue';
 import { AccountSwitchControl } from './account-switch-control';
 
 function tierTone(tier: AccountConfidenceTier): string {
@@ -61,13 +62,16 @@ export function AgentAccountMatrix({
   org,
   vaultAccounts,
   switchJobsByAgent,
+  switchQueue,
 }: {
   groups: AgentAccountMatrixGroup[];
   org?: string;
   vaultAccounts?: VaultAccountOption[] | null;
   switchJobsByAgent?: Record<string, SwitchJobSummary>;
+  switchQueue?: SwitchQueueStatus;
 }) {
   const rowCount = groups.reduce((sum, group) => sum + group.rows.length, 0);
+  const queueByAgent = queueEntriesByAgent(switchQueue);
 
   return (
     <Card>
@@ -132,12 +136,14 @@ export function AgentAccountMatrix({
                       {row.section === 'account' ? (
                         <div data-agent-switch-control={row.agentId} className="flex min-w-0 flex-col gap-2">
                           <SwitchBreadcrumb job={switchJobsByAgent?.[row.agentId]} />
+                          <QueueBreadcrumb entry={queueByAgent[row.agentId]} />
                           <AccountSwitchControl
                             agent={row.agent}
                             agentId={row.agentId}
                             currentAccount={row.account}
                             targets={vaultAccounts ?? null}
                             initialJob={switchJobsByAgent?.[row.agentId] ?? null}
+                            initialQueue={queueByAgent[row.agentId] ?? null}
                           />
                         </div>
                       ) : (
@@ -160,6 +166,42 @@ export function AgentAccountMatrix({
       </CardContent>
     </Card>
   );
+}
+
+function queueEntriesByAgent(status: SwitchQueueStatus | undefined): Record<string, QueueEntryRecord> {
+  if (!status) return {};
+  const rows = [
+    ...(status.pending ?? []),
+    ...(status.draining ? [status.draining] : []),
+    ...(status.recent ?? []),
+  ];
+  const byAgent: Record<string, QueueEntryRecord> = {};
+  for (const entry of rows) {
+    if (!byAgent[entry.agent]) byAgent[entry.agent] = entry;
+  }
+  return byAgent;
+}
+
+function QueueBreadcrumb({ entry }: { entry?: QueueEntryRecord | null }) {
+  if (!entry) return null;
+  const text = queueBreadcrumbText(entry);
+  if (!text) return null;
+  const terminal = entry.status !== 'pending' && entry.status !== 'draining';
+  const tone = entry.status === 'succeeded' || entry.status === 'already-at-target'
+    ? 'text-emerald-600 dark:text-emerald-400'
+    : entry.status === 'failed' || entry.status === 'crashed'
+      ? 'text-destructive'
+      : terminal
+        ? 'text-amber-700 dark:text-amber-300'
+        : 'text-muted-foreground';
+  return <p className={`text-xs ${tone}`}>{text}</p>;
+}
+
+export function queueBreadcrumbText(entry?: QueueEntryRecord | null): string | null {
+  if (!entry) return null;
+  if (entry.status === 'pending') return `Queued for ${entry.targetAccount}`;
+  if (entry.status === 'draining') return `Draining switch to ${entry.targetAccount}`;
+  return entry.resultSummary ?? entry.error ?? entry.status;
 }
 
 function SwitchBreadcrumb({ job }: { job?: SwitchJobSummary | null }) {
