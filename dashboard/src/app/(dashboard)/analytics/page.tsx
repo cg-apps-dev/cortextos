@@ -19,6 +19,7 @@ import { GoalProgress } from '@/components/analytics/goal-progress';
 import { FleetHealth } from '@/components/analytics/fleet-health';
 import { getFleetHealth, getLatestSnapshot, getUsageHistory, getMultiAccountUsage, getCodexUsage, getCodexActivity, getAgentAccounts } from '@/lib/data/reports';
 import { SubscriptionUsage } from '@/components/analytics/subscription-usage';
+import { UsageRefreshButton } from '@/components/analytics/usage-refresh-button';
 
 export default async function AnalyticsPage({
   searchParams,
@@ -61,11 +62,14 @@ export default async function AnalyticsPage({
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Analytics</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          {org ? `Org: ${org}` : 'All organizations'} - Performance metrics and cost tracking.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Analytics</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            {org ? `Org: ${org}` : 'All organizations'} - Performance metrics and cost tracking.
+          </p>
+        </div>
+        <UsageRefreshButton />
       </div>
 
       {/* Subscription usage (3 Claude accounts + Codex) - top of page per Adam 2026-06-11 */}
