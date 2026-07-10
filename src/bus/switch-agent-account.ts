@@ -16,7 +16,9 @@ import { sendMessage, checkInbox, ackInbox } from './message.js';
 const SETUP_TOKEN_RE = /^sk-ant-oat01-[A-Za-z0-9_-]{40,}$/;
 const DEFAULT_STOP_WAIT_MS = 60_000;
 const DEFAULT_BOOT_VERIFY_WAIT_MS = 40_000;
-const DEFAULT_HEARTBEAT_WINDOW_MS = 2 * 60_000;
+// Heavy-boot agents with long session-start checklists can miss 120s by seconds.
+// hbTime >= restartAtMs below still requires a fresh post-restart heartbeat.
+const DEFAULT_HEARTBEAT_WINDOW_MS = 4 * 60_000;
 const DEFAULT_PROBE_TIMEOUT_MS = 2 * 60_000;
 
 export interface SwitchAgentAccountOptions {

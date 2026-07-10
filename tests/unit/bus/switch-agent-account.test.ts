@@ -126,6 +126,27 @@ describe('switch-agent-account', () => {
     expect(startCalls).toEqual(['worker-a']);
   });
 
+  it('accepts a heavy-boot post-restart heartbeat within the widened four-minute window', async () => {
+    const times = [
+      Date.parse('2026-07-09T17:00:00.000Z'),
+      Date.parse('2026-07-09T17:00:00.000Z'),
+      Date.parse('2026-07-09T17:04:59.000Z'),
+    ];
+    ops.getStatuses = async (): Promise<AgentStatus[]> => [{
+      name: 'worker-a',
+      status: running ? 'running' : 'stopped',
+      ...(running ? { pid } : {}),
+      uptime: 10,
+      lastHeartbeat: '2026-07-09T17:01:00.000Z',
+    }];
+
+    const result = await runSwitch({
+      nowMs: () => times.shift() ?? Date.parse('2026-07-09T17:04:59.000Z'),
+    });
+
+    expect(result.status).toBe('success');
+  });
+
   it('passes with indeterminate runtime proof when ps env read is restricted but primary gates pass', async () => {
     ops.hasProcessEnvVar = () => false;
     ops.hashLiveProcessToken = () => {
