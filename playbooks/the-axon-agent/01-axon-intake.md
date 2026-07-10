@@ -16,7 +16,7 @@ Derived from the executing spec: `skills/axon-intake/SKILL.md` in the agent's lo
 
 ## The sheet
 
-- Sheet: `1uZJwqqfve7ujCTRdrP3G7Lv1GVccuiv9cxHXhDLAaRg`, tab `VIDEOS (Flower)`.
+- Sheet: `1uZJwqqfve7ujCTRdrP3G7Lv1GVccuiv9cxHXhDLAaRg`. **Product-routed tabs**: flower creatives -> `VIDEOS (Flower)`, gummies creatives -> the Sleep Gummies tab (the sweep detects both and routes by product - e.g. a recent sweep: 71 Axon creatives -> 69 flower / 2 gummies). Intake is NOT flower-only; the cron prompt's "Flower gate" describes the dominant path, the SCRIPT is the authoritative behavior.
 - The agent is the **sole writer** on this sheet.
 - 11 columns, header-resolved: Preview (=IMAGE 9x16 thumb) · Added to Sheet · Axon Creative Code (=ClickUp Card ID verbatim) · Concept # (UGC#NN join key) · Variant # · Actor · Hook # · Text # · Designer · ClickUp Card ID · 9x16.
 
@@ -40,7 +40,7 @@ Derived from the executing spec: `skills/axon-intake/SKILL.md` in the agent's lo
 ## The sequence
 
 1. **Precondition check** (fail-fast): import the engine and confirm gog Sheets + Drive and ClickUp REST all work. Any failure -> tell the orchestrator, change nothing, stop.
-2. **Pull fresh** (never a cached list). The standing daily path (cron `axon-daily-sweep`, 6:30am PT, verified live 2026-07-10) is the ALL-BOARDS scan: `scan_all_boards.py` sweeps Video Ads + Pod 1/2 UGC + Pod 3 Axon and detects Axon creatives by the `axon|disclaimer` FILE-SIGNAL gate + a `product=Flower` gate (not by which board a card sits on - Axon ads land on any production board), dedup-safe append, throttled with 429-retry, quiet if 0 new, pings the-ad-strategist only when new creatives land. A targeted manual run may still pull a single list (Pod-3-Axon `901712093295`) via ClickUp REST, filtered to done statuses. Note: recently finished Axon ads land in `✅ complete`, not `📤 ready to post`. Confirm the live trigger status before changing the recurring cron.
+2. **Pull fresh** (never a cached list). The standing daily path (cron `axon-daily-sweep`, 6:30am PT, verified live 2026-07-10) is the ALL-BOARDS scan: `scan_all_boards.py` sweeps Video Ads + Pod 1/2 UGC + Pod 3 Axon and detects Axon creatives by the `axon|disclaimer` FILE-SIGNAL gate and routes by PRODUCT to the matching sheet tab - flower to `VIDEOS (Flower)`, gummies to the Sleep Gummies tab (not by which board a card sits on - Axon ads land on any production board), dedup-safe append, throttled with 429-retry, quiet if 0 new, pings the-ad-strategist only when new creatives land. A targeted manual run may still pull a single list (Pod-3-Axon `901712093295`) via ClickUp REST, filtered to done statuses. Note: recently finished Axon ads land in `✅ complete`, not `📤 ready to post`. Confirm the live trigger status before changing the recurring cron.
 3. **Per card**: extract the concept number from the card name; call `resolve_cards.resolve(id)` for designer / writer / folder; call `intake_video_card(...)` with `axon_code=<CardID>`, `concept=<n>`, `dry_run=True`.
 4. **Eyeball the dry-run PLAN** (status, start-row=2 on an empty sheet, row count, dedup result, any unparsed files) BEFORE writing.
 5. **Write**: flip `dry_run=False`. Then render-gate - mark a card complete only if `all_ok and rendered`. DONE-WHEN: a post-write re-read matches the dry-run plan (row count + zero duplicate file-ids), and a card completes ONLY on `all_ok and rendered` - anything short stays open with its flag in the run status.
@@ -57,10 +57,10 @@ Derived from the executing spec: `skills/axon-intake/SKILL.md` in the agent's lo
 
 ## Downstream
 
-The `Concept #` (UGC#NN) and `Axon Creative Code` columns are the cross-platform **join key** for [the-ad-strategist](../the-ad-strategist/README.md), who joins Axon <-> Meta by UGC concept for the cross-platform synthesis. This intake produces the sheet; the per-creative Axon performance read (ROAS/NC via the AppLovin reporting API - the read Triple Whale is blind to) is a separate analytics workstream (see [README](README.md); playbook pending its pipeline going live).
+The `Concept #` (UGC#NN) and `Axon Creative Code` columns are the cross-platform **join key** for [the-ad-strategist](../the-ad-strategist/README.md), who joins Axon <-> Meta by UGC concept for the cross-platform synthesis. This intake produces the sheet; the per-creative Axon performance read is a separate analytics workstream - [02-axon-analytics.md](02-axon-analytics.md): the reporting key gives spend + revenue + all-orders at creative_set grain; NC needs the event/store keys (phase 2, gated).
 
 ## Related
 
 - [README.md](README.md) - the-axon-agent playbook index
 - [meta-ads-agent/01-clickup-intake.md](../meta-ads-agent/01-clickup-intake.md) - the Meta intake this forks from
-- Recurring trigger: the daily all-boards sweep (`scan_all_boards.py`), 06:30 UTC, offset +30 min from the Meta 6am ingest.
+- Recurring trigger: the daily all-boards sweep (`scan_all_boards.py`), 13:30 UTC (6:30am PT - the cron `30 6 * * *` fires in the agent TZ, America/Los_Angeles), offset +30 min from the Meta 6am PT ingest.

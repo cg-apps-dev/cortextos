@@ -10,14 +10,14 @@ date: 2026-07-08
 Plain-English SOPs for the Axon / AppLovin side of Clean Green's ad system. The Axon agent owns two halves:
 
 1. **Ops / pipeline** - ingest ClickUp Pod-3-Axon cards into the Axon Ads Upload Sheet (mirrors the Meta Ad Upload sheet, Axon-specific columns, one row per finished 9x16 creative). This is live and documented below.
-2. **Analytics** - the per-creative Axon performance read that feeds the-ad-strategist for cross-platform synthesis. Phase 1 (asset-level cost/impressions/clicks via the AppLovin Asset Reporting API) is LIVE since 2026-07-07 and documented below; phase 2 (per-creative new-customer attribution, the read Triple Whale is blind to) is staged behind a hard reconciliation gate and deliberately not built yet.
+2. **Analytics** - the per-creative Axon performance read that feeds the-ad-strategist for cross-platform synthesis. Phase 1 (creative_set-grain spend + engagement via the AppLovin /report API; source fixed 2026-07-09 off the double-counting asset endpoint) is LIVE and documented below; phase 2 (per-creative new-customer attribution, the read Triple Whale is blind to) is staged behind a hard reconciliation gate and deliberately not built yet.
 
 Each playbook distills the matching `skills/<name>/SKILL.md` in the agent's local skills dir - the skill stays the technical spec the agent executes; the playbook is the readable how-and-why.
 
 | # | Playbook | Process | Cadence / trigger | Autonomy |
 |---|---|---|---|---|
 | 01 | [01-axon-intake.md](01-axon-intake.md) | All-boards Axon creative detection (file-signal + Flower gates), parse 9x16 creatives, write rows to the Axon Ads Upload Sheet (header-resolved, render-gated, draft-safe) | Daily all-boards sweep 6:30am PT (cron `axon-daily-sweep`) + on demand | Autonomous (sheet only; never launches) |
-| 02 | [02-axon-analytics.md](02-axon-analytics.md) | Phase-1 asset-level performance feed (AppLovin Asset Reporting API: cost/impressions/clicks per asset) consumed by the-ad-strategist | On demand (weekly-report pulls, Adam questions) | Autonomous read-only; phase-2 NC numbers gated until TW reconciliation passes |
+| 02 | [02-axon-analytics.md](02-axon-analytics.md) | Phase-1 creative_set-grain performance feed (AppLovin /report: spend, impressions, clicks, CTR per creative_set) consumed by the-ad-strategist | On demand (weekly-report pulls, Adam questions) | Autonomous read-only; phase-2 NC numbers gated until TW reconciliation passes |
 
 ## Staged, deliberately not built (phase 2)
 

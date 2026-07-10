@@ -28,7 +28,7 @@ Maintained by the-sop-keeper. Changes land via a local branch reviewed by the-or
 | [claude-dev-agent/](claude-dev-agent/) | 2 | Dev-pairing contract (plan/review half) + daily upstream check |
 | [codex-dev-agent/](codex-dev-agent/) | 1 | Implementation-partner flow (the execution half of the dev pair) |
 | [meta-compliance-agent/](meta-compliance-agent/) | 3 | Scan-and-verdict process, M-code rules ownership, LP/advertorial review (agent files live in the brain; process documented here) |
-| [the-axon-agent/](the-axon-agent/) | 2 | Axon / AppLovin intake (all-boards creative detection -> Axon Ads Upload Sheet, fork-invert of the Meta engine) + phase-1 asset-level analytics feed; phase-2 NC attribution staged behind a reconciliation gate |
+| [the-axon-agent/](the-axon-agent/) | 2 | Axon / AppLovin intake (all-boards creative detection -> Axon Ads Upload Sheet, fork-invert of the Meta engine) + phase-1 creative_set-grain analytics feed; phase-2 NC attribution staged behind a reconciliation gate |
 | [the-production-house/](the-production-house/) | stub | Creative-asset production engine (Higgsfield Soul personas, image/video/VO from briefs, asset-only mandate). Coverage stub: settled core noted, process playbooks deferred until asset-landing conventions lock |
 | [fleet/](fleet/) | 3 + rules | Cross-agent processes owned by no single agent: the zero-model launchd monitor layer + the RTK post-bounce engagement sweep (manual hook-verification method). Also holds [fleet/standing-rules.md](fleet/standing-rules.md), the home for cross-agent standing rules |
 
