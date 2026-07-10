@@ -196,7 +196,8 @@ export function verifyCsrfAndOrigin(request: NextRequest): void {
   let requestOrigin = new URL(request.url).origin;
   const forwardedProto = request.headers.get('x-forwarded-proto')?.trim().toLowerCase();
   const forwardedHost = request.headers.get('x-forwarded-host')?.trim();
-  if (process.env.TRUST_PROXY === 'true' && (forwardedProto || forwardedHost)) {
+  // Trust strict proxy headers only from a TLS-terminating proxy; HTTP-terminating proxies need reconsideration.
+  if (process.env.TRUST_PROXY === 'true' && forwardedProto === 'https') {
     const host = forwardedHost ?? request.headers.get('host')?.trim();
     if (forwardedProto !== 'https' || !host || host.includes(',')) {
       throw new AccountSwitchHttpError(403, 'Same-origin check failed', 'BAD_ORIGIN');
