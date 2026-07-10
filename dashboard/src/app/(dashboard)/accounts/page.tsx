@@ -7,9 +7,10 @@ import {
   getCodexUsage,
   getMultiAccountUsage,
 } from '@/lib/data/reports';
-import { readVaultAccounts, type VaultAccountOption } from '@/lib/account-switch';
+import { getLatestSwitchJobsByAgent, readVaultAccounts, type VaultAccountOption } from '@/lib/account-switch';
 import { SubscriptionUsage } from '@/components/analytics/subscription-usage';
 import { AgentAccountMatrix } from '@/components/analytics/agent-account-matrix';
+import { UsageRefreshButton } from '@/components/analytics/usage-refresh-button';
 
 function ptTime(iso: string | undefined): string {
   if (!iso) return 'unknown';
@@ -79,16 +80,20 @@ export default async function AccountsPage({
 
   const matrixGroups = getAgentAccountMatrixGroups(agentAccounts, org ? { org } : {});
   const vaultAccounts = enrichVaultAccounts(readVaultAccounts(), multiAccountUsage);
+  const switchJobsByAgent = getLatestSwitchJobsByAgent();
   const newestUsageAge = ageLabel(multiAccountUsage?.newestFetchedAgeMs);
   const staleAfter = durationLabel(multiAccountUsage?.staleAfterMs);
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Accounts</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Fleet-wide subscription usage with {org ? `${org} agent mapping` : 'all-agent mapping'}.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Accounts</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Fleet-wide subscription usage with {org ? `${org} agent mapping` : 'all-agent mapping'}.
+          </p>
+        </div>
+        <UsageRefreshButton />
       </div>
 
       <div className="space-y-2">
@@ -120,7 +125,12 @@ export default async function AccountsPage({
         suppressPanelStatus
       />
 
-      <AgentAccountMatrix groups={matrixGroups} org={org || undefined} vaultAccounts={vaultAccounts} />
+      <AgentAccountMatrix
+        groups={matrixGroups}
+        org={org || undefined}
+        vaultAccounts={vaultAccounts}
+        switchJobsByAgent={switchJobsByAgent}
+      />
     </div>
   );
 }

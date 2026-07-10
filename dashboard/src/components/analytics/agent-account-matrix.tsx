@@ -9,7 +9,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import type { AgentAccountMatrixGroup, AccountConfidenceTier } from '@/lib/data/reports';
-import type { VaultAccountOption } from '@/lib/account-switch';
+import type { SwitchJobSummary, VaultAccountOption } from '@/lib/account-switch';
 import { AccountSwitchControl } from './account-switch-control';
 
 function tierTone(tier: AccountConfidenceTier): string {
@@ -37,10 +37,12 @@ export function AgentAccountMatrix({
   groups,
   org,
   vaultAccounts,
+  switchJobsByAgent,
 }: {
   groups: AgentAccountMatrixGroup[];
   org?: string;
   vaultAccounts?: VaultAccountOption[] | null;
+  switchJobsByAgent?: Record<string, SwitchJobSummary>;
 }) {
   const rowCount = groups.reduce((sum, group) => sum + group.rows.length, 0);
 
@@ -105,12 +107,16 @@ export function AgentAccountMatrix({
                         </TableCell>
                         <TableCell>
                           {row.section === 'account' ? (
-                            <AccountSwitchControl
-                              agent={row.agent}
-                              agentId={row.agentId}
-                              currentAccount={row.account}
-                              targets={vaultAccounts ?? null}
-                            />
+                            <div className="flex min-w-56 flex-col gap-2">
+                              <SwitchBreadcrumb job={switchJobsByAgent?.[row.agentId]} />
+                              <AccountSwitchControl
+                                agent={row.agent}
+                                agentId={row.agentId}
+                                currentAccount={row.account}
+                                targets={vaultAccounts ?? null}
+                                initialJob={switchJobsByAgent?.[row.agentId] ?? null}
+                              />
+                            </div>
                           ) : (
                             <span className="text-muted-foreground">-</span>
                           )}
@@ -133,4 +139,51 @@ export function AgentAccountMatrix({
       </CardContent>
     </Card>
   );
+}
+
+function SwitchBreadcrumb({ job }: { job?: SwitchJobSummary | null }) {
+  const text = switchBreadcrumbText(job);
+  if (!job || !text) return null;
+  if (job.status === 'running') {
+    return (
+      <p className="text-xs text-muted-foreground">
+        {text}
+      </p>
+    );
+  }
+  if (job.status === 'succeeded') {
+    return (
+      <p className="text-xs text-emerald-600 dark:text-emerald-400">
+        {text}
+      </p>
+    );
+  }
+  if (job.status === 'suspect') {
+    return (
+      <p className="text-xs text-amber-700 dark:text-amber-300">
+        {text}
+      </p>
+    );
+  }
+  return (
+    <p className="text-xs text-destructive">
+      {text}
+    </p>
+  );
+}
+
+export function switchBreadcrumbText(job?: SwitchJobSummary | null): string | null {
+  if (!job) return null;
+  if (job.status === 'running') return `Switching to ${job.targetAccount} (${durationLabel(job.elapsedMs)})`;
+  if (job.status === 'succeeded') return `Switched to ${job.targetAccount}`;
+  if (job.status === 'suspect') return `Attribution NOT confirmed - ${job.targetAccount}? investigate`;
+  return job.resultSummary ?? job.error ?? job.status;
+}
+
+function durationLabel(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rem = seconds % 60;
+  return rem === 0 ? `${minutes}m` : `${minutes}m ${rem}s`;
 }

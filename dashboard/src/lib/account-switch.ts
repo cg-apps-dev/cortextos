@@ -7,7 +7,11 @@ import { getCTXRoot, getFrameworkRoot } from '@/lib/config';
 
 const NAME_RE = /^[A-Za-z0-9_-]+$/;
 const JOB_ID_RE = /^[A-Za-z0-9-]+$/;
-const LOCK_TIMEOUT_MS = 5 * 60_000;
+const SWITCH_JOB_MAX_MS = 20 * 60_000;
+// >= CLI switch worst case: (stop 60s + boot-verify 40s + probe-cap 6min)
+// forward + same on rollback = ~15.3min; 20min = ~4.7min margin. CLI constant
+// lives in a different build package, so this is a documented conservative bound, not an import.
+const ATTRIBUTION_CONFIRM_GRACE_MS = 90_000;
 const POST_RATE_LIMIT_MS = 10_000;
 const SWITCH_JOB_DIR_MODE = 0o700;
 const SWITCH_JOB_FILE_MODE = 0o600;
@@ -43,9 +47,27 @@ export interface SwitchJobRecord {
   pid: number;
   startedAt: string;
   startedAtMs: number;
-  status: 'running' | 'succeeded' | 'failed' | 'crashed';
+  status: 'running' | 'succeeded' | 'failed' | 'crashed' | 'suspect';
   processStartMs?: number | null;
+  successFirstSeenAtMs?: number;
+  attributionPending?: boolean;
   endedAt?: string;
+  resultSummary?: string;
+  functionalSweepTaskId?: string;
+  error?: string;
+}
+
+export interface SwitchJobSummary {
+  jobId: string;
+  agent: string;
+  targetAccount: string;
+  sourceAccount: string | null;
+  status: SwitchJobRecord['status'];
+  startedAt: string;
+  startedAtMs: number;
+  endedAt?: string;
+  elapsedMs: number;
+  attributionPending?: boolean;
   resultSummary?: string;
   functionalSweepTaskId?: string;
   error?: string;
@@ -61,6 +83,7 @@ export interface SwitchStatusResponse {
   startedAt: string;
   endedAt?: string;
   elapsedMs: number;
+  attributionPending?: boolean;
   resultSummary?: string;
   functionalSweepTaskId?: string;
   error?: string;
@@ -77,6 +100,16 @@ export interface AccountSwitchOps {
   processStartMs(pid: number): number | null;
   audit(event: Record<string, unknown>): void;
 }
+
+type ParsedCliResult = {
+  ok?: boolean;
+  status?: string;
+  message?: string;
+  error?: string;
+  functionalSweepTaskId?: string;
+  rolledBack?: boolean;
+  code?: string;
+};
 
 export class AccountSwitchHttpError extends Error {
   constructor(
@@ -295,23 +328,139 @@ export function getSwitchJobStatus(
   return toStatusResponse(derived, ops.now(), ops);
 }
 
+export function reconcileInFlightSwitchJobs(ops: AccountSwitchOps = defaultAccountSwitchOps): SwitchJobRecord[] {
+  try {
+    const dir = jobsDir();
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir)
+      .filter((entry) => entry.endsWith('.json'))
+      .flatMap((entry): SwitchJobRecord[] => {
+        try {
+          const jobId = entry.slice(0, -'.json'.length);
+          assertValidJobId(jobId);
+          const record = readJobRecord(jobId);
+          if (!record || record.status !== 'running') return [];
+          return [deriveSwitchStatus(record, ops)];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
+export function getLatestSwitchJobsByAgent(ops: AccountSwitchOps = defaultAccountSwitchOps): Record<string, SwitchJobSummary> {
+  reconcileInFlightSwitchJobs(ops);
+  try {
+    const dir = jobsDir();
+    if (!fs.existsSync(dir)) return {};
+    const summaries = fs.readdirSync(dir)
+      .filter((entry) => entry.endsWith('.json'))
+      .flatMap((entry): SwitchJobSummary[] => {
+        try {
+          const jobId = entry.slice(0, -'.json'.length);
+          assertValidJobId(jobId);
+          const record = readJobRecord(jobId);
+          return record ? [toJobSummary(record, ops.now())] : [];
+        } catch {
+          return [];
+        }
+      })
+      .sort((a, b) => b.startedAtMs - a.startedAtMs);
+    const byAgent: Record<string, SwitchJobSummary> = {};
+    for (const summary of summaries) {
+      if (!byAgent[summary.agent]) byAgent[summary.agent] = summary;
+    }
+    return byAgent;
+  } catch {
+    return {};
+  }
+}
+
 export function deriveSwitchStatus(record: SwitchJobRecord, ops: AccountSwitchOps): SwitchJobRecord {
   if (record.status !== 'running') return record;
   const now = ops.now();
   const output = readTextIfPresent(jobOutputPath(record.jobId));
   const parsed = parseCliResult(output);
-  const attribution = ops.readAgentAccounts()?.find((row) => row.agent === record.agent);
-  const matchesTarget = attribution?.account === record.targetAccount;
 
   if (parsed) {
-    const ok = parsed.ok !== false && parsed.status === 'success' && matchesTarget;
+    const ok = parsed.ok !== false && parsed.status === 'success';
+    if (ok) {
+      const attributionRows = ops.readAgentAccounts();
+      const attribution = attributionRows?.find((row) => row.agent === record.agent);
+      const successFirstSeenAtMs = record.successFirstSeenAtMs ?? now;
+      const graceExpiresAtMs = successFirstSeenAtMs + ATTRIBUTION_CONFIRM_GRACE_MS;
+      const attributionAccount = attribution?.account ?? null;
+      const attributionUnreadable = attributionRows === null;
+      const attributionMatches = attributionAccount === record.targetAccount;
+
+      if (attributionUnreadable || attributionMatches) {
+        const summary = attributionUnreadable
+          ? `${parsed.message ?? 'auth flip verified; functional sweep pending'}; live attribution unreadable`
+          : parsed.message ?? 'auth flip verified; functional sweep pending';
+        const updated: SwitchJobRecord = {
+          ...record,
+          status: 'succeeded',
+          successFirstSeenAtMs,
+          attributionPending: false,
+          endedAt: new Date(now).toISOString(),
+          resultSummary: summary,
+          functionalSweepTaskId: parsed.functionalSweepTaskId,
+        };
+        writeJson0600(jobRecordPath(record.jobId), updated);
+        releaseGlobalLock(record.jobId);
+        return updated;
+      }
+
+      if (now < graceExpiresAtMs) {
+        const updated: SwitchJobRecord = {
+          ...record,
+          successFirstSeenAtMs,
+          attributionPending: true,
+          resultSummary: `Switch tool reported success; confirming live attribution for ${record.targetAccount}.`,
+          functionalSweepTaskId: parsed.functionalSweepTaskId,
+        };
+        writeJson0600(jobRecordPath(record.jobId), updated);
+        return updated;
+      }
+
+      const summary = `switch tool reported success but live attribution = ${attributionAccount ?? 'none'}, not ${record.targetAccount} - NOT confirmed`;
+      const updated: SwitchJobRecord = {
+        ...record,
+        status: 'suspect',
+        successFirstSeenAtMs,
+        attributionPending: false,
+        endedAt: new Date(now).toISOString(),
+        resultSummary: summary,
+        functionalSweepTaskId: parsed.functionalSweepTaskId,
+        error: summary,
+      };
+      ops.audit({
+        result: 'suspect',
+        reason: 'attribution_mismatch_after_grace',
+        agent: record.agent,
+        targetAccount: record.targetAccount,
+        observedAttributionAccount: attributionAccount,
+        attributionAccount,
+        jobId: record.jobId,
+        actor: record.actor,
+        successFirstSeenAtMs,
+        graceExpiresAtMs,
+      });
+      writeJson0600(jobRecordPath(record.jobId), updated);
+      releaseGlobalLock(record.jobId);
+      return updated;
+    }
+
+    const failure = rollbackFailureMessage(record, parsed);
     const updated: SwitchJobRecord = {
       ...record,
-      status: ok ? 'succeeded' : 'failed',
+      status: 'failed',
       endedAt: new Date(now).toISOString(),
-      resultSummary: parsed.message ?? (ok ? 'auth flip verified; functional sweep pending' : 'switch failed'),
+      resultSummary: failure.summary,
       functionalSweepTaskId: parsed.functionalSweepTaskId,
-      ...(ok ? {} : { error: parsed.error ?? parsed.message ?? 'switch failed' }),
+      error: failure.error,
     };
     writeJson0600(jobRecordPath(record.jobId), updated);
     releaseGlobalLock(record.jobId);
@@ -328,7 +477,8 @@ export function deriveSwitchStatus(record: SwitchJobRecord, ops: AccountSwitchOp
     startMs !== null &&
     typeof record.processStartMs === 'number' &&
     !startMatches;
-  if (alive && !startMismatches && now - record.startedAtMs <= LOCK_TIMEOUT_MS) return record;
+  const jobAgeMs = now - record.startedAtMs;
+  if (alive && !startMismatches && jobAgeMs <= SWITCH_JOB_MAX_MS) return record;
 
   const updated: SwitchJobRecord = {
     ...record,
@@ -442,7 +592,7 @@ function acquireGlobalLock(ops: AccountSwitchOps, reservation: { jobId: string; 
           throw new AccountSwitchHttpError(409, 'switch already in progress', 'SWITCH_IN_PROGRESS');
         }
       }
-      if (typeof raw.pid === 'number' && ops.isPidAlive(raw.pid) && typeof raw.startedAtMs === 'number' && ops.now() - raw.startedAtMs <= LOCK_TIMEOUT_MS) {
+      if (typeof raw.pid === 'number' && ops.isPidAlive(raw.pid) && typeof raw.startedAtMs === 'number' && ops.now() - raw.startedAtMs <= SWITCH_JOB_MAX_MS) {
         throw new AccountSwitchHttpError(409, 'switch already in progress', 'SWITCH_IN_PROGRESS');
       }
       fs.rmSync(lockPath, { force: true });
@@ -499,7 +649,7 @@ function readTextIfPresent(filePath: string): string {
   }
 }
 
-function parseCliResult(output: string): { ok?: boolean; status?: string; message?: string; error?: string; functionalSweepTaskId?: string } | null {
+function parseCliResult(output: string): ParsedCliResult | null {
   const trimmed = output.trim();
   if (!trimmed) return null;
   try {
@@ -510,10 +660,45 @@ function parseCliResult(output: string): { ok?: boolean; status?: string; messag
       ...(typeof parsed.message === 'string' ? { message: parsed.message } : {}),
       ...(typeof parsed.error === 'string' ? { error: parsed.error } : {}),
       ...(typeof parsed.functionalSweepTaskId === 'string' ? { functionalSweepTaskId: parsed.functionalSweepTaskId } : {}),
+      ...(typeof parsed.rolledBack === 'boolean' ? { rolledBack: parsed.rolledBack } : {}),
+      ...(typeof parsed.code === 'string' ? { code: parsed.code } : {}),
     };
   } catch {
     return null;
   }
+}
+
+function rollbackFailureMessage(record: SwitchJobRecord, parsed: ParsedCliResult): { summary: string; error: string } {
+  const code = parsed.code ? ` (${parsed.code})` : '';
+  if (parsed.code === 'ROLLBACK_FAILED' || parsed.code === 'ROLLBACK_VERIFY_FAILED') {
+    const message = `Switch failed AND rollback failed - ${record.agent} may be down, manual check needed${code}.`;
+    return { summary: message, error: message };
+  }
+  if (parsed.rolledBack === true) {
+    const restored = record.sourceAccount ?? 'prior account';
+    const message = `Switch failed; rolled back to ${restored} - agent restored.`;
+    return { summary: message, error: parsed.error ?? parsed.message ?? message };
+  }
+  const message = `Switch failed before any change - ${record.agent} untouched.`;
+  return { summary: message, error: parsed.error ?? parsed.message ?? message };
+}
+
+function toJobSummary(record: SwitchJobRecord, now: number): SwitchJobSummary {
+  return {
+    jobId: record.jobId,
+    agent: record.agent,
+    targetAccount: record.targetAccount,
+    sourceAccount: record.sourceAccount,
+    status: record.status,
+    startedAt: record.startedAt,
+    startedAtMs: record.startedAtMs,
+    ...(record.endedAt ? { endedAt: record.endedAt } : {}),
+    elapsedMs: Math.max(0, (record.endedAt ? Date.parse(record.endedAt) : now) - record.startedAtMs),
+    ...(record.attributionPending ? { attributionPending: true } : {}),
+    ...(record.resultSummary ? { resultSummary: record.resultSummary } : {}),
+    ...(record.functionalSweepTaskId ? { functionalSweepTaskId: record.functionalSweepTaskId } : {}),
+    ...(record.error ? { error: record.error } : {}),
+  };
 }
 
 function toStatusResponse(record: SwitchJobRecord, now: number, ops: AccountSwitchOps): SwitchStatusResponse {
@@ -528,6 +713,7 @@ function toStatusResponse(record: SwitchJobRecord, now: number, ops: AccountSwit
     startedAt: record.startedAt,
     ...(record.endedAt ? { endedAt: record.endedAt } : {}),
     elapsedMs: Math.max(0, now - record.startedAtMs),
+    ...(record.attributionPending ? { attributionPending: true } : {}),
     ...(record.resultSummary ? { resultSummary: record.resultSummary } : {}),
     ...(record.functionalSweepTaskId ? { functionalSweepTaskId: record.functionalSweepTaskId } : {}),
     ...(record.error ? { error: record.error } : {}),

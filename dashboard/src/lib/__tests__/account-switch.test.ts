@@ -248,6 +248,25 @@ describe('account switch write path', () => {
     expect(stale.body.jobId).toBe('job-stale');
   });
 
+  it('keeps a live long-running switch lock through the probe-primary window and reclaims only after the backstop', async () => {
+    writeLock({ pid: 999, startedAtMs: 1_000 });
+
+    const liveLong = await mod.startSwitchJob(
+      makeRequest({ agent: 'a1', targetAccount: 'moonlight' }),
+      admin('live-long@example.test'),
+      makeOps({ now: 361_000, pidAlive: true }),
+    );
+    expect(liveLong.status).toBe(409);
+
+    const expired = await mod.startSwitchJob(
+      makeRequest({ agent: 'a1', targetAccount: 'moonlight' }),
+      admin('expired@example.test'),
+      makeOps({ now: 1_201_001, pidAlive: true, uuid: 'job-after-backstop' }),
+    );
+    expect(expired.status).toBe(202);
+    expect(expired.body.jobId).toBe('job-after-backstop');
+  });
+
   it('rejects traversal jobIds before path construction', () => {
     expect(() => mod.getSwitchJobStatus('../secret', makeOps())).toThrow('Invalid jobId');
   });
@@ -288,7 +307,7 @@ describe('account switch write path', () => {
     expect(JSON.stringify(success)).not.toContain('done');
 
     writeRecord({
-      jobId: 'forged-job',
+      jobId: 'lagging-attribution-job',
       agent: 'a1',
       targetAccount: 'moonlight',
       sourceAccount: 'me-com',
@@ -299,12 +318,18 @@ describe('account switch write path', () => {
       processStartMs: 2_000,
       status: 'running',
     });
-    fs.writeFileSync(mod.jobOutputPath('forged-job'), JSON.stringify({
+    fs.writeFileSync(mod.jobOutputPath('lagging-attribution-job'), JSON.stringify({
       status: 'success',
       message: 'auth flip verified; functional sweep pending',
     }));
-    const forged = mod.getSwitchJobStatus('forged-job', makeOps({ agentRows: [{ agent: 'a1', account: 'me-com', source: 'live' }] }));
-    expect(forged.status).toBe('failed');
+    const laggingAttribution = mod.getSwitchJobStatus('lagging-attribution-job', makeOps({
+      now: 20_000,
+      pidAlive: false,
+      agentRows: [{ agent: 'a1', account: 'me-com', source: 'live' }],
+    }));
+    expect(laggingAttribution.status).toBe('running');
+    expect(laggingAttribution.attributionPending).toBe(true);
+    expect(laggingAttribution.resultSummary).toContain('confirming live attribution');
 
     writeRecord({
       jobId: 'failed-job',
@@ -324,6 +349,60 @@ describe('account switch write path', () => {
     expect(failed.error).toBe('rolled back');
 
     writeRecord({
+      jobId: 'rollback-safe-job',
+      agent: 'a1',
+      targetAccount: 'moonlight',
+      sourceAccount: 'me-com',
+      actor: 'admin',
+      pid: 1239,
+      startedAt: new Date(1_000).toISOString(),
+      startedAtMs: 1_000,
+      processStartMs: 2_000,
+      status: 'running',
+    });
+    fs.writeFileSync(mod.jobOutputPath('rollback-safe-job'), JSON.stringify({ ok: false, rolledBack: true, code: 'VERIFY_FAILED', error: 'verify failed' }));
+    const rollbackSafe = mod.getSwitchJobStatus('rollback-safe-job', ops);
+    expect(rollbackSafe.status).toBe('failed');
+    expect(rollbackSafe.resultSummary).toBe('Switch failed; rolled back to me-com - agent restored.');
+    expect(rollbackSafe.error).toBe('verify failed');
+
+    writeRecord({
+      jobId: 'rollback-bad-job',
+      agent: 'a1',
+      targetAccount: 'moonlight',
+      sourceAccount: 'me-com',
+      actor: 'admin',
+      pid: 1240,
+      startedAt: new Date(1_000).toISOString(),
+      startedAtMs: 1_000,
+      processStartMs: 2_000,
+      status: 'running',
+    });
+    fs.writeFileSync(mod.jobOutputPath('rollback-bad-job'), JSON.stringify({ ok: false, rolledBack: false, code: 'ROLLBACK_FAILED', error: 'rollback failed' }));
+    const rollbackBad = mod.getSwitchJobStatus('rollback-bad-job', ops);
+    expect(rollbackBad.status).toBe('failed');
+    expect(rollbackBad.resultSummary).toBe('Switch failed AND rollback failed - a1 may be down, manual check needed (ROLLBACK_FAILED).');
+    expect(rollbackBad.error).toBe('Switch failed AND rollback failed - a1 may be down, manual check needed (ROLLBACK_FAILED).');
+
+    writeRecord({
+      jobId: 'preflip-failed-job',
+      agent: 'a1',
+      targetAccount: 'moonlight',
+      sourceAccount: 'me-com',
+      actor: 'admin',
+      pid: 1241,
+      startedAt: new Date(1_000).toISOString(),
+      startedAtMs: 1_000,
+      processStartMs: 2_000,
+      status: 'running',
+    });
+    fs.writeFileSync(mod.jobOutputPath('preflip-failed-job'), JSON.stringify({ ok: false, rolledBack: false, code: 'PREFLIGHT_FAILED', error: 'preflight failed' }));
+    const preflipFailed = mod.getSwitchJobStatus('preflip-failed-job', ops);
+    expect(preflipFailed.status).toBe('failed');
+    expect(preflipFailed.resultSummary).toBe('Switch failed before any change - a1 untouched.');
+    expect(preflipFailed.error).toBe('preflight failed');
+
+    writeRecord({
       jobId: 'crashed-job',
       agent: 'a1',
       targetAccount: 'moonlight',
@@ -339,6 +418,21 @@ describe('account switch write path', () => {
     expect(crashed.status).toBe('crashed');
 
     writeRecord({
+      jobId: 'long-live-job',
+      agent: 'a1',
+      targetAccount: 'moonlight',
+      sourceAccount: 'me-com',
+      actor: 'admin',
+      pid: 1238,
+      startedAt: new Date(1_000).toISOString(),
+      startedAtMs: 1_000,
+      processStartMs: 2_000,
+      status: 'running',
+    });
+    const longLive = mod.getSwitchJobStatus('long-live-job', makeOps({ pidAlive: true, processStart: 2_000, now: 361_000 }));
+    expect(longLive.status).toBe('running');
+
+    writeRecord({
       jobId: 'timeout-job',
       agent: 'a1',
       targetAccount: 'moonlight',
@@ -350,8 +444,192 @@ describe('account switch write path', () => {
       processStartMs: 2_000,
       status: 'running',
     });
-    const timedOut = mod.getSwitchJobStatus('timeout-job', makeOps({ pidAlive: true, processStart: 2_000, now: 400_000 }));
+    const timedOut = mod.getSwitchJobStatus('timeout-job', makeOps({ pidAlive: true, processStart: 2_000, now: 1_201_001 }));
     expect(timedOut.status).toBe('crashed');
+  });
+
+  it('confirms CLI success after live attribution converges within the grace window', () => {
+    let agentRows: AgentAccountOption[] = [{ agent: 'a1', account: 'me-com', source: 'live' }];
+    const ops = makeOps({ now: 30_000, pidAlive: false });
+    ops.readAgentAccounts = vi.fn(() => agentRows);
+    writeRecord({
+      jobId: 'converges-job',
+      agent: 'a1',
+      targetAccount: 'moonlight',
+      sourceAccount: 'me-com',
+      actor: 'admin',
+      pid: 3001,
+      startedAt: new Date(1_000).toISOString(),
+      startedAtMs: 1_000,
+      processStartMs: 2_000,
+      status: 'running',
+    });
+    fs.writeFileSync(mod.jobOutputPath('converges-job'), JSON.stringify({
+      status: 'success',
+      message: 'auth flip verified; functional sweep pending',
+    }));
+
+    const pending = mod.getSwitchJobStatus('converges-job', ops);
+    expect(pending.status).toBe('running');
+    expect(pending.attributionPending).toBe(true);
+
+    agentRows = [{ agent: 'a1', account: 'moonlight', source: 'live' }];
+    const confirmed = mod.getSwitchJobStatus('converges-job', ops);
+    expect(confirmed.status).toBe('succeeded');
+    expect(confirmed.resultSummary).toBe('auth flip verified; functional sweep pending');
+  });
+
+  it('treats unreadable attribution as success with an unread note', () => {
+    const ops = makeOps({ agentRows: null, now: 40_000, pidAlive: false });
+    writeRecord({
+      jobId: 'unread-attribution-job',
+      agent: 'a1',
+      targetAccount: 'moonlight',
+      sourceAccount: 'me-com',
+      actor: 'admin',
+      pid: 3002,
+      startedAt: new Date(1_000).toISOString(),
+      startedAtMs: 1_000,
+      processStartMs: 2_000,
+      status: 'running',
+    });
+    fs.writeFileSync(mod.jobOutputPath('unread-attribution-job'), JSON.stringify({
+      status: 'success',
+      message: 'auth flip verified; functional sweep pending',
+    }));
+
+    const unread = mod.getSwitchJobStatus('unread-attribution-job', ops);
+    expect(unread.status).toBe('succeeded');
+    expect(unread.resultSummary).toContain('live attribution unreadable');
+  });
+
+  it('keeps success-with-mismatched-attribution non-terminal during grace before pid/crash checks', () => {
+    const ops = makeOps({
+      now: 50_000,
+      pidAlive: false,
+      agentRows: [{ agent: 'a1', account: 'me-com', source: 'live' }],
+    });
+    writeRecord({
+      jobId: 'pending-dead-pid-job',
+      agent: 'a1',
+      targetAccount: 'moonlight',
+      sourceAccount: 'me-com',
+      actor: 'admin',
+      pid: 3003,
+      startedAt: new Date(1_000).toISOString(),
+      startedAtMs: 1_000,
+      processStartMs: 2_000,
+      status: 'running',
+    });
+    fs.writeFileSync(mod.jobOutputPath('pending-dead-pid-job'), JSON.stringify({
+      status: 'success',
+      message: 'auth flip verified; functional sweep pending',
+    }));
+
+    const pending = mod.getSwitchJobStatus('pending-dead-pid-job', ops);
+    expect(pending.status).toBe('running');
+    expect(pending.attributionPending).toBe(true);
+    expect(pending.resultSummary).toContain('confirming live attribution');
+  });
+
+  it('turns persistent readable mismatch into suspect after the immutable first-seen grace', () => {
+    let now = 60_000;
+    const ops = makeOps({
+      pidAlive: false,
+      agentRows: [{ agent: 'a1', account: 'me-com', source: 'live' }],
+    });
+    ops.now = () => now;
+    writeRecord({
+      jobId: 'persistent-mismatch-job',
+      agent: 'a1',
+      targetAccount: 'moonlight',
+      sourceAccount: 'me-com',
+      actor: 'admin@example.test',
+      pid: 3004,
+      startedAt: new Date(1_000).toISOString(),
+      startedAtMs: 1_000,
+      processStartMs: 2_000,
+      status: 'running',
+    });
+    fs.writeFileSync(mod.jobOutputPath('persistent-mismatch-job'), JSON.stringify({
+      status: 'success',
+      message: 'auth flip verified; functional sweep pending',
+    }));
+
+    const first = mod.getSwitchJobStatus('persistent-mismatch-job', ops);
+    expect(first.status).toBe('running');
+    const stamped = JSON.parse(fs.readFileSync(mod.jobRecordPath('persistent-mismatch-job'), 'utf-8')) as SwitchJobRecord;
+    expect(stamped.successFirstSeenAtMs).toBe(60_000);
+
+    now = 100_000;
+    expect(mod.getSwitchJobStatus('persistent-mismatch-job', ops).status).toBe('running');
+    const afterSecondPoll = JSON.parse(fs.readFileSync(mod.jobRecordPath('persistent-mismatch-job'), 'utf-8')) as SwitchJobRecord;
+    expect(afterSecondPoll.successFirstSeenAtMs).toBe(60_000);
+
+    now = 140_000;
+    expect(mod.getSwitchJobStatus('persistent-mismatch-job', ops).status).toBe('running');
+    const afterThirdPoll = JSON.parse(fs.readFileSync(mod.jobRecordPath('persistent-mismatch-job'), 'utf-8')) as SwitchJobRecord;
+    expect(afterThirdPoll.successFirstSeenAtMs).toBe(60_000);
+
+    now = 151_000;
+    const suspect = mod.getSwitchJobStatus('persistent-mismatch-job', ops);
+    expect(suspect.status).toBe('suspect');
+    expect(suspect.resultSummary).toBe('switch tool reported success but live attribution = me-com, not moonlight - NOT confirmed');
+    expect(ops.audit).toHaveBeenCalledWith(expect.objectContaining({
+      result: 'suspect',
+      agent: 'a1',
+      targetAccount: 'moonlight',
+      observedAttributionAccount: 'me-com',
+      attributionAccount: 'me-com',
+      jobId: 'persistent-mismatch-job',
+      actor: 'admin@example.test',
+      successFirstSeenAtMs: 60_000,
+      graceExpiresAtMs: 150_000,
+    }));
+  });
+
+  it('reconciles in-flight records from server render without a client poll', () => {
+    writeRecord({
+      jobId: 'dead-terminal-job',
+      agent: 'a1',
+      targetAccount: 'moonlight',
+      sourceAccount: 'me-com',
+      actor: 'admin',
+      pid: 2001,
+      startedAt: new Date(1_000).toISOString(),
+      startedAtMs: 1_000,
+      processStartMs: 2_000,
+      status: 'running',
+    });
+    fs.writeFileSync(mod.jobOutputPath('dead-terminal-job'), JSON.stringify({
+      status: 'success',
+      message: 'auth flip verified; functional sweep pending',
+    }));
+    writeRecord({
+      jobId: 'live-running-job',
+      agent: 'a2',
+      targetAccount: 'moonlight',
+      sourceAccount: 'me-com',
+      actor: 'admin',
+      pid: 2002,
+      startedAt: new Date(5_000).toISOString(),
+      startedAtMs: 5_000,
+      processStartMs: 6_000,
+      status: 'running',
+    });
+
+    const reconciled = mod.reconcileInFlightSwitchJobs(makeOps({
+      now: 20_000,
+      pidAlive: true,
+      processStart: 6_000,
+      agentRows: [{ agent: 'a1', account: 'moonlight', source: 'live' }],
+    }));
+
+    expect(reconciled.find((record) => record.jobId === 'dead-terminal-job')?.status).toBe('succeeded');
+    expect(reconciled.find((record) => record.jobId === 'live-running-job')?.status).toBe('running');
+    const latest = mod.getLatestSwitchJobsByAgent(makeOps({ now: 20_000, pidAlive: true, processStart: 6_000 }));
+    expect(latest.a1.status).toBe('succeeded');
+    expect(latest.a2.status).toBe('running');
   });
 });
 
@@ -399,7 +677,9 @@ function makeOps(options: {
   return {
     now: () => options.now ?? 10_000,
     uuid: () => options.uuid ?? 'job-1',
-    readAgentAccounts: vi.fn(() => options.agentRows ?? [{ agent: 'a1', account: 'me-com', source: 'live' }]),
+    readAgentAccounts: vi.fn(() => Object.hasOwn(options, 'agentRows')
+      ? options.agentRows ?? null
+      : [{ agent: 'a1', account: 'me-com', source: 'live' }]),
     readVaultAccounts: vi.fn(() => options.vaultRows ?? [{ account: 'moonlight', hasToken: true as const }]),
     spawnSwitch: vi.fn(() => ({ pid: 1234, unref: vi.fn() }) as unknown as ChildProcess),
     isPidAlive: vi.fn(() => options.pidAlive ?? true),

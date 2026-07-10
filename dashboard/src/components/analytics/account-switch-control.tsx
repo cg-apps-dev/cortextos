@@ -18,28 +18,31 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { VaultAccountOption } from '@/lib/account-switch';
+import type { SwitchJobSummary, VaultAccountOption } from '@/lib/account-switch';
 
 interface AccountSwitchControlProps {
   agent: string;
   agentId: string;
   currentAccount: string | null;
   targets: VaultAccountOption[] | null;
+  initialJob?: SwitchJobSummary | null;
 }
 
 interface SwitchStatus {
-  status: 'running' | 'succeeded' | 'failed' | 'crashed';
+  status: 'running' | 'succeeded' | 'failed' | 'crashed' | 'suspect';
   elapsedMs: number;
+  attributionPending?: boolean;
   resultSummary?: string;
   error?: string;
   functionalSweepTaskId?: string;
 }
 
-export function AccountSwitchControl({ agent, agentId, currentAccount, targets }: AccountSwitchControlProps) {
+export function AccountSwitchControl({ agent, agentId, currentAccount, targets, initialJob }: AccountSwitchControlProps) {
+  const initialState = initialSwitchState(initialJob);
   const [selected, setSelected] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [status, setStatus] = useState<SwitchStatus | null>(null);
+  const [jobId, setJobId] = useState<string | null>(initialState.jobId);
+  const [status, setStatus] = useState<SwitchStatus | null>(initialState.status);
   const [error, setError] = useState<string | null>(null);
   const options = useMemo(() => targets ?? [], [targets]);
   const switchableOptions = useMemo(
@@ -51,6 +54,7 @@ export function AccountSwitchControl({ agent, agentId, currentAccount, targets }
 
   useEffect(() => {
     if (!jobId) return;
+    if (initialJob?.jobId === jobId && !shouldPollInitialJob(initialJob)) return;
     const id = jobId;
     let cancelled = false;
     async function poll() {
@@ -75,7 +79,7 @@ export function AccountSwitchControl({ agent, agentId, currentAccount, targets }
     return () => {
       cancelled = true;
     };
-  }, [jobId]);
+  }, [initialJob, jobId]);
 
   async function submitSwitch() {
     if (!selectedTarget) return;
@@ -148,7 +152,7 @@ export function AccountSwitchControl({ agent, agentId, currentAccount, targets }
         </p>
       )}
       {status && status.status !== 'running' && (
-        <p className={`text-xs ${status.status === 'succeeded' ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive'}`}>
+        <p className={`text-xs ${switchStatusTone(status.status)}`}>
           {status.resultSummary ?? status.error ?? status.status}
           {status.functionalSweepTaskId ? ` (${status.functionalSweepTaskId})` : ''}
         </p>
@@ -184,12 +188,40 @@ export function AccountSwitchControl({ agent, agentId, currentAccount, targets }
   );
 }
 
+export function initialSwitchState(job: SwitchJobSummary | null | undefined): { jobId: string | null; status: SwitchStatus | null } {
+  return {
+    jobId: job?.jobId ?? null,
+    status: job ? toSwitchStatus(job) : null,
+  };
+}
+
+export function shouldPollInitialJob(job: SwitchJobSummary | null | undefined): boolean {
+  return job?.status === 'running';
+}
+
+export function toSwitchStatus(job: SwitchJobSummary): SwitchStatus {
+  return {
+    status: job.status,
+    elapsedMs: job.elapsedMs,
+    ...(job.attributionPending ? { attributionPending: true } : {}),
+    ...(job.resultSummary ? { resultSummary: job.resultSummary } : {}),
+    ...(job.error ? { error: job.error } : {}),
+    ...(job.functionalSweepTaskId ? { functionalSweepTaskId: job.functionalSweepTaskId } : {}),
+  };
+}
+
 export function buildSwitchRequestBody(agentId: string, targetAccount: string) {
   return { agent: agentId, targetAccount };
 }
 
 export function isOrchestratorAgent(agentId: string): boolean {
   return agentId === 'the-orchestrator';
+}
+
+export function switchStatusTone(status: SwitchStatus['status']): string {
+  if (status === 'succeeded') return 'text-emerald-600 dark:text-emerald-400';
+  if (status === 'suspect') return 'text-amber-700 dark:text-amber-300';
+  return 'text-destructive';
 }
 
 function capacityLabel(target: VaultAccountOption): string {
