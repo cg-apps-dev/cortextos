@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, chmodSync, statSync, unlinkSync, readdirSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, chmodSync, statSync, unlinkSync, readdirSync, writeFileSync, rmSync } from 'fs';
 import { dirname, join, resolve as pathResolve } from 'path';
 import { execFileSync } from 'child_process';
 import { randomBytes } from 'crypto';
@@ -20,7 +20,7 @@ const DEFAULT_BOOT_VERIFY_WAIT_MS = 40_000;
 // hbTime >= restartAtMs below still requires a fresh post-restart heartbeat.
 const DEFAULT_HEARTBEAT_WINDOW_MS = 4 * 60_000;
 export const DEFAULT_PROBE_TIMEOUT_MS = 6 * 60_000;
-export const DEFAULT_PROBE_RETRY_INTERVAL_MS = 12_000;
+export const DEFAULT_PROBE_RETRY_INTERVAL_MS = 60_000;
 
 export interface SwitchAgentAccountOptions {
   ctxRoot: string;
@@ -147,6 +147,32 @@ export function makeSwitchProbeNonce(agent: string, nowMs: number): string {
   return `SWITCH_AGENT_ACCOUNT_PROBE_${agent}_${nowMs}_${randomBytes(8).toString('hex')}`;
 }
 
+export function makeSwitchProbeOperatorAgent(): string {
+  return `switch-probe-${randomBytes(8).toString('hex')}`;
+}
+
+export function makeSwitchProbeBusPaths(basePaths: BusPaths, probeOperatorAgent: string): BusPaths {
+  const probeRoot = join(basePaths.ctxRoot, 'inbox', probeOperatorAgent);
+  return {
+    ctxRoot: basePaths.ctxRoot,
+    inbox: probeRoot,
+    inflight: join(probeRoot, '.inflight'),
+    processed: join(probeRoot, '.processed'),
+    logDir: join(probeRoot, '.logs'),
+    stateDir: join(probeRoot, '.state'),
+    taskDir: join(probeRoot, '.unused', 'tasks'),
+    approvalDir: join(probeRoot, '.unused', 'approvals'),
+    analyticsDir: join(probeRoot, '.unused', 'analytics'),
+    deliverablesDir: join(probeRoot, '.unused', 'deliverables'),
+  };
+}
+
+export function cleanupSwitchProbeInbox(basePaths: BusPaths, probeOperatorAgent: string): void {
+  try {
+    rmSync(join(basePaths.ctxRoot, 'inbox', probeOperatorAgent), { recursive: true, force: true });
+  } catch { /* session-less probe inbox cleanup is best-effort */ }
+}
+
 export function isAcceptedProbeReply(
   msg: { from: string; reply_to?: string | null; text: string },
   agent: string,
@@ -209,6 +235,9 @@ export async function switchAgentAccount(options: SwitchAgentAccountOptions): Pr
   const sleepMs = options.sleepMs ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const ops = options.ops;
   const warnings: string[] = [];
+  const probeOperatorAgent = makeSwitchProbeOperatorAgent();
+  validateAgentName(probeOperatorAgent);
+  warnings.push(`INFO: resolved operator agent ${options.operatorAgent}; probe replies use session-less ${probeOperatorAgent}.`);
   const agentDir = join(options.frameworkRoot, 'orgs', options.org, 'agents', options.agent);
   const envPath = join(agentDir, '.env');
   const configPath = join(agentDir, 'config.json');
@@ -252,7 +281,7 @@ export async function switchAgentAccount(options: SwitchAgentAccountOptions): Pr
         tokenFingerprint: target.fingerprint,
         restartAtMs,
         envFlipMtimeMs,
-        operatorAgent: options.operatorAgent,
+        operatorAgent: probeOperatorAgent,
         envPath,
       }, agentDir, options.ctxRoot, ops, nowMs);
       if (!verify.ok) {
@@ -285,7 +314,7 @@ export async function switchAgentAccount(options: SwitchAgentAccountOptions): Pr
             tokenFingerprint: priorFingerprint,
             restartAtMs: rollbackAtMs,
             envFlipMtimeMs: rollbackEnvMtimeMs,
-            operatorAgent: options.operatorAgent,
+            operatorAgent: probeOperatorAgent,
             envPath,
           }, agentDir, options.ctxRoot, ops, nowMs);
           if (!rollbackVerify.ok) {
@@ -567,32 +596,37 @@ async function busRoundTripProbe(
   timeoutMs: number,
   nowMs: () => number,
 ): Promise<boolean> {
-  const nonce = makeSwitchProbeNonce(agent, nowMs());
-  const msgId = sendMessage(
-    paths,
-    operatorAgent,
-    agent,
-    'normal',
-    `Inference probe: reply exactly "${nonce}" to confirm runtime after account switch.`,
-  );
-  const deadline = nowMs() + timeoutMs;
-  while (nowMs() < deadline) {
-    const messages = checkInbox(paths);
-    for (const msg of messages) {
-      if (isExactProbeReply(msg, agent, msgId)) {
-        ackInbox(paths, msg.id);
-        return true;
+  const probePaths = makeSwitchProbeBusPaths(paths, operatorAgent);
+  try {
+    const nonce = makeSwitchProbeNonce(agent, nowMs());
+    const msgId = sendMessage(
+      paths,
+      operatorAgent,
+      agent,
+      'normal',
+      `Inference probe: reply exactly "${nonce}" to confirm runtime after account switch.`,
+    );
+    const deadline = nowMs() + timeoutMs;
+    while (nowMs() < deadline) {
+      const messages = checkInbox(probePaths);
+      for (const msg of messages) {
+        if (isExactProbeReply(msg, agent, msgId)) {
+          ackInbox(probePaths, msg.id);
+          return true;
+        }
       }
-    }
-    for (const msg of messages) {
-      if (isAcceptedProbeReply(msg, agent, msgId, nonce)) {
-        ackInbox(paths, msg.id);
-        return true;
+      for (const msg of messages) {
+        if (isAcceptedProbeReply(msg, agent, msgId, nonce)) {
+          ackInbox(probePaths, msg.id);
+          return true;
+        }
       }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    return false;
+  } finally {
+    cleanupSwitchProbeInbox(paths, operatorAgent);
   }
-  return false;
 }
 
 function createFunctionalSweepTask(paths: BusPaths, org: string, agent: string, targetAccount: string): string {
