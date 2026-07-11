@@ -165,7 +165,7 @@ export const doctorCommand = new Command('doctor')
         name: 'Claude Code auth',
         status: 'warn',
         message: 'Not authenticated',
-        fix: 'Run: claude login',
+        fix: 'Persistent agents must not run claude login. Mint claude setup-token and set CLAUDE_CODE_OAUTH_TOKEN, or authenticate only a disposable human CLI outside the agent runtime.',
       });
     }
 

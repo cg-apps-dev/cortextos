@@ -147,9 +147,9 @@ export const installCommand = new Command('install')
       if (!authenticated) {
         console.log('');
         console.log('  ! Claude Code is not authenticated.');
-        console.log('    Run: claude login');
-        console.log('    Agents will not start until you authenticate.');
-        console.log('    You can run this after installation completes.');
+        console.log('    Persistent agents must not run claude login.');
+        console.log('    Mint claude setup-token and set CLAUDE_CODE_OAUTH_TOKEN instead.');
+        console.log('    Only use claude login for a disposable human CLI outside the agent runtime.');
         console.log('');
       } else {
         console.log('  ✓ claude: authenticated');
