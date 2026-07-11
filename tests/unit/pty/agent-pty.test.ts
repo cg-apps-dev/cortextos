@@ -11,10 +11,12 @@ vi.mock('fs', async () => {
     existsSync: vi.fn().mockReturnValue(false),
     readFileSync: vi.fn(),
     readdirSync: vi.fn().mockReturnValue([]),
+    rmSync: vi.fn(),
   };
 });
 
-const { AgentPTY } = await import('../../../src/pty/agent-pty.js');
+const fs = await import('fs');
+const { AgentPTY, enforceIsolatedClaudeCredentialEnv } = await import('../../../src/pty/agent-pty.js');
 
 const mockEnv = {
   instanceId: 'test',
@@ -58,5 +60,33 @@ describe('AgentPTY --dangerously-skip-permissions toggle', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('AgentPTY isolated Claude config guard', () => {
+  const goodToken = `sk-ant-oat01-${'A'.repeat(95)}`;
+
+  it('removes shared fallback credentials when CLAUDE_CONFIG_DIR is isolated and token is valid', () => {
+    vi.mocked(fs.rmSync).mockClear();
+    enforceIsolatedClaudeCredentialEnv({
+      CLAUDE_CONFIG_DIR: '/tmp/agent-home',
+      CLAUDE_CODE_OAUTH_TOKEN: goodToken,
+    }, 'alice');
+    expect(fs.rmSync).toHaveBeenCalledWith('/tmp/agent-home/.credentials.json', { force: true });
+  });
+
+  it('rejects isolated spawn when the bearer token is missing or malformed', () => {
+    vi.mocked(fs.rmSync).mockClear();
+    expect(() => enforceIsolatedClaudeCredentialEnv({
+      CLAUDE_CONFIG_DIR: '/tmp/agent-home',
+      CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-short',
+    }, 'alice')).toThrow(/requires a 108-char/);
+    expect(fs.rmSync).not.toHaveBeenCalled();
+  });
+
+  it('does not enforce bearer credentials for non-isolated agents', () => {
+    vi.mocked(fs.rmSync).mockClear();
+    enforceIsolatedClaudeCredentialEnv({}, 'alice');
+    expect(fs.rmSync).not.toHaveBeenCalled();
   });
 });

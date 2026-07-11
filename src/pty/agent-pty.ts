@@ -1,5 +1,5 @@
 import { join } from 'path';
-import { existsSync, readFileSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, rmSync } from 'fs';
 import { platform } from 'os';
 import type { AgentConfig, CtxEnv } from '../types/index.js';
 import { OutputBuffer } from './output-buffer.js';
@@ -148,6 +148,8 @@ export class AgentPTY {
         }
       } catch { /* leave unset if context.json is missing or malformed */ }
     }
+
+    enforceIsolatedClaudeCredentialEnv(ptyEnv, this.env.agentName);
 
     // Spawn the agent binary directly (no shell wrapper) — cross-platform, no shell escaping needed.
     // env is passed natively via node-pty options; no bash export commands required.
@@ -377,4 +379,16 @@ export class AgentPTY {
 
     return env;
   }
+}
+
+export function enforceIsolatedClaudeCredentialEnv(env: Record<string, string>, agentName: string): void {
+  const configDir = env.CLAUDE_CONFIG_DIR;
+  if (!configDir) return;
+
+  const token = env.CLAUDE_CODE_OAUTH_TOKEN ?? '';
+  if (!/^sk-ant-oat01-[A-Za-z0-9_-]+$/.test(token) || token.length !== 108) {
+    throw new Error(`Refusing to spawn ${agentName}: isolated CLAUDE_CONFIG_DIR requires a 108-char sk-ant-oat01 bearer token`);
+  }
+
+  rmSync(join(configDir, '.credentials.json'), { force: true });
 }
