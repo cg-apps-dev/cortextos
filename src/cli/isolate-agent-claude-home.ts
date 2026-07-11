@@ -17,6 +17,7 @@ export const CREDENTIAL_CLASS_CLAUDE_JSON_KEYS = [
   'oauthAccount',
   'claudeCodeFirstTokenDate',
   'overageCreditGrantCache',
+  'claudeAiMcpEverConnected',
 ] as const;
 
 interface IsolateOptions {
@@ -146,7 +147,10 @@ function seedClaudeJson(sourceClaudeHome: string, targetHome: string): void {
   if (!existsSync(source)) return;
 
   const config = JSON.parse(readFileSync(source, 'utf-8')) as Record<string, unknown>;
+  const sourceStdioMcpNames = stdioMcpServerNames(config.mcpServers);
   for (const key of CREDENTIAL_CLASS_CLAUDE_JSON_KEYS) delete config[key];
+  if (config.mcpServers !== undefined) config.mcpServers = stripBridgeMcpServers(config.mcpServers);
+  assertStdioMcpServersSurvived(config.mcpServers, sourceStdioMcpNames);
 
   const target = join(targetHome, '.claude.json');
   atomicWriteSync(target, `${JSON.stringify(config, null, 2)}\n`);
@@ -155,6 +159,44 @@ function seedClaudeJson(sourceClaudeHome: string, targetHome: string): void {
 
 function sourceClaudeJsonPath(sourceClaudeHome: string): string {
   return join(dirname(sourceClaudeHome), '.claude.json');
+}
+
+function stripBridgeMcpServers(mcpServers: unknown): unknown {
+  if (!mcpServers || typeof mcpServers !== 'object' || Array.isArray(mcpServers)) return mcpServers;
+  const next: Record<string, unknown> = {};
+  for (const [name, server] of Object.entries(mcpServers as Record<string, unknown>)) {
+    if (isBridgeMcpServer(name, server)) continue;
+    next[name] = server;
+  }
+  return next;
+}
+
+function isBridgeMcpServer(name: string, server: unknown): boolean {
+  if (/^claude\.ai\b/i.test(name)) return true;
+  if (!server || typeof server !== 'object' || Array.isArray(server)) return false;
+  const record = server as Record<string, unknown>;
+  return typeof record.type === 'string' && record.type.toLowerCase() === 'connector';
+}
+
+function stdioMcpServerNames(mcpServers: unknown): string[] {
+  if (!mcpServers || typeof mcpServers !== 'object' || Array.isArray(mcpServers)) return [];
+  return Object.entries(mcpServers as Record<string, unknown>)
+    .filter(([, server]) => {
+      if (!server || typeof server !== 'object' || Array.isArray(server)) return false;
+      const type = (server as Record<string, unknown>).type;
+      return typeof type === 'string' && type.toLowerCase() === 'stdio';
+    })
+    .map(([name]) => name)
+    .sort();
+}
+
+function assertStdioMcpServersSurvived(mcpServers: unknown, expectedNames: string[]): void {
+  if (expectedNames.length === 0) return;
+  const actual = new Set(stdioMcpServerNames(mcpServers));
+  const missing = expectedNames.filter((name) => !actual.has(name));
+  if (missing.length > 0) {
+    throw new Error(`isolated .claude.json dropped stdio MCP server(s): ${missing.join(', ')}`);
+  }
 }
 
 function setEnvValue(content: string, key: string, value: string | undefined): string {
