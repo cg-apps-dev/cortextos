@@ -28,6 +28,7 @@ import { updateCommand } from './update.js';
 import { devWorktreeCommand, worktreeGuardCommand } from './dev-worktree.js';
 import { switchAgentAccountCommand } from './switch-agent-account.js';
 import { listVaultAccountsCommand } from './list-vault-accounts.js';
+import { isolateAgentClaudeHomeCommand } from './isolate-agent-claude-home.js';
 
 const program = new Command();
 
@@ -65,6 +66,7 @@ program.addCommand(importAgentCommand);
 program.addCommand(updateCommand);
 program.addCommand(switchAgentAccountCommand);
 program.addCommand(listVaultAccountsCommand);
+program.addCommand(isolateAgentClaudeHomeCommand);
 program.addCommand(devWorktreeCommand);
 program.addCommand(worktreeGuardCommand);
 
