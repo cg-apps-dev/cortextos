@@ -13,6 +13,12 @@ import { resolveEnv } from '../utils/env.js';
 import { validateAgentName } from '../utils/validate.js';
 import { atomicWriteSync } from '../utils/atomic.js';
 
+export const CREDENTIAL_CLASS_CLAUDE_JSON_KEYS = [
+  'oauthAccount',
+  'claudeCodeFirstTokenDate',
+  'overageCreditGrantCache',
+] as const;
+
 interface IsolateOptions {
   instance?: string;
   dryRun?: boolean;
@@ -102,6 +108,7 @@ function prepareClaudeHome(sourceClaudeHome: string, targetHome: string, project
   chmodSync(targetHome, 0o700);
 
   for (const item of migrationPlan(sourceClaudeHome, projectDir)) {
+    if (item === '.claude.json') continue;
     const src = join(sourceClaudeHome, item);
     const dest = join(targetHome, item);
     mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
@@ -113,6 +120,7 @@ function prepareClaudeHome(sourceClaudeHome: string, targetHome: string, project
     });
   }
 
+  seedClaudeJson(sourceClaudeHome, targetHome);
   rmSync(join(targetHome, '.credentials.json'), { force: true });
   chmodRecursive(targetHome);
 }
@@ -128,7 +136,25 @@ function migrationPlan(sourceClaudeHome: string, projectDir: string): string[] {
     'session-env',
     join('projects', projectDir),
   ];
-  return candidates.filter((item) => existsSync(join(sourceClaudeHome, item)));
+  const plan = candidates.filter((item) => existsSync(join(sourceClaudeHome, item)));
+  if (existsSync(sourceClaudeJsonPath(sourceClaudeHome))) plan.push('.claude.json');
+  return plan;
+}
+
+function seedClaudeJson(sourceClaudeHome: string, targetHome: string): void {
+  const source = sourceClaudeJsonPath(sourceClaudeHome);
+  if (!existsSync(source)) return;
+
+  const config = JSON.parse(readFileSync(source, 'utf-8')) as Record<string, unknown>;
+  for (const key of CREDENTIAL_CLASS_CLAUDE_JSON_KEYS) delete config[key];
+
+  const target = join(targetHome, '.claude.json');
+  atomicWriteSync(target, `${JSON.stringify(config, null, 2)}\n`);
+  chmodSync(target, 0o600);
+}
+
+function sourceClaudeJsonPath(sourceClaudeHome: string): string {
+  return join(dirname(sourceClaudeHome), '.claude.json');
 }
 
 function setEnvValue(content: string, key: string, value: string | undefined): string {
