@@ -13,8 +13,9 @@
 #   scripts/deploy-agent-token.sh --verify-all      # audit every agent .env token
 set -euo pipefail
 
-BASE="${BASE:-/Users/adamfolker/cortextos/orgs/clean-green-marketing/agents}"
-CTX_ROOT="${CTX_ROOT:-/Users/adamfolker/.cortextos/default}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BASE="${BASE:-$REPO_ROOT/orgs/clean-green-marketing/agents}"
+CTX_ROOT="${CTX_ROOT:-$HOME/.cortextos/default}"
 MIN_LEN=100
 EXPECTED_LEN=108
 
