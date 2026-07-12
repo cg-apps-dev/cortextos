@@ -13,7 +13,8 @@ import { writeTokenToAgents } from './oauth.js';
 import { createTask } from './task.js';
 import { sendMessage, checkInbox, ackInbox } from './message.js';
 
-const SETUP_TOKEN_RE = /^sk-ant-oat01-[A-Za-z0-9_-]{40,}$/;
+// Coupled with scripts/deploy-agent-token.sh when present; update both if oat01 setup-token length changes.
+const SETUP_TOKEN_RE = /^sk-ant-oat01-[A-Za-z0-9_-]{95}$/;
 const DEFAULT_STOP_WAIT_MS = 60_000;
 const DEFAULT_BOOT_VERIFY_WAIT_MS = 40_000;
 // Heavy-boot agents with long session-start checklists can miss 120s by seconds.

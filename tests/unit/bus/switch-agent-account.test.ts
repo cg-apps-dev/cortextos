@@ -23,8 +23,10 @@ import {
 } from '../../../src/bus/switch-agent-account';
 import type { AgentStatus, IPCResponse } from '../../../src/types';
 
-const OLD_TOKEN = 'sk-ant-oat01-OLDTOKENabcdefghijklmnopqrstuvwxyz012345';
-const TARGET_TOKEN = 'sk-ant-oat01-TARGETTOKENabcdefghijklmnopqrstuvwxyz012345';
+const OLD_TOKEN = `sk-ant-oat01-${'A'.repeat(95)}`;
+const TARGET_TOKEN = `sk-ant-oat01-${'B'.repeat(95)}`;
+const TRUNCATED_79_CHAR_TOKEN = `sk-ant-oat01-${'C'.repeat(66)}`;
+const DELIVERED_TOKEN = `sk-ant-oat01-${'D'.repeat(95)}`;
 
 describe('switch-agent-account', () => {
   let ctxRoot: string;
@@ -84,7 +86,7 @@ describe('switch-agent-account', () => {
   });
 
   it('rejects a truncated setup-token before any write', async () => {
-    writeFileSync(setupTokenVaultPath(ctxRoot, 'moonlight-max'), 'sk-ant-oat01-short\n', { mode: 0o600 });
+    writeFileSync(setupTokenVaultPath(ctxRoot, 'moonlight-max'), `${TRUNCATED_79_CHAR_TOKEN}\n`, { mode: 0o600 });
 
     await expect(runSwitch()).rejects.toMatchObject({
       code: 'NOT_SETUP_TOKEN',
@@ -423,7 +425,7 @@ describe('switch-agent-account', () => {
 
   it('dry-run with token-file validates delivery without mutating the vault', async () => {
     const delivery = join(ctxRoot, 'delivered.token');
-    const deliveredToken = 'sk-ant-oat01-DELIVEREDTOKENabcdefghijklmnopqrstuvwxyz012345';
+    const deliveredToken = DELIVERED_TOKEN;
     writeFileSync(delivery, `${deliveredToken}\n`, { mode: 0o600 });
     const beforeVault = readFileSync(setupTokenVaultPath(ctxRoot, 'moonlight-max'), 'utf-8');
 
@@ -437,7 +439,7 @@ describe('switch-agent-account', () => {
 
   it('does not vault a delivered token when preflight fails', async () => {
     const delivery = join(ctxRoot, 'delivered.token');
-    const deliveredToken = 'sk-ant-oat01-DELIVEREDTOKENabcdefghijklmnopqrstuvwxyz012345';
+    const deliveredToken = DELIVERED_TOKEN;
     writeFileSync(delivery, `${deliveredToken}\n`, { mode: 0o600 });
     const newVaultPath = setupTokenVaultPath(ctxRoot, 'new-account');
 
@@ -452,7 +454,7 @@ describe('switch-agent-account', () => {
 
   it('vaults and removes a delivered token after a successful switch', async () => {
     const delivery = join(ctxRoot, 'delivered.token');
-    const deliveredToken = 'sk-ant-oat01-DELIVEREDTOKENabcdefghijklmnopqrstuvwxyz012345';
+    const deliveredToken = DELIVERED_TOKEN;
     writeFileSync(delivery, `${deliveredToken}\n`, { mode: 0o600 });
     ops.hashLiveProcessToken = () => shortTokenHash(deliveredToken);
 
