@@ -14,6 +14,7 @@ export default defineConfig({
     'hooks/hook-context-status': 'src/hooks/hook-context-status.ts',
     'hooks/hook-loop-detector': 'src/hooks/hook-loop-detector.ts',
     'hooks/hook-send-guard': 'src/hooks/hook-send-guard.ts',
+    'mcp/admanage': 'src/mcp/admanage.ts',
   },
   format: ['cjs'],
   target: 'node20',
