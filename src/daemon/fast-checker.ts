@@ -1153,12 +1153,12 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
 
     if (this.agent.getStatus().status !== 'running') return;
 
-    const cronSignal = this.latestCronSignal();
-    if (cronSignal.latestAtMs <= writtenAtMs) return;
+    const promptSignal = this.latestPromptSignal();
+    if (promptSignal.latestAtMs <= writtenAtMs) return;
 
     const stdoutTail = this.readStdoutTail(FastChecker.SILENT_DEATH_STDOUT_TAIL_BYTES);
     const classification = classifySilentDeath(stdoutTail);
-    const twoCronMs = cronSignal.twoCronMs ?? FastChecker.SILENT_DEATH_DEFAULT_TWO_CRON_MS;
+    const twoCronMs = promptSignal.twoCronMs ?? FastChecker.SILENT_DEATH_DEFAULT_TWO_CRON_MS;
     const frozenPastTwoCron = now - writtenAtMs >= twoCronMs;
     if (classification.className === 'unknown-silent' && !frozenPastTwoCron) return;
 
@@ -1179,7 +1179,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     await this.sendSilentDeathAlert(classification, ageMs, writtenAtMs);
   }
 
-  private latestCronSignal(): { latestAtMs: number; twoCronMs?: number } {
+  private latestPromptSignal(): { latestAtMs: number; twoCronMs?: number } {
     let latestAtMs = 0;
     let shortestIntervalMs: number | undefined;
 
@@ -1220,10 +1220,41 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       }
     } catch { /* non-fatal */ }
 
+    latestAtMs = Math.max(latestAtMs, this.latestInboxDeliveryAtMs());
+
     return {
       latestAtMs,
       twoCronMs: shortestIntervalMs === undefined ? undefined : shortestIntervalMs * 2,
     };
+  }
+
+  private latestInboxDeliveryAtMs(): number {
+    let latestAtMs = 0;
+    const dirs = [this.paths.inbox, this.paths.inflight, this.paths.processed];
+    for (const dir of dirs) {
+      let files: string[];
+      try {
+        files = readdirSync(dir).filter(f => f.endsWith('.json') && !f.startsWith('.'));
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        const path = join(dir, file);
+        try {
+          const raw = readFileSync(path, 'utf-8');
+          const msg = JSON.parse(raw) as { timestamp?: unknown };
+          if (typeof msg.timestamp === 'string') {
+            const ts = new Date(msg.timestamp).getTime();
+            if (Number.isFinite(ts)) latestAtMs = Math.max(latestAtMs, ts);
+          }
+        } catch { /* mtime fallback below */ }
+        try {
+          const mtime = statSync(path).mtimeMs;
+          if (Number.isFinite(mtime)) latestAtMs = Math.max(latestAtMs, mtime);
+        } catch { /* non-fatal */ }
+      }
+    }
+    return latestAtMs;
   }
 
   private readStdoutTail(maxBytes: number): string {
