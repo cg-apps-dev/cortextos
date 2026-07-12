@@ -7,12 +7,69 @@ import type { InboxMessage, BusPaths, TelegramMessage, TelegramCallbackQuery } f
 import { checkInbox, ackInbox } from '../bus/message.js';
 import { getDueReminders, markReminderDelivered, type Reminder } from '../bus/reminders.js';
 import { updateApproval } from '../bus/approval.js';
+import { logEvent } from '../bus/event.js';
+import { readCronState, parseDurationMs } from '../bus/cron-state.js';
 import { AgentProcess } from './agent-process.js';
 import type { TelegramAPI } from '../telegram/api.js';
 import { KEYS } from '../pty/inject.js';
 import { stripControlChars, sanitizeForPtyInjection, wrapFenceSafe } from '../utils/validate.js';
 
 type LogFn = (msg: string) => void;
+type SilentDeathClass = 'auth-dead' | 'tier-throttled' | 'network-wedge' | 'unknown-silent';
+
+interface SilentDeathAlertState {
+  className: SilentDeathClass;
+  writtenAtMs: number;
+  onsetAtMs: number;
+}
+
+interface SilentDeathClassification {
+  className: SilentDeathClass;
+  snippet: string;
+}
+
+export function classifySilentDeath(stdoutTail: string): SilentDeathClassification {
+  const clean = redactSecrets(stripControlChars(stdoutTail)).split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const recent = clean.slice(-80);
+  const findLine = (re: RegExp) => recent.find(line => re.test(line)) ?? '';
+
+  const auth = findLine(/Please run \/login|Invalid API key|\b401\b/i);
+  if (auth) return { className: 'auth-dead', snippet: truncateSnippet(auth) };
+
+  const throttled = findLine(/temporarily limiting requests|Rate limited|\b429\b/i);
+  if (throttled) return { className: 'tier-throttled', snippet: truncateSnippet(throttled) };
+
+  const network = findLine(/Unable to connect to API|ConnectionRefused|ECONNREFUSED/i);
+  if (network) return { className: 'network-wedge', snippet: truncateSnippet(network) };
+
+  return { className: 'unknown-silent', snippet: '' };
+}
+
+export function redactSecrets(text: string): string {
+  return text
+    .replace(/sk-ant-[A-Za-z0-9_-]+/g, '[REDACTED_TOKEN]')
+    .replace(/CLAUDE_CODE_OAUTH_TOKEN=[^\s]+/g, 'CLAUDE_CODE_OAUTH_TOKEN=[REDACTED]');
+}
+
+function truncateSnippet(value: string): string {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  return compact.length > 280 ? `${compact.slice(0, 277)}...` : compact;
+}
+
+function formatDuration(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const rem = minutes % 60;
+  return rem === 0 ? `${hours}h` : `${hours}h ${rem}m`;
+}
+
+function suggestSilentDeathAction(className: SilentDeathClass): string {
+  if (className === 'auth-dead') return 'Redeploy or verify the runtime setup-token before restart.';
+  if (className === 'tier-throttled') return 'Wait for tier reset or move work to a model tier with capacity. Do not treat this as account-dead.';
+  if (className === 'network-wedge') return 'Restart the agent once the API/network path is stable.';
+  return 'Inspect stdout and context_status, then restart if it remains silent.';
+}
 
 /**
  * Fast message checker for a single agent.
@@ -65,6 +122,12 @@ export class FastChecker {
   private ctxCircuitBrokenAt: number | null = null; // when circuit tripped (null = healthy)
   // Persisted to disk so --continue restarts don't reset the circuit breaker
   private ctxCircuitFile: string = '';
+  private silentDeathAlert: SilentDeathAlertState | null = null;
+
+  private static readonly SILENT_DEATH_STALE_MS = 10 * 60_000;
+  private static readonly SILENT_DEATH_DEFAULT_TWO_CRON_MS = 2 * 30 * 60_000;
+  private static readonly SILENT_DEATH_STDOUT_TAIL_BYTES = 20_000;
+  private static readonly ADAM_ALERT_CHAT_ID = '6991789266';
 
   constructor(
     agent: AgentProcess,
@@ -999,6 +1062,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       const raw = readFileSync(statusPath, 'utf-8');
       const data = JSON.parse(raw);
       const age = now - new Date(data.written_at || 0).getTime();
+      await this.checkSilentDeath(data, age, now);
       if (age > 10 * 60_000) return; // stale file - skip
       pct = typeof data.used_percentage === 'number' ? data.used_percentage : null;
       exceeds200k = Boolean(data.exceeds_200k_tokens);
@@ -1071,6 +1135,205 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       try {
         writeFileSync(join(this.paths.stateDir, '.force-fresh'), '');
       } catch { /* non-fatal */ }
+    }
+  }
+
+  private async checkSilentDeath(data: Record<string, unknown>, ageMs: number, now: number): Promise<void> {
+    const writtenAtMs = new Date(typeof data.written_at === 'string' ? data.written_at : 0).getTime();
+    if (!Number.isFinite(writtenAtMs) || writtenAtMs <= 0) return;
+
+    if (ageMs <= FastChecker.SILENT_DEATH_STALE_MS) {
+      if (this.silentDeathAlert !== null && writtenAtMs > this.silentDeathAlert.writtenAtMs) {
+        const previous = this.silentDeathAlert;
+        this.silentDeathAlert = null;
+        await this.sendSilentDeathResolved(previous);
+      }
+      return;
+    }
+
+    if (this.agent.getStatus().status !== 'running') return;
+
+    const promptSignal = this.latestPromptSignal();
+    if (promptSignal.latestAtMs <= writtenAtMs) return;
+
+    const stdoutTail = this.readStdoutTail(FastChecker.SILENT_DEATH_STDOUT_TAIL_BYTES);
+    const classification = classifySilentDeath(stdoutTail);
+    const twoCronMs = promptSignal.twoCronMs ?? FastChecker.SILENT_DEATH_DEFAULT_TWO_CRON_MS;
+    const frozenPastTwoCron = now - writtenAtMs >= twoCronMs;
+    if (classification.className === 'unknown-silent' && !frozenPastTwoCron) return;
+
+    const existing = this.silentDeathAlert;
+    if (
+      existing &&
+      existing.className === classification.className &&
+      existing.writtenAtMs === writtenAtMs
+    ) {
+      return;
+    }
+
+    this.silentDeathAlert = {
+      className: classification.className,
+      writtenAtMs,
+      onsetAtMs: now,
+    };
+    await this.sendSilentDeathAlert(classification, ageMs, writtenAtMs);
+  }
+
+  private latestPromptSignal(): { latestAtMs: number; twoCronMs?: number } {
+    let latestAtMs = 0;
+    let shortestIntervalMs: number | undefined;
+
+    try {
+      const state = readCronState(this.paths.stateDir);
+      for (const record of state.crons) {
+        const ts = new Date(record.last_fire).getTime();
+        if (Number.isFinite(ts)) latestAtMs = Math.max(latestAtMs, ts);
+        if (record.interval) {
+          const parsed = parseDurationMs(record.interval);
+          if (Number.isFinite(parsed) && parsed > 0) {
+            shortestIntervalMs = shortestIntervalMs === undefined ? parsed : Math.min(shortestIntervalMs, parsed);
+          }
+        }
+      }
+    } catch { /* non-fatal */ }
+
+    try {
+      const cronFile = join(this.paths.stateDir, 'crons.json');
+      if (existsSync(cronFile)) {
+        const parsed = JSON.parse(readFileSync(cronFile, 'utf-8')) as { crons?: Array<Record<string, unknown>> };
+        for (const cron of parsed.crons ?? []) {
+          for (const key of ['last_fire_attempted_at', 'last_fired_at']) {
+            const value = cron[key];
+            if (typeof value === 'string') {
+              const ts = new Date(value).getTime();
+              if (Number.isFinite(ts)) latestAtMs = Math.max(latestAtMs, ts);
+            }
+          }
+          const interval = typeof cron.interval === 'string' ? cron.interval : undefined;
+          if (interval) {
+            const parsedInterval = parseDurationMs(interval);
+            if (Number.isFinite(parsedInterval) && parsedInterval > 0) {
+              shortestIntervalMs = shortestIntervalMs === undefined ? parsedInterval : Math.min(shortestIntervalMs, parsedInterval);
+            }
+          }
+        }
+      }
+    } catch { /* non-fatal */ }
+
+    latestAtMs = Math.max(latestAtMs, this.latestInboxDeliveryAtMs());
+
+    return {
+      latestAtMs,
+      twoCronMs: shortestIntervalMs === undefined ? undefined : shortestIntervalMs * 2,
+    };
+  }
+
+  private latestInboxDeliveryAtMs(): number {
+    let latestAtMs = 0;
+    const dirs = [this.paths.inbox, this.paths.inflight, this.paths.processed];
+    for (const dir of dirs) {
+      let files: string[];
+      try {
+        files = readdirSync(dir).filter(f => f.endsWith('.json') && !f.startsWith('.'));
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        const path = join(dir, file);
+        try {
+          const raw = readFileSync(path, 'utf-8');
+          const msg = JSON.parse(raw) as { timestamp?: unknown };
+          if (typeof msg.timestamp === 'string') {
+            const ts = new Date(msg.timestamp).getTime();
+            if (Number.isFinite(ts)) latestAtMs = Math.max(latestAtMs, ts);
+          }
+        } catch { /* mtime fallback below */ }
+        try {
+          const mtime = statSync(path).mtimeMs;
+          if (Number.isFinite(mtime)) latestAtMs = Math.max(latestAtMs, mtime);
+        } catch { /* non-fatal */ }
+      }
+    }
+    return latestAtMs;
+  }
+
+  private readStdoutTail(maxBytes: number): string {
+    const output = this.agent.getOutputBuffer()?.getRecent(maxBytes);
+    if (output) return output;
+    const path = join(this.paths.logDir, 'stdout.log');
+    try {
+      if (!existsSync(path)) return '';
+      const stat = statSync(path);
+      const raw = readFileSync(path);
+      return raw.subarray(Math.max(0, stat.size - maxBytes)).toString('utf-8');
+    } catch {
+      return '';
+    }
+  }
+
+  private async sendSilentDeathAlert(classification: SilentDeathClassification, ageMs: number, writtenAtMs: number): Promise<void> {
+    const staleFor = formatDuration(ageMs);
+    const model = this.agent.getConfig().model ?? 'unknown-model';
+    const message = [
+      'FLEET HEALTH ALERT',
+      `Agent: ${this.agent.name}`,
+      `Class: ${classification.className}`,
+      `Model: ${model}`,
+      `context_status written_at stale for: ${staleFor}`,
+      `Last context_status: ${new Date(writtenAtMs).toISOString()}`,
+      `Evidence: ${classification.snippet || '(no classifying stdout marker)'}`,
+      `Suggested action: ${suggestSilentDeathAction(classification.className)}`,
+    ].join('\n');
+    await this.sendFleetHealthTelegram(message);
+    this.logFleetHealthEvent('fleet_health_silent_death_alert', 'error', {
+      agent: this.agent.name,
+      class: classification.className,
+      model,
+      stale_ms: ageMs,
+      written_at: new Date(writtenAtMs).toISOString(),
+      snippet: classification.snippet,
+    });
+  }
+
+  private async sendSilentDeathResolved(previous: SilentDeathAlertState): Promise<void> {
+    const message = [
+      'FLEET HEALTH RESOLVED',
+      `Agent: ${this.agent.name}`,
+      `Previous class: ${previous.className}`,
+      `Recovered at: ${new Date().toISOString()}`,
+    ].join('\n');
+    await this.sendFleetHealthTelegram(message);
+    this.logFleetHealthEvent('fleet_health_silent_death_resolved', 'info', {
+      agent: this.agent.name,
+      previous_class: previous.className,
+      onset_at: new Date(previous.onsetAtMs).toISOString(),
+    });
+  }
+
+  private async sendFleetHealthTelegram(message: string): Promise<void> {
+    const safeMessage = redactSecrets(message);
+    if (this.telegramApi) {
+      await this.telegramApi.sendMessage(FastChecker.ADAM_ALERT_CHAT_ID, safeMessage, undefined, { parseMode: null }).catch((err) => {
+        this.log(`Fleet health Telegram alert failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      return;
+    }
+    execFile('cortextos', ['bus', 'send-telegram', FastChecker.ADAM_ALERT_CHAT_ID, safeMessage], (err) => {
+      if (err) this.log(`Fleet health Telegram alert failed: ${err.message}`);
+    });
+  }
+
+  private logFleetHealthEvent(eventName: 'fleet_health_silent_death_alert' | 'fleet_health_silent_death_resolved', severity: 'info' | 'error', meta: Record<string, unknown>): void {
+    try {
+      let org = 'unknown';
+      const heartbeatPath = join(this.paths.stateDir, 'heartbeat.json');
+      if (existsSync(heartbeatPath)) {
+        const heartbeat = JSON.parse(readFileSync(heartbeatPath, 'utf-8')) as { org?: string };
+        if (heartbeat.org) org = heartbeat.org;
+      }
+      logEvent(this.paths, this.agent.name, org, 'error', eventName, severity, meta);
+    } catch (err) {
+      this.log(`Fleet health event log failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

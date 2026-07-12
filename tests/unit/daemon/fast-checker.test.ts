@@ -15,6 +15,10 @@ function createMockAgent(name = 'test-agent') {
     isBootstrapped: vi.fn().mockReturnValue(true),
     injectMessage: vi.fn().mockReturnValue(true),
     write: vi.fn(),
+    getStatus: vi.fn().mockReturnValue({ name, status: 'running', model: 'fable-5' }),
+    getConfig: vi.fn().mockReturnValue({ model: 'fable-5', ctx_handoff_threshold: undefined }),
+    getAgentDir: vi.fn().mockReturnValue('/tmp/test-agent'),
+    getOutputBuffer: vi.fn().mockReturnValue({ getRecent: vi.fn().mockReturnValue('') }),
   } as any;
 }
 
@@ -401,6 +405,172 @@ describe('FastChecker', () => {
       const sendTyping = (checker as any).sendTyping.bind(checker);
       // Should not throw
       await expect(sendTyping(api, '12345')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('fleet health silent-death monitor', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-12T21:30:00.000Z'));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function runPollCycle(checker: FastChecker): Promise<void> {
+      const p = (checker as any).pollCycle();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await p;
+    }
+
+    function writeContextStatus(writtenAt: string): void {
+      writeFileSync(join(paths.stateDir, 'context_status.json'), JSON.stringify({
+        used_percentage: 12,
+        exceeds_200k_tokens: false,
+        session_id: 'session-a',
+        written_at: writtenAt,
+      }));
+    }
+
+    function writeCronAttempt(ts: string, interval = '15m'): void {
+      writeFileSync(join(paths.stateDir, 'crons.json'), JSON.stringify({
+        updated_at: ts,
+        crons: [{
+          name: 'heartbeat',
+          schedule: interval,
+          interval,
+          prompt: 'heartbeat',
+          last_fire_attempted_at: ts,
+        }],
+      }));
+    }
+
+    function writeStdout(text: string): void {
+      writeFileSync(join(paths.logDir, 'stdout.log'), text);
+    }
+
+    function writeInboxDelivery(ts: string): void {
+      writeFileSync(join(paths.processed, '1-1-from-operator-abcde.json'), JSON.stringify({
+        id: 'inbox-message-a',
+        from: 'operator',
+        to: 'test-agent',
+        priority: 'normal',
+        timestamp: ts,
+        text: 'wake up',
+        reply_to: null,
+      }));
+    }
+
+    it('alerts network-wedge for running agent with stale context and ConnectionRefused stdout', async () => {
+      const agent = createMockAgent('wedge-agent');
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(agent, paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:00:00.000Z');
+      writeCronAttempt('2026-07-12T21:20:00.000Z');
+      writeStdout('Unable to connect to API: ConnectionRefused\n');
+
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const [chatId, text] = api.sendMessage.mock.calls[0];
+      expect(chatId).toBe('6991789266');
+      expect(text).toContain('Class: network-wedge');
+      expect(text).toContain('ConnectionRefused');
+    });
+
+    it('classifies login and 401 markers as auth-dead without leaking tokens', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('auth-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:00:00.000Z');
+      writeCronAttempt('2026-07-12T21:20:00.000Z');
+      writeStdout('401 sk-ant-oat01-' + 'A'.repeat(95) + '\nPlease run /login\n');
+
+      await runPollCycle(checker);
+
+      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(text).toContain('Class: auth-dead');
+      expect(text).not.toContain('sk-ant-oat01-');
+      expect(text).toContain('[REDACTED_TOKEN]');
+    });
+
+    it('classifies 429 tier caps as tier-throttled, not auth-dead', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('tier-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:00:00.000Z');
+      writeCronAttempt('2026-07-12T21:20:00.000Z');
+      writeStdout('temporarily limiting requests on Fable-5 tier, retry later\n');
+
+      await runPollCycle(checker);
+
+      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(text).toContain('Class: tier-throttled');
+      expect(text).toContain('Do not treat this as account-dead');
+      expect(text).not.toContain('Class: auth-dead');
+    });
+
+    it('does not alert when written_at is fresh even if heartbeat string would be stale', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('fresh-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:29:00.000Z');
+      writeCronAttempt('2026-07-12T21:20:00.000Z');
+      writeStdout('ConnectionRefused from older boot\n');
+
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not alert on stale written_at and stdout marker without a cron-fire signal', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('stale-alone-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:00:00.000Z');
+      writeStdout('Unable to connect to API: ConnectionRefused\n');
+
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('alerts no-cron inbox-driven agents when an inbox delivery follows stale written_at', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('inbox-driven-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:00:00.000Z');
+      writeInboxDelivery('2026-07-12T21:20:00.000Z');
+      writeStdout('Unable to connect to API: ConnectionRefused\n');
+
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(text).toContain('Class: network-wedge');
+      expect(text).toContain('ConnectionRefused');
+    });
+
+    it('dedupes sustained wedge alerts to one alert per onset', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('dedupe-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:00:00.000Z');
+      writeCronAttempt('2026-07-12T21:20:00.000Z');
+      writeStdout('Unable to connect to API: ECONNREFUSED\n');
+
+      await runPollCycle(checker);
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('alerts unknown-silent only after the two-cron frozen threshold', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('unknown-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T20:59:59.000Z');
+      writeCronAttempt('2026-07-12T21:20:00.000Z', '15m');
+      writeStdout('normal spinner noise only\n');
+
+      await runPollCycle(checker);
+
+      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(text).toContain('Class: unknown-silent');
     });
   });
 
