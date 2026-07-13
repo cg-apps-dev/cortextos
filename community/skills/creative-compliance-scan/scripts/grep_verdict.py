@@ -7,7 +7,7 @@ v2.1 fixes three audited defects of v2:
  (2) FLOWER FALSE-FAIL: v2 FAILed on product words leaked from vision DESCRIPTIONS (category
      word "flower" on clean offer cards, rows 786-793). v2.1 requires CORROBORATION for
      single-token product bans: hit must appear in >=2 independent sources (vision pass 1,
-     vision pass 2, OCR) to FAIL; single-source hit -> UNCLEAR (human eye), never FAIL.
+     vision pass 2, OCR, VO transcript) to FAIL; single-source hit -> UNCLEAR (human eye), never FAIL.
      Extraction prompts must demand VERBATIM on-image text only - a category word in a
      description is the scanner talking, not the ad.
  (3) DELIVERY-TIME OVER-BLOCK: plain shipping timeframes are NOT banned (brain rules.md M-3
@@ -19,7 +19,7 @@ v2.1 fixes three audited defects of v2:
 
 Extraction record fields:
   row, fileid, asset, product ("flower"|"gummies"), meta,
-  vision_text, [vision_text2 optional], ocr_text, bud_plant, leaf_icon, low_conf
+  vision_text, [vision_text2 optional], ocr_text, vo_text, bud_plant, leaf_icon, low_conf
 """
 import json, os, re, sys
 
@@ -60,6 +60,7 @@ HARD_ALPHA = [
  ("M-2 plain-box/mail", re.compile(r'plain (box|mail|packaging|billing)')),
  ("M-2 discreet", re.compile(r'\bdiscree?t(ly)?\b')),
  ("M-2 medical(bare)", re.compile(r'\bmedical\b')),
+ ("M-19f eligible-states", re.compile(r"\b(ships?|shipping|available|delivery|delivers?|delivered|sold|sells?|buy|buys|order(s|ing)?|gets?|purchas\w+)\b[^.\n]{0,20}\b(eligible|select|certain|participating|approved|qualifying|permitted|legal)\s+states\b|\beligible states\b|\bstate list\b|\bwhere (it'?s )?(legal|permitted|allowed|available)\b")),
  # lab-tested/3rd-party/COA MOVED to de-code UNCLEAR set (surface_handling.creative, #154 2026-06-22):
  # on-CREATIVE de-code = UNCLEAR-for-Adam-review, NOT hard-FAIL. "no chemicals" is M-2 (not de-code) -> stays HARD.
  ("M-2 no-chemicals", re.compile(r'no chemicals')),
@@ -165,11 +166,14 @@ BRAIN_HARD, BRAIN_CLAIM_SURFACE = _load_brain_hard()
 # (accepted-risk framing), so the creative-grep FLAGS UNCLEAR, never hard-FAIL. family-grown is NOT in this
 # set (it's adam_accepted_risk) so it never flags. The copy-gate uses surface_handling.copy = HARD-REMOVE.
 # On any load failure, fall back to LAST_KNOWN_DECODE. The brain clone path is the per-run /tmp/brain default.
-LAST_KNOWN_DECODE = [
- r"\b(ships?|shipping|available|delivery|sold|sells?|buy|buys|order(s|ing)?|gets?|purchas\w+)\b[^.\n]{0,20}\b(eligible|select|certain|legal)\s+states\b|\beligible states\b|\bstate list\b|\bwhere (it'?s )?legal\b",
+LAST_KNOWN_DECODE_UNCLEAR = [
  r"\b(lab[- ]?tested|test results|third[- ]?party tested|independently tested|tested before it ships|certificate of analysis|\bcoa\b)\b",
  r"\bfarm[- ]?direct\b",
 ]
+LAST_KNOWN_DECODE_HARD_FAIL = [
+ r"\b(ships?|shipping|available|delivery|sold|sells?|buy|buys|order(s|ing)?|gets?|purchas\w+)\b[^.\n]{0,20}\b(eligible|select|certain|legal)\s+states\b|\beligible states\b|\bstate list\b|\bwhere (it'?s )?legal\b",
+]
+LAST_KNOWN_DECODE = LAST_KNOWN_DECODE_HARD_FAIL + LAST_KNOWN_DECODE_UNCLEAR
 def _load_decode_creative():
     # Production sources cannabis-coding-signals.json from the per-run FRESH brain clone (SKILL.md:
     # `cd /tmp && rm -rf brain && gh repo clone CLEAN-APPS-DEV/clean-green-marketing-brain brain`).
@@ -182,24 +186,69 @@ def _load_decode_creative():
     for path in candidates:
         try:
             d = json.load(open(path, encoding="utf-8"))
-            pats = [p["pattern"] for p in d["de_code_hard_remove"]["patterns"]
-                    if isinstance(p.get("pattern"), str) and p["pattern"]]
+            pats = []
+            for p in d["de_code_hard_remove"]["patterns"]:
+                if not isinstance(p.get("pattern"), str) or not p["pattern"]:
+                    continue
+                handling = p.get("surface_handling") or {}
+                if handling.get("creative") == "unclear":
+                    pats.append(p["pattern"])
             if not pats:
-                raise ValueError("de_code_hard_remove.patterns empty")
+                raise ValueError("no de-code patterns with surface_handling.creative == unclear")
             return re.compile("|".join(f"(?:{p})" for p in pats), re.IGNORECASE)
         except Exception as e:
             print(f"WARNING: de-code signals load failed for {path} ({e})", file=sys.stderr)
-    # No live source resolved -> LOUD fallback (never silent). LAST_KNOWN_DECODE mirrors the live
-    # de_code_hard_remove set; verify it against the brain on any miss (it can drift if brain adds patterns).
+    # No live source resolved -> LOUD fallback (never silent). The fallback contains ONLY creative=unclear
+    # spans. Eligible-states is creative=hard_fail and must stay unmasked so M-19f can fail it.
     for line in ("=" * 72,
                  "WARNING: creative-grep de-code signals NOT loaded from a live source.",
-                 "  Using built-in LAST_KNOWN_DECODE fallback - may be STALE if the brain",
-                 "  added de-code patterns. Ensure the fresh /tmp/brain clone exists or set",
+                 "  Using built-in LAST_KNOWN_DECODE_UNCLEAR fallback - may be STALE if the brain",
+                 "  added creative=unclear de-code patterns. Ensure the fresh /tmp/brain clone exists or set",
                  "  CODING_SIGNALS_JSON to cannabis-coding-signals.json before the scan.",
                  "=" * 72):
         print(line, file=sys.stderr)
-    return re.compile("|".join(f"(?:{p})" for p in LAST_KNOWN_DECODE), re.IGNORECASE)
+    return re.compile("|".join(f"(?:{p})" for p in LAST_KNOWN_DECODE_UNCLEAR), re.IGNORECASE)
 DECODE_CREATIVE_RE = _load_decode_creative()
+
+# ---- STRAIN LEXICON: strain alone -> UNCLEAR, strain + cannabis/M-2 corroborator -> FAIL ----
+# Live data is owned by meta-compliance, but this floor must never weaken when the brain file is
+# absent, malformed, or incomplete. Loaded strains are UNIONED with the inline floor.
+LAST_KNOWN_STRAINS = [
+    "blue dream", "gelato", "cherry do-si-dos", "cherry dosidos", "og kush", "sour diesel",
+    "granddaddy purple", "girl scout cookies", "pineapple express", "durban poison",
+    "northern lights", "wedding cake", "runtz", "zkittlez", "gorilla glue",
+]
+
+def _load_strains():
+    path = os.environ.get("STRAIN_LEXICON_JSON",
+                          "/tmp/brain/agents/meta-compliance-agent/data/strain-lexicon.json")
+    strains = set(LAST_KNOWN_STRAINS)
+    try:
+        d = json.load(open(path, encoding="utf-8"))
+        live = d.get("strains")
+        if not isinstance(live, list):
+            raise ValueError("strains is not a list")
+        added = {s.strip().lower() for s in live if isinstance(s, str) and s.strip()}
+        if not added:
+            raise ValueError("strains empty")
+        strains |= added
+        print(f"strain lexicon loaded: {len(added)} live + {len(LAST_KNOWN_STRAINS)} floor", file=sys.stderr)
+    except Exception as e:
+        print(f"WARNING: strain-lexicon.json load failed ({e}); using LAST_KNOWN_STRAINS floor", file=sys.stderr)
+    return sorted(strains, key=len, reverse=True)
+
+def _phrase_re(phrase):
+    parts = [re.escape(p) for p in re.split(r'\s+', phrase.strip()) if p]
+    return r'(?<![a-z0-9])' + r'[\s-]+'.join(parts) + r'(?![a-z0-9])'
+
+STRAIN_TERMS = _load_strains()
+STRAIN_RE = re.compile("|".join(f"(?:{_phrase_re(s)})" for s in STRAIN_TERMS), re.IGNORECASE)
+STRAIN_CORROBORATOR_RE = re.compile(
+    r'\b(thc|thca|cbd|cannabinoids?|cannabis|marijuana|weed|hemp|flower|buds?|nugs?|'
+    r'dispensar(y|ies)|strains?|coa|certificate of analysis|lab[- ]?tested|third[- ]?party tested|'
+    r'farm bill|agriculture act|discree?t(ly)?|plain (box|mail|packaging|billing))\b',
+    re.IGNORECASE,
+)
 
 def find_all(text, pats):
     hits=[]
@@ -217,11 +266,14 @@ def verdict_for(rec):
     vis  = rec.get("vision_text","") or ""
     vis2 = rec.get("vision_text2","") or ""
     ocr  = rec.get("ocr_text","") or ""
+    vo   = rec.get("vo_text","") or ""
     if "DOWNLOAD_FAIL" in vis or vis.strip().upper().startswith("SCAN ERROR"):
         return "SCAN ERROR", "1x1 inaccessible (404/expired) - needs re-share", [], []
-    sources = {"vision": vis, "vision2": vis2, "ocr": ocr}
-    union_raw_l  = flat(raw_norm(vis+"\n"+vis2+"\n"+ocr))
-    union_leet_l = flat(leet_norm(vis+"\n"+vis2+"\n"+ocr))
+    sources = {"vision": vis, "vision2": vis2, "ocr": ocr, "vo": vo}
+    corpus = "\n".join(sources.values())
+    union_raw_l  = flat(raw_norm(corpus))
+    union_leet_l = flat(leet_norm(corpus))
+    union_raw_full_l = union_raw_l
 
     # DE-CODE on-creative (surface_handling.creative #154) -> UNCLEAR-for-Adam-review, SPAN-LOCAL.
     # Capture the de-code phrases, then MASK their spans (blank them) OUT of the text BEFORE the hard
@@ -271,6 +323,17 @@ def verdict_for(rec):
         already.add(val)
         fails.append(f"{label}:'{val}'")
 
+    # Strain lexicon floor/live union. A strain name alone is ambiguous because some names can be
+    # ordinary product/flavor language. A strain plus any other cannabis/M-2 signal in the same record
+    # is a hard M-2 corpus hit.
+    strain_hits = list(dict.fromkeys(m.group(0) for m in STRAIN_RE.finditer(union_raw_full_l)))
+    strain_corroborated = bool(STRAIN_CORROBORATOR_RE.search(union_raw_full_l))
+    for sv in strain_hits:
+        if strain_corroborated:
+            fails.append(f"M-2 strain-name(corroborated):'{sv}'")
+        else:
+            unclears.append(f"M-2 strain-name(single-source):'{sv}' - verify on image")
+
     # claim_surface_only patterns on the creative-OCR surface: NOT a hard fail (mc 2026-07-03).
     # Emit as a vision-adjudication note (default packaging/incidental = exempt PASS; the vision pass
     # flips added-headline/overlay/mockup-listing to FAIL). Skip values already failed on another axis
@@ -283,7 +346,7 @@ def verdict_for(rec):
     readable = set(seen)
     for w in SINGLE_TOKEN_BANS:
         if re.search(r'\b'+re.escape(w)+r'\b', union_leet_l): readable.add(w)
-    for line in leet_norm(vis+"\n"+vis2+"\n"+ocr).splitlines():
+    for line in leet_norm(corpus).splitlines():
         for w in letterspace_collapse_words(line):
             if w in SINGLE_TOKEN_BANS and w not in readable:
                 unclears.append(f"{SINGLE_TOKEN_LABEL.get(w,'M-2')}(despaced,single-source):'{w}' - verify on image")
@@ -300,7 +363,7 @@ def verdict_for(rec):
     # were masked out of the text above BEFORE the hard grep, so these flags are span-local and never
     # suppress a co-occurring standalone hard violation. family-grown never matches (not in the set).
     for dv in dict.fromkeys(decode_hits):
-        unclears.append(f"M-19f de-code on-creative (Adam review):'{dv}'")
+        unclears.append(f"de-code on-creative (Adam review):'{dv}'")
 
     if rec.get("low_conf"): unclears.append("low-confidence read")
 

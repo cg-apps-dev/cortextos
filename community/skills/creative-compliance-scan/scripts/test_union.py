@@ -1,7 +1,7 @@
 """Regression test for the reconciled grep_verdict.py UNION.
 Proves neither side regresses: live-ahead features (brain-hard union, M-16a refinement,
 M-2 inline) AND community-ahead features (robust de-code loader + loud fallback banner,
-broad legality verb-set in LAST_KNOWN_DECODE degraded path).
+broad legality verb-set in LAST_KNOWN_DECODE_HARD_FAIL degraded path).
 Run: python3 test_union.py            # normal-path cases (brain data present)
      python3 test_union.py --degraded  # forced fallback path (bad CODING_SIGNALS_JSON)
 """
@@ -63,20 +63,22 @@ def run_normal():
 
 def run_degraded():
     import re
+    os.environ["CODING_SIGNALS_JSON"] = "/tmp/creative-compliance-scan-missing-coding-signals.json"
     err = io.StringIO()
     m = load_module(err)
     print("== DEGRADED/FALLBACK GUARDS (LAST_KNOWN_DECODE broad-verb port + robust loader) ==")
     fails = []
-    # community port A (static guard): LAST_KNOWN_DECODE[0] must carry the broad legality verb-set.
-    lk0 = m.LAST_KNOWN_DECODE[0]
+    # community port A (static guard): eligible-states hard-fail fallback must carry the broad verb-set,
+    # but it must NOT be included in DECODE_CREATIVE_RE's unclear mask.
+    lk0 = m.LAST_KNOWN_DECODE_HARD_FAIL[0]
     for verb in ("sold", "sells", "buy", "order", "gets", "purchas"):
         if verb not in lk0:
-            print(f"  [FAIL] LAST_KNOWN_DECODE[0] missing broad verb '{verb}' (regressed to live-narrow)")
+            print(f"  [FAIL] LAST_KNOWN_DECODE_HARD_FAIL[0] missing broad verb '{verb}' (regressed to live-narrow)")
             fails.append(f"LK broad-verb:{verb}")
     if not fails:
-        print("  [PASS] LAST_KNOWN_DECODE[0] carries broad verb-set (sold/sells/buy/order/gets/purchas)")
+        print("  [PASS] LAST_KNOWN_DECODE_HARD_FAIL[0] carries broad verb-set (sold/sells/buy/order/gets/purchas)")
     # and its compiled regex actually matches broad-verb phrasing that live-narrow would MISS
-    lk_re = re.compile("|".join(f"(?:{p})" for p in m.LAST_KNOWN_DECODE), re.IGNORECASE)
+    lk_re = re.compile("|".join(f"(?:{p})" for p in m.LAST_KNOWN_DECODE_HARD_FAIL), re.IGNORECASE)
     for phrase, should in (("you can buy this in legal states", True),
                            ("sold in eligible states", True),
                            ("ships to eligible states", True)):
@@ -87,10 +89,20 @@ def run_degraded():
     # community port B (static guard): robust loader is multi-path + has the loud never-silent banner
     import inspect
     src = inspect.getsource(m._load_decode_creative)
-    if "candidates = [" in src and "NOT loaded from a live source" in src:
-        print("  [PASS] de-code loader is multi-path + loud never-silent fallback (community robustness preserved)")
+    if "candidates = [" in src and "NOT loaded from a live source" in src and "surface_handling" in src:
+        print("  [PASS] de-code loader is multi-path + loud never-silent fallback + per-surface handling")
     else:
-        print("  [FAIL] robust multi-path/loud-fallback loader NOT present"); fails.append("robust loader")
+        print("  [FAIL] robust multi-path/loud-fallback/per-surface loader NOT present"); fails.append("robust loader")
+    v, ev, f, u = m.verdict_for(rec("Sold in legal states."))
+    ok = (v == "FAIL")
+    print(f"  [{'PASS' if ok else 'FAIL'}] eligible-states hard-fail is unmasked: v={v} fails={f} unclears={u}")
+    if not ok:
+        fails.append("eligible states unmasked")
+    v, ev, f, u = m.verdict_for(rec("Independently tested before it ships."))
+    ok = (v == "UNCLEAR")
+    print(f"  [{'PASS' if ok else 'FAIL'}] lab/COA de-code remains unclear-mask: v={v} fails={f} unclears={u}")
+    if not ok:
+        fails.append("lab de-code unclear")
     return fails
 
 if __name__ == "__main__":
