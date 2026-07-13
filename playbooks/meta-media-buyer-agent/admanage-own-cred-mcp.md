@@ -1,3 +1,10 @@
+---
+type: playbook
+agent: meta-media-buyer-agent
+status: active
+date: 2026-07-13
+---
+
 # AdManage Own-Credential MCP
 
 AdManage runs as a local stdio MCP server so mmb can use the AdManage REST API without the claude.ai connector. Auth comes from `ADMANAGE_API_KEY` in org `secrets.env`; do not put the key in `.claude.json` or MCP args.
@@ -10,12 +17,14 @@ Registration shape:
     "admanage": {
       "type": "stdio",
       "command": "node",
-      "args": ["/Users/adamfolker/cortextos/dist/mcp/admanage.js"],
+      "args": ["<repo-root>/dist/mcp/admanage.js"],
       "env": {}
     }
   }
 }
 ```
+
+`<repo-root>` is the absolute path to the framework checkout (on this instance it resolves under `$CTX_FRAMEWORK_ROOT`); the live `.claude.json` registration uses the real absolute path, since stdio `args` are literal and not env-expanded.
 
 The server exposes read-only tools in this build:
 
