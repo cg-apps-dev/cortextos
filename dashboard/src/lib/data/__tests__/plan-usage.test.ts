@@ -3,17 +3,19 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-// reports.ts reads CTX_ROOT at module-eval time — set it before importing.
+// reports.ts reads CTX_ROOT at module-eval time, so set it before importing.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-usage-'));
 process.env.CTX_ROOT = root;
 
 type Reports = typeof import('../reports');
 let reports: Reports;
 let dashboardDb: typeof import('../../db').db;
+let quota: typeof import('../../quota');
 
 beforeAll(async () => {
   reports = await import('../reports');
   dashboardDb = (await import('../../db')).db;
+  quota = await import('../../quota');
 });
 
 afterAll(() => {
@@ -257,6 +259,73 @@ describe('getMultiAccountUsage (3-account subscription panel)', () => {
     expect(me.five_hour_pct).toBe(9);
     expect(me.seven_day_pct).toBe(56);
     expect(me.freshness?.ageMs).toBe(60 * 60 * 1000);
+  });
+
+  it('projects the first current ok account into the Claude plan widget', () => {
+    const freshAt = new Date().toISOString();
+    writeSnapshot([
+      { account: 'cg-team-seat', ok: false, error: 'HTTP 400', fetched_at: freshAt },
+      {
+        account: 'moonlight-max',
+        ok: true,
+        five_hour_pct: 4,
+        seven_day_pct: 46,
+        five_hour_resets: '2026-06-11T20:00:00.000Z',
+        seven_day_resets: '2026-06-15T20:00:00.000Z',
+        fetched_at: freshAt,
+      },
+    ]);
+
+    const usage = reports.getClaudePlanUsage()!;
+    expect(usage.account).toBe('moonlight-max');
+    expect(usage.email).toBe('moonlightmedia312@gmail.com');
+    expect(usage.five_hour.used_pct).toBe(4);
+    expect(usage.seven_day.used_pct).toBe(46);
+  });
+
+  it('does not produce Claude plan-widget numbers from failed rows', () => {
+    writeSnapshot([
+      { account: 'cg-team-seat', ok: false, error: 'HTTP 400', five_hour_pct: 12, seven_day_pct: 34 },
+    ]);
+
+    expect(reports.getClaudePlanUsage()).toBeNull();
+  });
+
+  it('feeds the topbar quota indicator from the cache and reports unreachable without stale-as-current values', async () => {
+    const freshAt = new Date().toISOString();
+    writeSnapshot([
+      { account: 'cg-team-seat', ok: false, error: 'HTTP 400', five_hour_pct: 12, seven_day_pct: 34, fetched_at: freshAt },
+      {
+        account: 'moonlight-max',
+        ok: true,
+        five_hour_pct: 4,
+        seven_day_pct: 46,
+        fetched_at: freshAt,
+      },
+    ]);
+
+    const ok = await quota.fetchQuotaSnapshot();
+    expect(ok).toMatchObject({
+      account: 'moonlight-max',
+      ok: true,
+      status: 'ok',
+      five_hour_pct: 4,
+      seven_day_pct: 46,
+      source: 'multi-account-usage',
+    });
+
+    writeSnapshot([
+      { account: 'cg-team-seat', ok: false, error: 'HTTP 400', five_hour_pct: 12, seven_day_pct: 34 },
+    ]);
+    const failed = await quota.fetchQuotaSnapshot();
+    expect(failed).toMatchObject({
+      account: 'cg-team-seat',
+      ok: false,
+      status: 'fetch-fail',
+      source: 'multi-account-usage',
+    });
+    expect(failed?.five_hour_pct).toBeUndefined();
+    expect(failed?.seven_day_pct).toBeUndefined();
   });
 });
 

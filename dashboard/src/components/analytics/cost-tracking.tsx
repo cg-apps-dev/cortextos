@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { AreaChart } from '@/components/charts/area-chart';
 import { BarChart } from '@/components/charts/bar-chart';
 import { CHART_GOLD, MODEL_COLORS } from '@/components/charts/chart-theme';
+import type { ClaudePlanUsage, CodexUsagePanel } from '@/lib/data/reports';
 
 interface UsageHistoryPoint {
   timestamp: string;
@@ -27,6 +28,8 @@ interface CostTrackingProps {
   dailyCostByModel: Array<Record<string, unknown>>;
   currentMonthCost: number;
   projectedMonthly: number;
+  claudePlanUsage?: ClaudePlanUsage | null;
+  codexUsage?: CodexUsagePanel | null;
   usageHistory?: UsageHistoryPoint[];
   costByAgent?: AgentUsage[];
 }
@@ -53,27 +56,121 @@ function UsageBar({ pct, label, sublabel }: { pct: number; label: string; sublab
   );
 }
 
+function formatTimestamp(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString('en-US', {
+    timeZone: 'America/Los_Angeles',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
+function resetFromEpoch(seconds?: number): string | undefined {
+  if (!seconds) return undefined;
+  return formatTimestamp(new Date(seconds * 1000).toISOString());
+}
+
 export function CostTracking({
   dailyCosts,
   dailyCostByModel,
   currentMonthCost,
   projectedMonthly,
+  claudePlanUsage,
+  codexUsage,
   usageHistory,
   costByAgent,
 }: CostTrackingProps) {
   const modelKeys = Object.keys(MODEL_COLORS); // opus, sonnet, haiku
   const modelColorValues = modelKeys.map((k) => MODEL_COLORS[k]);
 
-  const hasPlanData = !!(usageHistory && usageHistory.length > 0);
+  const hasPlanData = !!claudePlanUsage || !!codexUsage || !!(usageHistory && usageHistory.length > 0);
   const agentRows = (costByAgent ?? []).filter(a => a.tokens > 0);
-  // Share-of-fleet: bars are a proportion of total agent token use (sum ~100%),
-  // not scaled-to-the-biggest-agent (which made the top agent always look full).
+  // Share-of-fleet: bars are a proportion of total agent token use (sum ~100%).
   const fleetTokens = agentRows.reduce((s, a) => s + a.tokens, 0);
   const fleetApiCost = agentRows.reduce((s, a) => s + a.cost, 0);
+  const codexPlan = codexUsage?.plan_type
+    ? `${codexUsage.plan_type.charAt(0).toUpperCase()}${codexUsage.plan_type.slice(1)}`
+    : 'ChatGPT';
 
   return (
     <div className="space-y-6">
-      {/* Per-Agent Token Usage (last 7 days — matches the Max 7-day limit window) */}
+      {(claudePlanUsage || codexUsage) && (
+        <div className="grid gap-3 md:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+                Claude Max Plan Usage
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {claudePlanUsage ? (
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-sm font-medium">{claudePlanUsage.email}</p>
+                    <p className="text-xs text-muted-foreground">{claudePlanUsage.plan}</p>
+                  </div>
+                  <UsageBar
+                    pct={claudePlanUsage.seven_day.used_pct}
+                    label="Weekly (7-day)"
+                    sublabel={claudePlanUsage.seven_day.resets ? `Resets ${formatTimestamp(claudePlanUsage.seven_day.resets)}` : undefined}
+                  />
+                  <UsageBar
+                    pct={claudePlanUsage.five_hour.used_pct}
+                    label="Current Session (5h)"
+                    sublabel={claudePlanUsage.five_hour.resets ? `Resets ${formatTimestamp(claudePlanUsage.five_hour.resets)}` : undefined}
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Last updated: {formatTimestamp(claudePlanUsage.timestamp)}
+                  </p>
+                </div>
+              ) : (
+                <div className="py-6 text-center space-y-2">
+                  <p className="text-sm font-medium">Claude usage unreachable</p>
+                  <p className="text-xs text-muted-foreground">
+                    The multi-account cache has no current ok account.
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {codexUsage && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+                  Codex Plan Usage{codexPlan ? ` (${codexPlan})` : ''}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <UsageBar
+                    pct={codexUsage.secondary?.used_pct ?? 0}
+                    label="Weekly (7-day)"
+                    sublabel={resetFromEpoch(codexUsage.secondary?.resets_at) ? `Resets ${resetFromEpoch(codexUsage.secondary?.resets_at)}` : undefined}
+                  />
+                  <UsageBar
+                    pct={codexUsage.primary?.used_pct ?? 0}
+                    label="Current Session (5h)"
+                    sublabel={resetFromEpoch(codexUsage.primary?.resets_at) ? `Resets ${resetFromEpoch(codexUsage.primary?.resets_at)}` : undefined}
+                  />
+                  {codexUsage.rate_limit_reached && (
+                    <p className="text-xs text-red-600 dark:text-red-400">Rate limit reached</p>
+                  )}
+                  <p className="text-[10px] text-muted-foreground">
+                    Last updated: {formatTimestamp(codexUsage.as_of)}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {/* Per-Agent Token Usage (last 7 days, matching the Max 7-day limit window) */}
       {agentRows.length > 0 && (
         <Card>
           <CardHeader>
@@ -83,7 +180,7 @@ export function CostTracking({
           </CardHeader>
           <CardContent>
             <p className="text-xs text-muted-foreground mb-3">
-              Your Max plan is a flat subscription governed by the account-wide 5h/7d rate limits above —
+              Your Max plan is a flat subscription governed by the account-wide 5h/7d rate limits above.
               all agents share that budget. This shows <span className="font-medium">who is consuming it</span>
               {' '}(share of total agent tokens over the last 7 days).
             </p>
@@ -115,7 +212,7 @@ export function CostTracking({
             {fleetApiCost > 0 && (
               <p className="text-[10px] text-muted-foreground mt-4 border-t pt-3">
                 These tokens would cost ≈<span className="font-medium tabular-nums">${fleetApiCost.toFixed(2)}</span>
-                {' '}at pay-per-token API list rates over the last 7 days — covered by your Max subscription, not billed.
+                {' '}at pay-per-token API list rates over the last 7 days, covered by your Max subscription, not billed.
               </p>
             )}
           </CardContent>
@@ -174,7 +271,7 @@ export function CostTracking({
         </Card>
       ) : null}
 
-      {/* API Cost Tracking (secondary — for users on pay-per-token) */}
+      {/* API Cost Tracking (secondary for users on pay-per-token) */}
       {!hasPlanData && dailyCosts.length > 0 && (
         <>
           {currentMonthCost > 0 && (

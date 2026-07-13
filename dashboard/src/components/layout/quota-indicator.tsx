@@ -4,11 +4,18 @@ import { useEffect, useState } from 'react';
 import { IconCircleDot } from '@tabler/icons-react';
 
 type QuotaSnapshot = {
-  five_hour_remaining_pct: number;
-  seven_day_remaining_pct: number;
+  account: string;
+  email: string;
+  plan: string;
+  status: 'ok' | 'suspect' | 'impossible-read' | 'fetch-fail' | 'stale';
+  ok: boolean;
+  five_hour_pct?: number;
+  seven_day_pct?: number;
+  five_hour_resets?: string;
+  seven_day_resets?: string;
   fetched_at: string;
   source: string;
-  stale?: boolean;
+  error?: string;
   cache_age_ms?: number;
 };
 
@@ -19,31 +26,31 @@ function formatAge(ms: number): string {
   return `${Math.floor(ms / 86_400_000)}d ago`;
 }
 
-const POLL_MS = 60_000; // refresh every 60 seconds — balances freshness vs API rate limits
+const POLL_MS = 60_000;
 
 function bandFor(pct: number): {
   label: string;
   dotClass: string;
   textClass: string;
 } {
-  // Color is a hint — we ALSO surface the % number so the meaning is not
+  // Color is a hint. We ALSO surface the % number so the meaning is not
   // color-only (UX rule §1 color-not-only).
-  if (pct >= 50)
+  if (pct < 50)
     return {
       label: 'healthy',
       dotClass: 'bg-emerald-500',
-      textClass: 'text-emerald-300',
+      textClass: 'text-emerald-600 dark:text-emerald-300',
     };
-  if (pct >= 20)
+  if (pct < 80)
     return {
       label: 'watch',
       dotClass: 'bg-amber-500',
-      textClass: 'text-amber-300',
+      textClass: 'text-amber-600 dark:text-amber-300',
     };
   return {
     label: 'low',
     dotClass: 'bg-rose-500',
-    textClass: 'text-rose-300',
+    textClass: 'text-rose-600 dark:text-rose-300',
   };
 }
 
@@ -100,40 +107,57 @@ export function QuotaIndicator() {
     return (
       <div className="flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground">
         <span className="w-2 h-2 rounded-full bg-muted animate-pulse" aria-hidden="true" />
-        <span>quota…</span>
+        <span>quota...</span>
       </div>
     );
   }
 
-  const fiveH = snapshot.five_hour_remaining_pct;
-  const sevenD = snapshot.seven_day_remaining_pct;
+  if (!snapshot.ok || snapshot.status !== 'ok') {
+    const ageLabel = snapshot.cache_age_ms != null ? formatAge(snapshot.cache_age_ms) : null;
+    const title =
+      `${snapshot.email}\n` +
+      `status: ${snapshot.status.toUpperCase()}\n` +
+      `source: ${snapshot.source}\n` +
+      `updated: ${new Date(snapshot.fetched_at).toLocaleTimeString()}` +
+      (ageLabel ? ` (${ageLabel})` : '') +
+      (snapshot.error ? `\n${snapshot.error}` : '');
+    return (
+      <div
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground"
+        title={title}
+        aria-label={`Quota unavailable for ${snapshot.email}: ${snapshot.status}`}
+      >
+        <IconCircleDot size={12} className="text-muted-foreground/50" />
+        <span>UNREACHABLE</span>
+      </div>
+    );
+  }
+
+  const fiveH = snapshot.five_hour_pct ?? 0;
+  const sevenD = snapshot.seven_day_pct ?? 0;
   const band = bandFor(fiveH);
-  const isStale = !!snapshot.stale;
-  const ageLabel = isStale && snapshot.cache_age_ms != null ? formatAge(snapshot.cache_age_ms) : null;
+  const ageLabel = snapshot.cache_age_ms != null ? formatAge(snapshot.cache_age_ms) : null;
 
   const tooltipText =
-    `5h window: ${fiveH}% remaining\n` +
-    `7d window: ${sevenD}% remaining\n` +
-    `source: ${snapshot.source}${isStale ? ' (cached)' : ''}\n` +
+    `${snapshot.email}\n` +
+    `5h window: ${fiveH}% used\n` +
+    `7d window: ${sevenD}% used\n` +
+    `source: ${snapshot.source}\n` +
     `updated: ${new Date(snapshot.fetched_at).toLocaleTimeString()}` +
-    (isStale ? `\n⚠ API call failed; showing last-good from ${ageLabel}` : '');
+    (ageLabel ? ` (${ageLabel})` : '');
 
   return (
     <div
-      className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs ${isStale ? 'opacity-60' : ''}`}
+      className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs"
       title={tooltipText}
-      aria-label={`Quota ${band.label}: ${fiveH} percent remaining in the 5 hour window, ${sevenD} percent remaining in the 7 day window${isStale ? `, cached from ${ageLabel}` : ''}`}
+      aria-label={`Quota ${band.label}: ${fiveH} percent used in the 5 hour window, ${sevenD} percent used in the 7 day window`}
     >
       <span
         className={`w-2 h-2 rounded-full ${band.dotClass}`}
         aria-hidden="true"
       />
       <span className={`font-mono ${band.textClass}`}>{fiveH}%</span>
-      {isStale && ageLabel ? (
-        <span className="text-muted-foreground hidden sm:inline">{ageLabel}</span>
-      ) : (
-        <span className="text-muted-foreground hidden sm:inline">left</span>
-      )}
+      <span className="hidden text-muted-foreground sm:inline">5h</span>
     </div>
   );
 }

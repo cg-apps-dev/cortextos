@@ -331,6 +331,15 @@ export interface AccountUsagePanelEntry {
   };
 }
 
+export interface ClaudePlanUsage {
+  account: string;
+  email: string;
+  plan: string;
+  timestamp: string;
+  five_hour: { used_pct: number; resets?: string };
+  seven_day: { used_pct: number; resets?: string };
+}
+
 interface RawAccountUsage {
   account: string;
   ok: boolean;
@@ -478,6 +487,26 @@ function usageStatusReason(
 ): string | undefined {
   if (status === 'ok') return undefined;
   return usage.suspectReason ?? usage.suspect_reason ?? usage.reason ?? usage.error;
+}
+
+/**
+ * Project the multi-account Claude cache into the compact Max-plan widget used
+ * on analytics. Only a currently ok row can produce current usage values.
+ */
+export function getClaudePlanUsage(): ClaudePlanUsage | null {
+  const usage = getMultiAccountUsage();
+  const active = usage?.accounts.find((account) => account.status === 'ok');
+  if (!active || typeof active.five_hour_pct !== 'number' || typeof active.seven_day_pct !== 'number') {
+    return null;
+  }
+  return {
+    account: active.account,
+    email: active.email,
+    plan: active.plan,
+    timestamp: active.fetched_at ?? usage?.newestFetchedAt ?? usage?.generatedAt ?? new Date(0).toISOString(),
+    five_hour: { used_pct: active.five_hour_pct, resets: active.five_hour_resets },
+    seven_day: { used_pct: active.seven_day_pct, resets: active.seven_day_resets },
+  };
 }
 
 export type AccountConfidenceTier = 'CONFIRMED-PKCE' | 'CONFIRMED-CORRELATION' | 'ASSERTED' | 'UNVERIFIED';
