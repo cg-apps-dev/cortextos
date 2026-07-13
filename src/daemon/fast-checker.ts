@@ -481,7 +481,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
   ): string {
     const dur = duration !== undefined ? duration : 'unknown';
     const transcriptBlock = transcript && transcript.trim()
-      ? `transcript:\n${wrapFenceSafe(transcript.trim())}\n`
+      ? `transcript:\n${wrapFenceSafe(sanitizeForPtyInjection(transcript.trim()))}\n`
       : '';
     return `=== TELEGRAM VOICE from ${sanitizeForPtyInjection(from)} (chat_id:${chatId}) ===
 duration: ${dur}s
