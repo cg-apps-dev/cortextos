@@ -468,6 +468,19 @@ log('Building...');
 runVisible('npm run build', { cwd: INSTALL_DIR });
 ok('Build complete');
 
+// 9b. Install git pre-push hook
+// Best-effort: fresh clones get the tracked security backup hook. Non-fatal
+// because hook installation must never abort the framework installer.
+
+if (!IS_WINDOWS && existsSync(join(INSTALL_DIR, 'scripts', 'setup-hooks.sh'))) {
+  try {
+    run('bash scripts/setup-hooks.sh', { cwd: INSTALL_DIR });
+    ok('Installed git pre-push hook');
+  } catch {
+    warn('Could not install git pre-push hook. Run manually: bash scripts/setup-hooks.sh');
+  }
+}
+
 // ─── 10. Link CLI globally ────────────────────────────────────────────────────
 
 log('Linking cortextos CLI...');

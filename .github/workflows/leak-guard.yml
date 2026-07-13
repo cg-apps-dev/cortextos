@@ -1,0 +1,49 @@
+name: Leak Guard
+
+# Server-side operational-leak backstop. Runs on every PR, including forks, and
+# on push to main, covering paths a local pre-push hook cannot: fork PRs and
+# GitHub UI merges. Intended to be a required status check on main.
+#
+# SECURITY: uses pull_request, not pull_request_target, so fork PRs run with a
+# read-only token and no repo secrets. The scanner only needs to read the diff.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  leak-guard:
+    name: Leak guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+
+      - name: Scan for operational leaks
+        run: |
+          chmod +x scripts/hooks/leak-shape-scan.sh
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+            git fetch origin "${{ github.base_ref }}" --quiet
+            files=$(git diff --name-only --diff-filter=ACMR "$base"...HEAD)
+            if [ -z "$files" ]; then echo "No changed files to scan."; exit 0; fi
+            echo "Scanning changed files:"; echo "$files"
+            echo "$files" | xargs scripts/hooks/leak-shape-scan.sh
+          else
+            scripts/hooks/leak-shape-scan.sh --tree HEAD
+          fi
+
+      - name: Prove the scanner
+        run: bash tests/leak-guard.test.sh
