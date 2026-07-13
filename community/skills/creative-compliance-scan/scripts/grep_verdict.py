@@ -55,7 +55,8 @@ HARD_ALPHA = [
  ("M-2 dispensary", re.compile(r'\bdispensar(y|ies)\b')),
  # bare "legal" included (banned-terms.json M-2 hard-bans \blegal\b); de-code framings ("where it's
  # legal" / "legal states") are MASKED before this grep, so bare-legal only fires on a standalone claim.
- ("M-2 legality", re.compile(r'\b(illegal(ly)?|legal(ly|ity)?|federally compliant|farm bill|agriculture act|package seizure|dea)\b')),
+ # "dea" dropped 2026-07-13: fragile 3-letter token that false-fired on OCR/whisper noise (retro FP on "real deal") for negligible signal; "package seizure" kept. Paired with brain PR #216 banned-terms M-2 dea-drop.
+ ("M-2 legality", re.compile(r'\b(illegal(ly)?|legal(ly|ity)?|federally compliant|farm bill|agriculture act|package seizure)\b')),
  ("M-2 no-medical-card", re.compile(r'no medical card')),
  ("M-2 plain-box/mail", re.compile(r'plain (box|mail|packaging|billing)')),
  ("M-2 discreet", re.compile(r'\bdiscree?t(ly)?\b')),
