@@ -34,6 +34,17 @@ import { GATE_RECHECK_MS } from './cron-capacity-gate.js';
 import type { GateDecision } from './cron-capacity-gate.js';
 import { appendExecutionLog } from './cron-execution-log.js';
 
+const CRON_TZ = process.env.CTX_TIMEZONE || 'America/Los_Angeles';
+const WEEKDAY_TO_DOW: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
 // ---------------------------------------------------------------------------
 // Cron expression parser — no external deps.
 // Supports: *, */N, comma-lists, and ranges for each of the 5 standard fields.
@@ -103,14 +114,29 @@ export function nextFireFromCron(expr: string, fromMs: number): number {
   // Walk forward minute-by-minute (capped at 1 year to avoid infinite loops).
   const MAX_MINUTES = 366 * 24 * 60;
   let candidate = startMs;
+  const cronFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: CRON_TZ,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    weekday: 'short',
+  });
 
   for (let i = 0; i < MAX_MINUTES; i++) {
-    const d = new Date(candidate);
-    const m  = d.getMinutes();
-    const h  = d.getHours();
-    const dy = d.getDate();
-    const mo = d.getMonth() + 1; // 1-12
-    const dw = d.getDay();       // 0-6
+    const partsByType = new Map(
+      cronFormatter
+        .formatToParts(new Date(candidate))
+        .map((part) => [part.type, part.value])
+    );
+    const m = parseInt(partsByType.get('minute') ?? '', 10);
+    const rawHour = parseInt(partsByType.get('hour') ?? '', 10);
+    const h = rawHour === 24 ? 0 : rawHour;
+    const dy = parseInt(partsByType.get('day') ?? '', 10);
+    const mo = parseInt(partsByType.get('month') ?? '', 10);
+    const dw = WEEKDAY_TO_DOW[partsByType.get('weekday') ?? ''] ?? -1;
 
     if (
       months.includes(mo) &&
