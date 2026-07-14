@@ -133,3 +133,18 @@ Ratified 2026-07-13 PT (authored by the-analyst from the nCAC denominator saga; 
 5. **Relaying someone else's number?** You own it the moment you state it as solid. Confirm its definition/derivation/second-source yourself, or label it PROVISIONAL - never relay-as-solid on assumption.
 
 **Why (origin, so the rule sticks).** The 7-day nCAC read on 2026-07-13 PT moved 1386 -> 444 -> 247 on the denominator alone while ad spend held at ~$61.8K throughout. Both wrong reads used a mis-defined "new customer" (1386 = Shopify customer RECORDS created, incl non-purchaser signups; 444 = a carried/"corrected" number never re-derived from source). What finally locked it was cross-system agreement: Triple Whale's attribution DB and Shopify's own order ledger both independently returned 247 (and total orders 1,792 vs 1,793). The dollars were never the problem; the count/definition was, three times. Two failure modes, both named: (1) **calc-side** - the producer states a number without confirming its definition/derivation (the nCAC denominator). (2) **relay-side** - a coordinator carries an earlier/specialist figure into a brief or to Adam as solid without re-confirming its derivation (the same day, an optimistic ~$180 nCAC was relayed into a decision-brief without re-checking how it was derived). The producer-verifies rule alone catches (1); the relayer-also-owns-it clause catches (2).
+
+## Standing rule: goal-refresh cadence by agent-state (and staleness-flag recalibration)
+
+Ratified 2026-07-14 PT (the-orchestrator ruling, carried by the-sop-keeper). Resolves a recurring fleet judgment-call: how often an agent's GOALS.md should refresh, and when a stale stamp is genuine rot vs normal-within-cadence. Family: refines the "stale recorded status trusted at read time" registry row - a goal timestamp IS a recorded status, and it is read against the cadence that governs it, not mechanically.
+
+**Cadence by state.**
+- **ACTIVE agent** (working, lane shifting): daily - refreshed in the orchestrator's morning-review cascade.
+- **STEADY GATED-IDLE agent** (stable, work gated on orchestrator-pacing or Adam): weekly - the Sunday cascade plus on-demand (when the daily focus reshapes the lane, the agent gets un-gated, or the orchestrator re-cascades).
+
+**Staleness-flag recalibration.** The staleness discipline's intent is that goals never SILENTLY rot - surfacing a stale stamp ONCE achieves that (the orchestrator becomes aware and can affirm-or-refresh). So the flag trigger is calibrated to the agent's actual cadence, not a fixed 24h:
+- **ACTIVE agent:** more than ~24h without a morning refresh is a real miss - flag.
+- **STEADY GATED-IDLE agent:** "stale" = (a) PAST the weekly cadence (>~7-8 days = a missed Sunday cascade), OR (b) CONTENT drifted from reality (goals no longer accurate), OR (c) the agent's STATE changed (un-gated, new work taken on) - NOT a >24h timestamp. A 48h stamp with accurate content within the weekly window (e.g. Sunday to Tuesday) is normal, not rot.
+- **Either state:** flag ONCE on the recalibrated trigger, never a daily identical ping. A daily repeat when the owner refreshes weekly or on-demand is noise, not diligence.
+
+**Why.** The-sop-keeper hit this directly: the banked lesson "surface staleness on the TIMESTAMP, not on your read of whether it matters" is correct against silent rot, but applied as a fixed 24h trigger it produced a daily identical ping against goals the orchestrator refreshes weekly and had already affirmed current. The fix is not to drop the lesson but to calibrate its trigger to the cadence that matches the agent's activity-state - surfacing once still prevents silent rot, without the daily nag.
