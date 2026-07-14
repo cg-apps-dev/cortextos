@@ -32,6 +32,9 @@ agents/*/local/
 agents/*/telegram-images/
 agents/*/memory/
 
+# Runtime dashboard DB (lives outside the repo per CLAUDE.md; a local dashboard run creates .data/)
+.data/
+
 # macOS metadata
 .DS_Store
 
