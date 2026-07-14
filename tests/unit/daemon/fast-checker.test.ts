@@ -525,6 +525,22 @@ describe('FastChecker', () => {
       expect(api.sendMessage).not.toHaveBeenCalled();
     });
 
+    it('still alerts auth-dead for crashed agents with fresh 401 stdout', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgentWithStatus('crashed-auth-agent', 'crashed'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:29:00.000Z');
+      writeStdout('401 Invalid API key caused session exit\n');
+
+      await runPollCycle(checker);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(text).toContain('Class: auth-dead');
+      expect(text).toContain('re-deploy setup-token path');
+    });
+
     it('classifies 429 tier caps as tier-throttled, not auth-dead', async () => {
       const api = createMockTelegramApi();
       const checker = new FastChecker(createMockAgent('tier-agent'), paths, '/tmp/framework', { telegramApi: api });
