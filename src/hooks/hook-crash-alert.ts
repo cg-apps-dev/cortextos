@@ -36,6 +36,16 @@ const QUIET_SUPPRESSED_TYPES = new Set([
   'rate-limited',
 ]);
 
+export const END_TYPE_MARKERS = [
+  { file: '.restart-planned', type: 'planned-restart' },
+  { file: '.session-refresh', type: 'session-refresh' },
+  { file: '.user-restart', type: 'user-restart' },
+  { file: '.user-disable', type: 'user-disable' },
+  { file: '.user-stop', type: 'user-stop' },
+  { file: '.daemon-crashed', type: 'daemon-crashed' },
+  { file: '.daemon-stop', type: 'daemon-stop' },
+];
+
 function isQuietHoursLA(now: Date): boolean {
   const laString = now.toLocaleString('en-US', {
     timeZone: 'America/Los_Angeles',
@@ -282,20 +292,7 @@ async function main(): Promise<void> {
   // Determine end type from state markers (written by other parts of the
   // system before the Claude Code session exits). Markers are NOT consumed
   // here — see classifyFromMarkers for why (restart fires this hook twice).
-  const markers = [
-    { file: '.restart-planned', type: 'planned-restart' },
-    { file: '.session-refresh', type: 'session-refresh' },
-    { file: '.user-restart', type: 'user-restart' },
-    { file: '.user-disable', type: 'user-disable' },
-    { file: '.user-stop', type: 'user-stop' },
-    // .daemon-crashed wins over .daemon-stop when both are present — a crash
-    // during shutdown is the more important signal. Written by the daemon's
-    // uncaughtException handler in src/daemon/index.ts.
-    { file: '.daemon-crashed', type: 'daemon-crashed' },
-    { file: '.daemon-stop', type: 'daemon-stop' },
-  ];
-
-  const classified = classifyFromMarkers(stateDir, markers);
+  const classified = classifyFromMarkers(stateDir, END_TYPE_MARKERS);
   let endType = classified.endType;
   let reason = classified.reason;
 
@@ -446,4 +443,6 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(() => process.exit(0));
+if (process.argv[1]?.endsWith('hook-crash-alert.js') || process.argv[1]?.endsWith('hook-crash-alert.ts')) {
+  main().catch(() => process.exit(0));
+}

@@ -108,6 +108,32 @@ beforeEach(() => {
 });
 
 describe('AgentProcess - BUG-011 fix (stop awaits PTY exit)', () => {
+  it.each(['.restart-planned', '.daemon-stop'])('omits the back-online Telegram instruction on planned %s --continue resumes', (marker) => {
+    fsMocks.existsSync.mockImplementation((p: any) =>
+      String(p).endsWith(`/state/alice/${marker}`),
+    );
+    fsMocks.statSync.mockImplementation(() => ({ mtimeMs: Date.now() - 1_000 }));
+    fsMocks.readFileSync.mockImplementation((p: any) => {
+      if (String(p).endsWith(`/state/alice/${marker}`)) return 'planned restart';
+      return '';
+    });
+
+    const ap = new AgentProcess('alice', mockEnv, {});
+    const prompt = (ap as any).buildContinuePrompt();
+
+    expect(prompt).toContain('SESSION CONTINUATION');
+    expect(prompt).toContain('Check inbox. Resume normal operations.');
+    expect(prompt).not.toContain('back online');
+  });
+
+  it('keeps the back-online Telegram instruction on crash --continue resumes', () => {
+    const ap = new AgentProcess('alice', mockEnv, {});
+    const prompt = (ap as any).buildContinuePrompt();
+
+    expect(prompt).toContain('SESSION CONTINUATION');
+    expect(prompt).toContain('send a Telegram message to the user saying you are back online');
+  });
+
   it('stop() awaits the PTY exit handler before resolving', async () => {
     const ap = new AgentProcess('alice', mockEnv, {});
     await ap.start();

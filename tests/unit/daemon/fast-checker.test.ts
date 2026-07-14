@@ -593,6 +593,61 @@ describe('FastChecker', () => {
       expect(text).toContain('Invalid API key after restart');
     });
 
+    it('does not treat a restart context reset as auth-dead recovery', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('restart-reset-auth-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:29:00.000Z', {
+        session_id: 'session-a',
+        total_input_tokens: 650,
+        total_output_tokens: 50,
+      });
+      writeStdout('401 Invalid API key before restart bump\n');
+
+      await runPollCycle(checker);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+
+      writeContextStatus('2026-07-12T21:29:30.000Z', {
+        session_id: 'session-b',
+        total_input_tokens: 3,
+        total_output_tokens: 0,
+      });
+      const bootLines = Array.from({ length: 160 }, (_, idx) => `Boot line ${idx}`).join('\n');
+      writeStdout(`${bootLines}\n401 Invalid API key after restart bump\n`);
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(text).toContain('Class: auth-dead');
+      expect(text).toContain('Invalid API key after restart bump');
+    });
+
+    it('does not treat a same-session token reset as auth-dead recovery', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('same-session-reset-auth-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:29:00.000Z', {
+        session_id: 'session-a',
+        total_input_tokens: 650,
+        total_output_tokens: 50,
+      });
+      writeStdout('401 Invalid API key before token reset\n');
+
+      await runPollCycle(checker);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+
+      writeContextStatus('2026-07-12T21:29:30.000Z', {
+        session_id: 'session-a',
+        total_input_tokens: 5,
+        total_output_tokens: 0,
+      });
+      writeStdout('401 Invalid API key after same-session token reset\n');
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(text).toContain('Class: auth-dead');
+      expect(text).toContain('Invalid API key after same-session token reset');
+    });
+
     it('does not treat retry and spinner output as recovery from an auth-dead incident', async () => {
       const api = createMockTelegramApi();
       const checker = new FastChecker(createMockAgent('retry-loop-auth-agent'), paths, '/tmp/framework', { telegramApi: api });

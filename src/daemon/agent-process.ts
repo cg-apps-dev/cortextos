@@ -11,6 +11,7 @@ import { ensureDir } from '../utils/atomic.js';
 import { writeCortextosEnv } from '../utils/env.js';
 import { getOverdueReminders } from '../bus/reminders.js';
 import { resolvePaths } from '../utils/paths.js';
+import { classifyFromMarkers, END_TYPE_MARKERS } from '../hooks/hook-crash-alert.js';
 
 type LogFn = (msg: string) => void;
 
@@ -738,7 +739,23 @@ export class AgentProcess {
     const deliverablesBlock = this.buildDeliverablesBlock();
     // Session refresh (--continue) is never a handoff restart.
     this.lastSpawnWasHandoff = false;
-    return `SESSION CONTINUATION: Your CLI process was restarted with --continue to reload configs. Current UTC time: ${nowUtc}. Your full conversation history is preserved. Re-read AGENTS.md and ALL bootstrap files listed there. External crons are auto-loaded by the daemon — do NOT call CronCreate or CronList for cron restoration.${reminderBlock}${deliverablesBlock} Check inbox. Resume normal operations. After checking inbox, send a Telegram message to the user saying you are back online.`;
+    // Aligns planned --continue resumes with AGENTS.md: no user notification
+    // for planned restarts, while preserving crash-recovery pings.
+    const shouldSendBackOnline = this.shouldSendContinueBackOnlinePrompt();
+    const onlineMessage = shouldSendBackOnline
+      ? ' After checking inbox, send a Telegram message to the user saying you are back online.'
+      : '';
+    return `SESSION CONTINUATION: Your CLI process was restarted with --continue to reload configs. Current UTC time: ${nowUtc}. Your full conversation history is preserved. Re-read AGENTS.md and ALL bootstrap files listed there. External crons are auto-loaded by the daemon - do NOT call CronCreate or CronList for cron restoration.${reminderBlock}${deliverablesBlock} Check inbox. Resume normal operations.${onlineMessage}`;
+  }
+
+  private shouldSendContinueBackOnlinePrompt(): boolean {
+    try {
+      const stateDir = join(this.env.ctxRoot, 'state', this.name);
+      const { endType } = classifyFromMarkers(stateDir, END_TYPE_MARKERS);
+      return endType === 'crash' || endType === 'daemon-crashed';
+    } catch {
+      return true;
+    }
   }
 
   /**
