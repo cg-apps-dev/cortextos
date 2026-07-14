@@ -462,6 +462,15 @@ describe('FastChecker', () => {
       }));
     }
 
+    function writeUsageSnapshot(accounts: unknown[], generatedAt = '2026-07-12T21:29:00.000Z'): void {
+      const usageDir = join(paths.ctxRoot, 'state', 'usage');
+      mkdirSync(usageDir, { recursive: true });
+      writeFileSync(join(usageDir, 'multi-account-usage.json'), JSON.stringify({
+        generated_at: generatedAt,
+        accounts,
+      }));
+    }
+
     it('alerts network-wedge for running agent with stale context and ConnectionRefused stdout', async () => {
       const agent = createMockAgent('wedge-agent');
       const api = createMockTelegramApi();
@@ -487,6 +496,8 @@ describe('FastChecker', () => {
       writeStdout('401 sk-ant-oat01-' + 'A'.repeat(95) + '\nPlease run /login\n');
 
       await runPollCycle(checker);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      await runPollCycle(checker);
 
       const text = String(api.sendMessage.mock.calls[0][1]);
       expect(text).toContain('Class: auth-dead');
@@ -507,6 +518,88 @@ describe('FastChecker', () => {
       expect(text).toContain('Class: tier-throttled');
       expect(text).toContain('Do not treat this as account-dead');
       expect(text).not.toContain('Class: auth-dead');
+    });
+
+    it('treats lone tier 429 with fresh liveness as informational, not death', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('fresh-tier-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:29:00.000Z');
+      writeStdout('429 temporarily limiting requests on Fable tier\n');
+      writeUsageSnapshot([{
+        account: 'cg-team-seat',
+        ok: true,
+        five_hour_pct: 12,
+        seven_day_pct: 18,
+        scoped_limits: [{ model: 'Fable', percent: 100, severity: 'critical', is_active: true }],
+        fetched_at: '2026-07-12T21:29:00.000Z',
+      }]);
+
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(text).toContain('FLEET TIER THROTTLE INFO');
+      expect(text).toContain('Severity: info');
+      expect(text).toContain('not account-dead');
+      expect(text).not.toContain('context_status written_at stale for');
+    });
+
+    it('alerts fresh 429 when passive usage shows an account-wide cap', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('capped-tier-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:29:00.000Z');
+      writeStdout('Rate limited with 429\n');
+      writeUsageSnapshot([{
+        account: 'cg-team-seat',
+        ok: true,
+        five_hour_pct: 100,
+        seven_day_pct: 100,
+        scoped_limits: [{ model: 'Fable', percent: 100, severity: 'critical', is_active: true }],
+        fetched_at: '2026-07-12T21:29:00.000Z',
+      }]);
+
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(text).toContain('FLEET TIER THROTTLE ALERT');
+      expect(text).toContain('Severity: error');
+      expect(text).toContain('account-wide cap');
+    });
+
+    it('alerts usage-miscope on fresh 0/0 usage while burn evidence exists', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('mis-scope-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:29:00.000Z');
+      writeUsageSnapshot([{
+        account: 'icloud-max',
+        ok: true,
+        five_hour_pct: 0,
+        seven_day_pct: 0,
+        extra_usage: { is_enabled: true, used_credits: 4 },
+        last_good: { five_hour_pct: 44, seven_day_pct: 31, fetched_at: '2026-07-12T21:20:00.000Z' },
+        fetched_at: '2026-07-12T21:29:00.000Z',
+      }]);
+
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(text).toContain('Class: usage-miscope');
+      expect(text).toContain('Route: usage-read-suspect');
+      expect(text).toContain('0/0');
+    });
+
+    it('does not alert for healthy fresh context with no marker', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('healthy-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:29:00.000Z');
+      writeCronAttempt('2026-07-12T21:20:00.000Z');
+      writeStdout('normal output\n');
+
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).not.toHaveBeenCalled();
     });
 
     it('does not alert when written_at is fresh even if heartbeat string would be stale', async () => {

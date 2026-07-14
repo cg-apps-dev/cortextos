@@ -16,16 +16,47 @@ import { stripControlChars, sanitizeForPtyInjection, wrapFenceSafe } from '../ut
 
 type LogFn = (msg: string) => void;
 type SilentDeathClass = 'auth-dead' | 'tier-throttled' | 'network-wedge' | 'unknown-silent';
+type FleetHealthAlertClass = SilentDeathClass | 'usage-miscope';
 
 interface SilentDeathAlertState {
-  className: SilentDeathClass;
-  writtenAtMs: number;
+  className: FleetHealthAlertClass;
+  dedupKey: string;
+  contextAtMs: number;
   onsetAtMs: number;
+  alertedAtMs: number;
 }
 
 interface SilentDeathClassification {
   className: SilentDeathClass;
   snippet: string;
+}
+
+interface FleetUsageAccount {
+  account: string;
+  ok?: boolean;
+  status?: string;
+  suspect?: boolean;
+  error?: string;
+  five_hour_pct?: number;
+  seven_day_pct?: number;
+  extra_usage?: { is_enabled?: boolean; used_credits?: number };
+  scoped_limits?: Array<{ model?: string; percent?: number; severity?: string; is_active?: boolean }>;
+  last_good?: { five_hour_pct?: number; seven_day_pct?: number; fetched_at?: string; extra_usage?: { used_credits?: number } };
+  fetched_at?: string;
+}
+
+interface FleetUsageSnapshot {
+  generatedAtMs: number;
+  generatedAt: string;
+  accounts: FleetUsageAccount[];
+}
+
+interface FleetUsageAssessment {
+  snapshot?: FleetUsageSnapshot;
+  misScoped: boolean;
+  accountWideCapped: boolean;
+  tierSummary: string;
+  anomalySummary: string;
 }
 
 export function classifySilentDeath(stdoutTail: string): SilentDeathClassification {
@@ -122,11 +153,20 @@ export class FastChecker {
   private ctxCircuitBrokenAt: number | null = null; // when circuit tripped (null = healthy)
   // Persisted to disk so --continue restarts don't reset the circuit breaker
   private ctxCircuitFile: string = '';
-  private silentDeathAlert: SilentDeathAlertState | null = null;
+  private fleetHealthAlert: SilentDeathAlertState | null = null;
+  private markerReadCounts: Record<SilentDeathClass, number> = {
+    'auth-dead': 0,
+    'tier-throttled': 0,
+    'network-wedge': 0,
+    'unknown-silent': 0,
+  };
 
   private static readonly SILENT_DEATH_STALE_MS = 10 * 60_000;
   private static readonly SILENT_DEATH_DEFAULT_TWO_CRON_MS = 2 * 30 * 60_000;
   private static readonly SILENT_DEATH_STDOUT_TAIL_BYTES = 20_000;
+  private static readonly AUTH_DEAD_DEBOUNCE_READS = 2;
+  private static readonly FLEET_USAGE_MAX_AGE_MS = 30 * 60_000;
+  private static readonly FLEET_HEALTH_ALERT_COOLDOWN_MS = 60 * 60_000;
   private static readonly ADAM_ALERT_CHAT_ID = '6991789266';
 
   constructor(
@@ -1061,7 +1101,8 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     try {
       const raw = readFileSync(statusPath, 'utf-8');
       const data = JSON.parse(raw);
-      const age = now - new Date(data.written_at || 0).getTime();
+      const contextTs = typeof data.updated_at === 'string' ? data.updated_at : data.written_at;
+      const age = now - new Date(contextTs || 0).getTime();
       await this.checkSilentDeath(data, age, now);
       if (age > 10 * 60_000) return; // stale file - skip
       pct = typeof data.used_percentage === 'number' ? data.used_percentage : null;
@@ -1139,13 +1180,116 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
   }
 
   private async checkSilentDeath(data: Record<string, unknown>, ageMs: number, now: number): Promise<void> {
-    const writtenAtMs = new Date(typeof data.written_at === 'string' ? data.written_at : 0).getTime();
+    const writtenAtValue = typeof data.updated_at === 'string'
+      ? data.updated_at
+      : (typeof data.written_at === 'string' ? data.written_at : 0);
+    const writtenAtMs = new Date(writtenAtValue).getTime();
     if (!Number.isFinite(writtenAtMs) || writtenAtMs <= 0) return;
 
-    if (ageMs <= FastChecker.SILENT_DEATH_STALE_MS) {
-      if (this.silentDeathAlert !== null && writtenAtMs > this.silentDeathAlert.writtenAtMs) {
-        const previous = this.silentDeathAlert;
-        this.silentDeathAlert = null;
+    const stdoutTail = this.readStdoutTail(FastChecker.SILENT_DEATH_STDOUT_TAIL_BYTES);
+    const classification = classifySilentDeath(stdoutTail);
+    this.updateMarkerReadCounts(classification.className);
+
+    const usage = this.assessFleetUsage(now);
+    if (usage.misScoped) {
+      await this.maybeSendFleetHealthAlert({
+        className: 'usage-miscope',
+        dedupKey: `usage-miscope:${usage.snapshot?.generatedAt ?? 'unknown'}`,
+        severity: 'error',
+        title: 'FLEET USAGE ANOMALY',
+        lines: [
+          'Route: usage-read-suspect',
+          `Summary: ${usage.anomalySummary}`,
+        ],
+        meta: {
+          agent: this.agent.name,
+          class: 'usage-miscope',
+          usage_generated_at: usage.snapshot?.generatedAt,
+          summary: usage.anomalySummary,
+        },
+        now,
+      });
+    }
+
+    if (classification.className === 'auth-dead') {
+      if (this.markerReadCounts['auth-dead'] >= FastChecker.AUTH_DEAD_DEBOUNCE_READS) {
+        await this.maybeSendFleetHealthAlert({
+          className: 'auth-dead',
+          dedupKey: `auth-dead:${classification.snippet}`,
+          severity: 'error',
+          title: 'FLEET AUTH ALERT',
+          lines: [
+            'Route: re-deploy setup-token path',
+            `Evidence: ${classification.snippet || '(auth marker)'}`,
+            `Suggested action: ${suggestSilentDeathAction('auth-dead')}`,
+          ],
+          meta: {
+            agent: this.agent.name,
+            class: 'auth-dead',
+            snippet: classification.snippet,
+          },
+          now,
+        });
+      }
+      return;
+    }
+
+    const livenessFresh = ageMs <= FastChecker.SILENT_DEATH_STALE_MS;
+    if (classification.className === 'tier-throttled' && livenessFresh && usage.accountWideCapped) {
+      await this.maybeSendFleetHealthAlert({
+        className: 'tier-throttled',
+        dedupKey: `tier-throttled-account-wide:${classification.snippet}:${usage.snapshot?.generatedAt ?? 'no-usage'}`,
+        severity: 'error',
+        title: 'FLEET TIER THROTTLE ALERT',
+        lines: [
+          'Route: account-wide cap, dead-for-runtime',
+          `Model: ${this.agent.getConfig().model ?? 'unknown-model'}`,
+          `Evidence: ${classification.snippet || '(429 marker)'}`,
+          `Usage: ${usage.tierSummary}`,
+          `Suggested action: ${suggestSilentDeathAction('tier-throttled')}`,
+        ],
+        meta: {
+          agent: this.agent.name,
+          class: 'tier-throttled',
+          route: 'account-wide-cap',
+          model: this.agent.getConfig().model ?? 'unknown-model',
+          snippet: classification.snippet,
+          usage_summary: usage.tierSummary,
+        },
+        now,
+      });
+      return;
+    }
+    if (classification.className === 'tier-throttled' && livenessFresh && !usage.accountWideCapped) {
+      await this.maybeSendFleetHealthAlert({
+        className: 'tier-throttled',
+        dedupKey: `tier-throttled-info:${classification.snippet}:${usage.snapshot?.generatedAt ?? 'no-usage'}`,
+        severity: 'info',
+        title: 'FLEET TIER THROTTLE INFO',
+        lines: [
+          'Route: informational tier-throttled, not account-dead',
+          `Model: ${this.agent.getConfig().model ?? 'unknown-model'}`,
+          `Evidence: ${classification.snippet || '(429 marker)'}`,
+          `Usage: ${usage.tierSummary}`,
+          `Suggested action: ${suggestSilentDeathAction('tier-throttled')}`,
+        ],
+        meta: {
+          agent: this.agent.name,
+          class: 'tier-throttled',
+          route: 'informational',
+          model: this.agent.getConfig().model ?? 'unknown-model',
+          snippet: classification.snippet,
+          usage_summary: usage.tierSummary,
+        },
+        now,
+      });
+      return;
+    }
+
+    if (livenessFresh) {
+      if (this.fleetHealthAlert !== null && writtenAtMs > this.fleetHealthAlert.contextAtMs) {
+        const previous = this.fleetHealthAlert;
+        this.fleetHealthAlert = null;
         await this.sendSilentDeathResolved(previous);
       }
       return;
@@ -1156,27 +1300,30 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     const promptSignal = this.latestPromptSignal();
     if (promptSignal.latestAtMs <= writtenAtMs) return;
 
-    const stdoutTail = this.readStdoutTail(FastChecker.SILENT_DEATH_STDOUT_TAIL_BYTES);
-    const classification = classifySilentDeath(stdoutTail);
     const twoCronMs = promptSignal.twoCronMs ?? FastChecker.SILENT_DEATH_DEFAULT_TWO_CRON_MS;
     const frozenPastTwoCron = now - writtenAtMs >= twoCronMs;
     if (classification.className === 'unknown-silent' && !frozenPastTwoCron) return;
 
-    const existing = this.silentDeathAlert;
-    if (
-      existing &&
-      existing.className === classification.className &&
-      existing.writtenAtMs === writtenAtMs
-    ) {
+    if (classification.className === 'tier-throttled' && !usage.accountWideCapped) {
+      await this.sendSilentDeathAlert(classification, ageMs, writtenAtMs, now, [
+        'Route: throttled plus liveness-stale, treat as dead-for-runtime',
+        `Usage: ${usage.tierSummary}`,
+      ], {
+        usage_summary: usage.tierSummary,
+        account_wide_capped: usage.accountWideCapped,
+      });
       return;
     }
 
-    this.silentDeathAlert = {
-      className: classification.className,
-      writtenAtMs,
-      onsetAtMs: now,
-    };
-    await this.sendSilentDeathAlert(classification, ageMs, writtenAtMs);
+    await this.sendSilentDeathAlert(classification, ageMs, writtenAtMs, now);
+  }
+
+  private updateMarkerReadCounts(className: SilentDeathClass): void {
+    for (const key of Object.keys(this.markerReadCounts) as SilentDeathClass[]) {
+      this.markerReadCounts[key] = key === className && className !== 'unknown-silent'
+        ? this.markerReadCounts[key] + 1
+        : 0;
+    }
   }
 
   private latestPromptSignal(): { latestAtMs: number; twoCronMs?: number } {
@@ -1271,27 +1418,121 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     }
   }
 
-  private async sendSilentDeathAlert(classification: SilentDeathClassification, ageMs: number, writtenAtMs: number): Promise<void> {
+  private assessFleetUsage(now: number): FleetUsageAssessment {
+    const snapshot = this.readFleetUsageSnapshot(now);
+    if (!snapshot) {
+      return {
+        misScoped: false,
+        accountWideCapped: false,
+        tierSummary: 'usage snapshot unavailable',
+        anomalySummary: '',
+      };
+    }
+
+    const targetAccounts = this.targetUsageAccounts(snapshot.accounts);
+    const anomalyRows = targetAccounts.filter(row => this.isUsageMisScoped(row));
+    const scopedLimits = targetAccounts.flatMap(row => row.scoped_limits ?? []);
+    const activeCritical = scopedLimits.filter(limit =>
+      limit.is_active === true &&
+      (limit.severity === 'critical' || (typeof limit.percent === 'number' && limit.percent >= 100))
+    );
+    const accountWideCapped = targetAccounts.some(row =>
+      row.ok !== false &&
+      typeof row.five_hour_pct === 'number' &&
+      typeof row.seven_day_pct === 'number' &&
+      row.five_hour_pct >= 100 &&
+      row.seven_day_pct >= 100
+    );
+
+    const tierSummary = activeCritical.length > 0
+      ? activeCritical
+          .map(limit => `${limit.model ?? 'unknown-tier'} ${limit.percent ?? '?'}% ${limit.severity ?? 'unknown'}`)
+          .join('; ')
+      : 'no active critical weekly_scoped tier in passive snapshot';
+
+    return {
+      snapshot,
+      misScoped: anomalyRows.length > 0,
+      accountWideCapped,
+      tierSummary,
+      anomalySummary: anomalyRows.length > 0
+        ? anomalyRows.map(row => `${row.account}: ${row.error ?? row.status ?? '0/0 while burn evidence exists'}`).join('; ')
+        : '',
+    };
+  }
+
+  private readFleetUsageSnapshot(now: number): FleetUsageSnapshot | undefined {
+    const path = join(this.paths.ctxRoot, 'state', 'usage', 'multi-account-usage.json');
+    if (!existsSync(path)) return undefined;
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { generated_at?: unknown; accounts?: unknown };
+      if (typeof parsed.generated_at !== 'string' || !Array.isArray(parsed.accounts)) return undefined;
+      const generatedAtMs = Date.parse(parsed.generated_at);
+      if (!Number.isFinite(generatedAtMs) || now - generatedAtMs > FastChecker.FLEET_USAGE_MAX_AGE_MS) return undefined;
+      const accounts = parsed.accounts.filter((entry): entry is FleetUsageAccount => {
+        return typeof entry === 'object' && entry !== null && !Array.isArray(entry) && typeof (entry as FleetUsageAccount).account === 'string';
+      });
+      return {
+        generatedAt: parsed.generated_at,
+        generatedAtMs,
+        accounts,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private targetUsageAccounts(accounts: FleetUsageAccount[]): FleetUsageAccount[] {
+    const cfg = this.agent.getConfig() as { usage_account?: unknown };
+    const usageAccount = typeof cfg.usage_account === 'string' ? cfg.usage_account : undefined;
+    if (!usageAccount) return accounts;
+    const matched = accounts.filter(row => row.account === usageAccount);
+    return matched.length > 0 ? matched : accounts;
+  }
+
+  private isUsageMisScoped(row: FleetUsageAccount): boolean {
+    if (row.status === 'impossible-read' || row.status === 'suspect' || row.suspect === true) return true;
+    const zeroRead = row.ok !== false && row.five_hour_pct === 0 && row.seven_day_pct === 0;
+    if (!zeroRead) return false;
+    const lastGoodBurn = (row.last_good?.five_hour_pct ?? 0) > 0 || (row.last_good?.seven_day_pct ?? 0) > 0;
+    const extraBurn = (row.extra_usage?.used_credits ?? 0) > 0 || (row.last_good?.extra_usage?.used_credits ?? 0) > 0;
+    return lastGoodBurn || extraBurn;
+  }
+
+  private async sendSilentDeathAlert(
+    classification: SilentDeathClassification,
+    ageMs: number,
+    writtenAtMs: number,
+    now: number,
+    extraLines: string[] = [],
+    extraMeta: Record<string, unknown> = {},
+  ): Promise<void> {
     const staleFor = formatDuration(ageMs);
     const model = this.agent.getConfig().model ?? 'unknown-model';
-    const message = [
-      'FLEET HEALTH ALERT',
-      `Agent: ${this.agent.name}`,
-      `Class: ${classification.className}`,
-      `Model: ${model}`,
-      `context_status written_at stale for: ${staleFor}`,
-      `Last context_status: ${new Date(writtenAtMs).toISOString()}`,
-      `Evidence: ${classification.snippet || '(no classifying stdout marker)'}`,
-      `Suggested action: ${suggestSilentDeathAction(classification.className)}`,
-    ].join('\n');
-    await this.sendFleetHealthTelegram(message);
-    this.logFleetHealthEvent('fleet_health_silent_death_alert', 'error', {
-      agent: this.agent.name,
-      class: classification.className,
-      model,
-      stale_ms: ageMs,
-      written_at: new Date(writtenAtMs).toISOString(),
-      snippet: classification.snippet,
+    await this.maybeSendFleetHealthAlert({
+      className: classification.className,
+      dedupKey: `${classification.className}:${writtenAtMs}`,
+      severity: 'error',
+      title: 'FLEET HEALTH ALERT',
+      lines: [
+        `Model: ${model}`,
+        `context_status written_at stale for: ${staleFor}`,
+        `Last context_status: ${new Date(writtenAtMs).toISOString()}`,
+        ...extraLines,
+        `Evidence: ${classification.snippet || '(no classifying stdout marker)'}`,
+        `Suggested action: ${suggestSilentDeathAction(classification.className)}`,
+      ],
+      meta: {
+        agent: this.agent.name,
+        class: classification.className,
+        model,
+        stale_ms: ageMs,
+        written_at: new Date(writtenAtMs).toISOString(),
+        snippet: classification.snippet,
+        ...extraMeta,
+      },
+      contextAtMs: writtenAtMs,
+      now,
     });
   }
 
@@ -1308,6 +1549,45 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       previous_class: previous.className,
       onset_at: new Date(previous.onsetAtMs).toISOString(),
     });
+  }
+
+  private async maybeSendFleetHealthAlert(args: {
+    className: FleetHealthAlertClass;
+    dedupKey: string;
+    severity: 'info' | 'error';
+    title: string;
+    lines: string[];
+    meta: Record<string, unknown>;
+    contextAtMs?: number;
+    now: number;
+  }): Promise<void> {
+    const existing = this.fleetHealthAlert;
+    if (
+      existing &&
+      existing.className === args.className &&
+      existing.dedupKey === args.dedupKey &&
+      args.now - existing.alertedAtMs < FastChecker.FLEET_HEALTH_ALERT_COOLDOWN_MS
+    ) {
+      return;
+    }
+
+    this.fleetHealthAlert = {
+      className: args.className,
+      dedupKey: args.dedupKey,
+      contextAtMs: args.contextAtMs ?? args.now,
+      onsetAtMs: args.now,
+      alertedAtMs: args.now,
+    };
+
+    const message = [
+      args.title,
+      `Agent: ${this.agent.name}`,
+      `Class: ${args.className}`,
+      `Severity: ${args.severity}`,
+      ...args.lines,
+    ].join('\n');
+    await this.sendFleetHealthTelegram(message);
+    this.logFleetHealthEvent('fleet_health_silent_death_alert', args.severity, args.meta);
   }
 
   private async sendFleetHealthTelegram(message: string): Promise<void> {
