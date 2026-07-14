@@ -21,6 +21,16 @@ def assert_gate(name, creative_cell, copy_cell, decision, surface=None, route_ha
     return got
 
 
+def assert_single(name, cell, decision, route_has=None, reason_has=None):
+    got = g.launch_gate_single(cell)
+    assert got["decision"] == decision, f"{name}: decision {got}"
+    if route_has is not None:
+        assert route_has in got["route"], f"{name}: route {got}"
+    if reason_has is not None:
+        assert reason_has in got["reason"], f"{name}: reason {got}"
+    return got
+
+
 def test_leading_verdict():
     assert g.leading_verdict("") == "NONE"
     assert g.leading_verdict("   ") == "NONE"
@@ -156,6 +166,38 @@ def test_fail_safe_malformed_inputs_never_eligible():
         assert got["decision"] == "BLOCK", f"malformed input failed open: {got}"
 
 
+def test_launch_gate_single_paths():
+    assert_single(
+        "single accepted risk",
+        "FAIL - known asset [Adam accepted-risk 2026-07-14]",
+        "ELIGIBLE",
+    )
+    assert_single("single fixed pass", CREATIVE_PASS, "ELIGIBLE")
+    assert_single(
+        "single stale date",
+        "PASS - old - scanned 2026-07-12 (frames+VO)",
+        "BLOCK",
+        route_has="re-scan",
+    )
+    assert_single(
+        "single bare pass",
+        "PASS - no marker - scanned 2026-07-13",
+        "BLOCK",
+        route_has="re-scan",
+    )
+    assert_single("single fail", "FAIL - product visible", "BLOCK", route_has="re-edit")
+    assert_single("single unclear", "UNCLEAR - needs review", "BLOCK", route_has="mc/Adam review")
+    assert_single("", "", "BLOCK", route_has="trigger scan")
+    assert_single("blank", "   ", "BLOCK", route_has="trigger scan")
+    assert_single("none", None, "BLOCK", route_has="trigger scan")
+    assert_single("garbage", "COPY - PASS scanned 2026-07-13 (frames+VO)", "BLOCK", route_has="trigger scan")
+    assert_single(
+        "copy narrative pass is not leading verdict",
+        "Narrative says PASS - scanned 2026-07-13 (frames+VO)",
+        "BLOCK",
+    )
+
+
 def test_all():
     test_leading_verdict()
     test_fixed_scan_date_boundary_and_markers()
@@ -167,6 +209,7 @@ def test_all():
     test_unclear_blocks_review()
     test_both_surfaces_fail_names_both_and_has_no_single_surface()
     test_fail_safe_malformed_inputs_never_eligible()
+    test_launch_gate_single_paths()
 
 
 if __name__ == "__main__":

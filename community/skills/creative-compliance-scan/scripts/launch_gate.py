@@ -132,6 +132,24 @@ def launch_gate(creative_cell, copy_cell):
     return _block(failures)
 
 
+def launch_gate_single(cell):
+    if has_accepted_risk(cell):
+        return {
+            "decision": "ELIGIBLE",
+            "reason": "accepted-risk override",
+            "route": "accepted-risk override",
+            "failing_surface": None,
+        }
+    if leading_verdict(cell) == "PASS" and is_fixed_scan(cell, "creative"):
+        return {
+            "decision": "ELIGIBLE",
+            "reason": "clean fixed PASS",
+            "route": "launch eligible",
+            "failing_surface": None,
+        }
+    return _block([_surface_failure("creative", cell)])
+
+
 if __name__ == "__main__":
     import json
     import sys
