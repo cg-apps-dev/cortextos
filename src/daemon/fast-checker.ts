@@ -1188,7 +1188,8 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
 
     const stdoutTail = this.readStdoutTail(FastChecker.SILENT_DEATH_STDOUT_TAIL_BYTES);
     const classification = classifySilentDeath(stdoutTail);
-    this.updateMarkerReadCounts(classification.className);
+    const isRunning = this.agent.getStatus().status === 'running';
+    this.updateMarkerReadCounts(classification.className, isRunning);
 
     const usage = this.assessFleetUsage(now);
     if (usage.misScoped) {
@@ -1295,7 +1296,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       return;
     }
 
-    if (this.agent.getStatus().status !== 'running') return;
+    if (!isRunning) return;
 
     const promptSignal = this.latestPromptSignal();
     if (promptSignal.latestAtMs <= writtenAtMs) return;
@@ -1318,9 +1319,9 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     await this.sendSilentDeathAlert(classification, ageMs, writtenAtMs, now);
   }
 
-  private updateMarkerReadCounts(className: SilentDeathClass): void {
+  private updateMarkerReadCounts(className: SilentDeathClass, isRunning: boolean): void {
     for (const key of Object.keys(this.markerReadCounts) as SilentDeathClass[]) {
-      this.markerReadCounts[key] = key === className && className !== 'unknown-silent'
+      this.markerReadCounts[key] = isRunning && key === className && className !== 'unknown-silent'
         ? this.markerReadCounts[key] + 1
         : 0;
     }

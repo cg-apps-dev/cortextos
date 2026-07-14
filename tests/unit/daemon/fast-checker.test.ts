@@ -22,6 +22,12 @@ function createMockAgent(name = 'test-agent') {
   } as any;
 }
 
+function createMockAgentWithStatus(name: string, status: string) {
+  const agent = createMockAgent(name);
+  agent.getStatus = vi.fn().mockReturnValue({ name, status, model: 'fable-5' });
+  return agent;
+}
+
 // Minimal mock for TelegramAPI
 function createMockTelegramApi() {
   return {
@@ -503,6 +509,20 @@ describe('FastChecker', () => {
       expect(text).toContain('Class: auth-dead');
       expect(text).not.toContain('sk-ant-oat01-');
       expect(text).toContain('[REDACTED_TOKEN]');
+    });
+
+    it('does not accumulate auth-dead debounce for stopped agents with stale 401 stdout', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgentWithStatus('stopped-auth-agent', 'stopped'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:00:00.000Z');
+      writeCronAttempt('2026-07-12T21:20:00.000Z');
+      writeStdout('401 Invalid API key from a prior stopped session\n');
+
+      await runPollCycle(checker);
+      await runPollCycle(checker);
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).not.toHaveBeenCalled();
     });
 
     it('classifies 429 tier caps as tier-throttled, not auth-dead', async () => {
