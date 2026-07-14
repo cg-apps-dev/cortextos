@@ -418,7 +418,7 @@ ${lastSentCtx}Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     const removed = newReaction.length === 0 && oldReaction.length > 0;
     const label = removed ? `removed ${render(oldReaction)}` : render(newReaction);
 
-    return `=== REACTION from [USER: ${from}] (chat_id:${chatId}) on message ${messageId}: ${label} ===
+    return `=== REACTION from [USER: ${sanitizeForPtyInjection(from)}] (chat_id:${chatId}) on message ${messageId}: ${label} ===
 
 `;
   }
