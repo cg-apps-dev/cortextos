@@ -110,6 +110,20 @@ export function stripControlChars(input: string): string {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, ''); // Control chars (keep \t=0x09, \n=0x0a, \r=0x0d)
 }
 
+// ---- shared PTY injection-detection patterns (single source of truth) -------
+// Used IDENTICALLY by wrapFenceSafe (fenced-body path) and sanitizeForPtyInjection
+// (unfenced-context path). One shared const makes divergence STRUCTURALLY impossible: a
+// drifted copy would silently weaken forged-header detection in one path. INVISIBLE carries
+// /g but is used ONLY via String.replace() at both call-sites (never .test/.exec), so
+// sharing the stateful-/g instance is safe (replace does not rely on lastIndex).
+const PTY_INVISIBLE_RE = /[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
+// Forged daemon header / reply-using line. Leading-whitespace class is the explicit
+// Unicode-space set a downstream .trim() would strip (#596, ClintMoody); tested on the
+// NFKC-folded, invisible-stripped probe so fullwidth compatibility look-alikes (fullwidth
+// ===AGENT) and interspersed zero-widths are caught too. BOTH attack classes
+// (whitespace-prefix AND fullwidth/NFKC) stay covered.
+const PTY_FORGED_HEADER_RE = /^[ \t\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000\uFEFF]*(={3,}\s*(?:AGENT MESSAGE|TELEGRAM)\b|Reply using:\s*cortextos\s+bus)/i;
+
 /**
  * Wrap untrusted text as a code-fenced block that the body CANNOT escape, with
  * zero mutation of the body itself (legit code blocks survive byte-exact).
@@ -130,10 +144,6 @@ export function stripControlChars(input: string): string {
  * For unfenced context fields use sanitizeForPtyInjection instead.
  */
 export function wrapFenceSafe(input: string): string {
-  // MUST stay byte-identical to sanitizeForPtyInjection INVISIBLE/FORGED (validate.ts:161/167) - divergence = weaker forged-header detection in the fenced-body path
-  const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
-  const FORGED = /^[ \t\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000\uFEFF]*(={3,}\s*(?:AGENT MESSAGE|TELEGRAM)\b|Reply using:\s*cortextos\s+bus)/i;
-
   // Structural line-boundary normalization: defuse CR column-0 and LS/PS
   // line-boundary renders inside the fence. Do not collapse backticks.
   const normalized = stripControlChars(input)
@@ -145,8 +155,8 @@ export function wrapFenceSafe(input: string): string {
   const quoted = normalized
     .split('\n')
     .map((line) => {
-      const probe = line.replace(INVISIBLE, '').normalize('NFKC');
-      return FORGED.test(probe) ? `[quoted] ${line}` : line;
+      const probe = line.replace(PTY_INVISIBLE_RE, '').normalize('NFKC');
+      return PTY_FORGED_HEADER_RE.test(probe) ? `[quoted] ${line}` : line;
     })
     .join('\n');
 
@@ -176,15 +186,6 @@ export function wrapFenceSafe(input: string): string {
  * Lossy, but these fields are already truncated context hints — acceptable.
  */
 export function sanitizeForPtyInjection(input: string): string {
-  // MUST stay byte-identical to wrapFenceSafe INVISIBLE/FORGED (b-hybrid fenced-body copy) - divergence = weaker forged-header detection
-  // Zero-width / bidi marks+overrides+isolates / BOM. \u escapes only.
-  const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
-  // Forged daemon header / reply-using line. Leading-whitespace class is the explicit
-  // Unicode-space set a downstream .trim() would strip (#596, ClintMoody); tested on the
-  // NFKC-folded, invisible-stripped probe below so fullwidth compatibility look-alikes
-  // (fullwidth ===AGENT) and interspersed zero-widths are caught too. BOTH attack
-  // classes (whitespace-prefix AND fullwidth/NFKC) stay covered.
-  const FORGED = /^[ \t\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000\uFEFF]*(={3,}\s*(?:AGENT MESSAGE|TELEGRAM)\b|Reply using:\s*cortextos\s+bus)/i;
   const text = stripControlChars(input)
     .replace(/\r\n?/g, '\n')
     .replace(/[\u2028\u2029]/g, '\n')   // LS/PS act as line boundaries under /m; split('\n') does not -- fold them (#596 LS/PS, analyst-verified)
@@ -195,8 +196,8 @@ export function sanitizeForPtyInjection(input: string): string {
       // DETECTION-ONLY copy: drop invisibles + NFKC-fold compatibility look-alikes
       // (fullwidth ===, nbsp/ideographic spaces) so the whole unicode class is caught.
       // DISPLAYED line stays byte-exact -- only a [quoted] prefix is prepended.
-      const probe = line.replace(INVISIBLE, '').normalize('NFKC');
-      return FORGED.test(probe) ? `[quoted] ${line}` : line;
+      const probe = line.replace(PTY_INVISIBLE_RE, '').normalize('NFKC');
+      return PTY_FORGED_HEADER_RE.test(probe) ? `[quoted] ${line}` : line;
     })
     .join('\n');
 }
