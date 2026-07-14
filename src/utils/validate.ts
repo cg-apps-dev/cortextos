@@ -122,20 +122,39 @@ export function stripControlChars(input: string): string {
  * Fix uses the CommonMark rule "a fence is closed only by a run of backticks
  * >= the opening run": size the wrapper to (longest backtick run in body) + 1,
  * minimum 3. The body's own fences (even a ```` block discussing fences) are
- * then strictly shorter than the wrapper and cannot close it — and nothing in
- * the body is altered, so pasted code stays readable. Control chars are still
- * stripped.
+ * then strictly shorter than the wrapper and cannot close it, and nothing is
+ * altered except line-ending normalization + forged-header quoting, so pasted
+ * code stays readable. Control chars are still stripped.
  *
  * Use for the FENCED body of an injection block (inbox text, Telegram text).
  * For unfenced context fields use sanitizeForPtyInjection instead.
  */
 export function wrapFenceSafe(input: string): string {
-  const body = stripControlChars(input);
+  // MUST stay byte-identical to sanitizeForPtyInjection INVISIBLE/FORGED (validate.ts:161/167) - divergence = weaker forged-header detection in the fenced-body path
+  const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
+  const FORGED = /^[ \t\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000\uFEFF]*(={3,}\s*(?:AGENT MESSAGE|TELEGRAM)\b|Reply using:\s*cortextos\s+bus)/i;
+
+  // Structural line-boundary normalization: defuse CR column-0 and LS/PS
+  // line-boundary renders inside the fence. Do not collapse backticks.
+  const normalized = stripControlChars(input)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u2028\u2029]/g, '\n');
+
+  // Detection uses an invisible-stripped + NFKC-folded probe. The displayed
+  // line stays exact except for the [quoted] prefix on forged daemon headers.
+  const quoted = normalized
+    .split('\n')
+    .map((line) => {
+      const probe = line.replace(INVISIBLE, '').normalize('NFKC');
+      return FORGED.test(probe) ? `[quoted] ${line}` : line;
+    })
+    .join('\n');
+
   let longest = 0;
-  const runs = body.match(/`+/g);
+  const runs = quoted.match(/`+/g);
   if (runs) for (const r of runs) longest = Math.max(longest, r.length);
   const fence = '`'.repeat(Math.max(3, longest + 1));
-  return `${fence}\n${body}\n${fence}`;
+  return `${fence}\n${quoted}\n${fence}`;
 }
 
 /**
@@ -157,6 +176,7 @@ export function wrapFenceSafe(input: string): string {
  * Lossy, but these fields are already truncated context hints — acceptable.
  */
 export function sanitizeForPtyInjection(input: string): string {
+  // MUST stay byte-identical to wrapFenceSafe INVISIBLE/FORGED (b-hybrid fenced-body copy) - divergence = weaker forged-header detection
   // Zero-width / bidi marks+overrides+isolates / BOM. \u escapes only.
   const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
   // Forged daemon header / reply-using line. Leading-whitespace class is the explicit
