@@ -430,12 +430,15 @@ describe('FastChecker', () => {
       await p;
     }
 
-    function writeContextStatus(writtenAt: string): void {
+    function writeContextStatus(writtenAt: string, overrides: Record<string, unknown> = {}): void {
       writeFileSync(join(paths.stateDir, 'context_status.json'), JSON.stringify({
         used_percentage: 12,
+        total_input_tokens: 100,
+        total_output_tokens: 10,
         exceeds_200k_tokens: false,
         session_id: 'session-a',
         written_at: writtenAt,
+        ...overrides,
       }));
     }
 
@@ -509,6 +512,112 @@ describe('FastChecker', () => {
       expect(text).toContain('Class: auth-dead');
       expect(text).not.toContain('sk-ant-oat01-');
       expect(text).toContain('[REDACTED_TOKEN]');
+    });
+
+    it('does not alert auth-dead when same-session token progress proves recovery after a 401', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('recovered-auth-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:29:00.000Z', {
+        session_id: 'session-a',
+        total_input_tokens: 100,
+        total_output_tokens: 10,
+      });
+      writeStdout('401 Invalid API key from transient request\n');
+
+      await runPollCycle(checker);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+
+      writeContextStatus('2026-07-12T21:29:30.000Z', {
+        session_id: 'session-a',
+        total_input_tokens: 135,
+        total_output_tokens: 22,
+      });
+      writeStdout('normal completed turn output\n');
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('alerts auth-dead when a persistent 401 marker scrolls out without token progress', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('scrollout-auth-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:29:00.000Z', {
+        session_id: 'session-a',
+        total_input_tokens: 100,
+        total_output_tokens: 10,
+      });
+      writeStdout('401 Invalid API key before verbose output\n');
+
+      await runPollCycle(checker);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+
+      writeContextStatus('2026-07-12T21:29:30.000Z', {
+        session_id: 'session-a',
+        total_input_tokens: 100,
+        total_output_tokens: 10,
+      });
+      writeStdout(Array.from({ length: 140 }, (_, idx) => `normal line ${idx}`).join('\n'));
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(text).toContain('Class: auth-dead');
+      expect(text).toContain('Invalid API key before verbose output');
+    });
+
+    it('does not treat restart boot output as recovery from an auth-dead incident', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('crash-loop-auth-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:29:00.000Z', {
+        session_id: 'session-a',
+        total_input_tokens: 100,
+        total_output_tokens: 10,
+      });
+      writeStdout('401 Invalid API key before crash\n');
+
+      await runPollCycle(checker);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+
+      writeContextStatus('2026-07-12T21:29:30.000Z', {
+        session_id: 'session-b',
+        total_input_tokens: 4,
+        total_output_tokens: 0,
+      });
+      const bootLines = Array.from({ length: 140 }, (_, idx) => `Booting agent line ${idx}`).join('\n');
+      writeStdout(`${bootLines}\n401 Invalid API key after restart\n`);
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(text).toContain('Class: auth-dead');
+      expect(text).toContain('Invalid API key after restart');
+    });
+
+    it('does not treat retry and spinner output as recovery from an auth-dead incident', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('retry-loop-auth-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:29:00.000Z', {
+        session_id: 'session-a',
+        total_input_tokens: 100,
+        total_output_tokens: 10,
+      });
+      writeStdout('401 Invalid API key before retry\n');
+
+      await runPollCycle(checker);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+
+      writeContextStatus('2026-07-12T21:29:30.000Z', {
+        session_id: 'session-a',
+        total_input_tokens: 100,
+        total_output_tokens: 10,
+      });
+      writeStdout('Thinking...\nRetrying request after backoff\nstill waiting\n401 Invalid API key after retry\n');
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(text).toContain('Class: auth-dead');
+      expect(text).toContain('Invalid API key after retry');
     });
 
     it('does not accumulate auth-dead debounce for stopped agents with stale 401 stdout', async () => {

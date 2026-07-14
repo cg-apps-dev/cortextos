@@ -31,6 +31,18 @@ interface SilentDeathClassification {
   snippet: string;
 }
 
+interface AuthDeadIncident {
+  readCount: number;
+  snippet: string;
+  sessionId: string | null;
+  tokenTotal: number | null;
+}
+
+interface ContextProgress {
+  sessionId: string | null;
+  tokenTotal: number | null;
+}
+
 interface FleetUsageAccount {
   account: string;
   ok?: boolean;
@@ -154,12 +166,7 @@ export class FastChecker {
   // Persisted to disk so --continue restarts don't reset the circuit breaker
   private ctxCircuitFile: string = '';
   private fleetHealthAlerts: Partial<Record<FleetHealthAlertClass, SilentDeathAlertState>> = {};
-  private markerReadCounts: Record<SilentDeathClass, number> = {
-    'auth-dead': 0,
-    'tier-throttled': 0,
-    'network-wedge': 0,
-    'unknown-silent': 0,
-  };
+  private authDeadIncident: AuthDeadIncident | null = null;
 
   private static readonly SILENT_DEATH_STALE_MS = 10 * 60_000;
   private static readonly SILENT_DEATH_DEFAULT_TWO_CRON_MS = 2 * 30 * 60_000;
@@ -1191,7 +1198,8 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     const agentStatus = this.agent.getStatus().status;
     const isRunning = agentStatus === 'running';
     const authSignalEligible = agentStatus !== 'stopped';
-    this.updateMarkerReadCounts(classification.className, authSignalEligible);
+    const livenessFresh = ageMs <= FastChecker.SILENT_DEATH_STALE_MS;
+    const authIncident = this.updateAuthDeadIncident(classification, data, authSignalEligible, livenessFresh);
 
     const usage = this.assessFleetUsage(now);
     if (usage.misScoped) {
@@ -1214,22 +1222,22 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       });
     }
 
-    if (classification.className === 'auth-dead') {
-      if (this.markerReadCounts['auth-dead'] >= FastChecker.AUTH_DEAD_DEBOUNCE_READS) {
+    if (authIncident !== null) {
+      if (authIncident.readCount >= FastChecker.AUTH_DEAD_DEBOUNCE_READS && (!livenessFresh || !this.hasAuthDeadRecovery(data))) {
         await this.maybeSendFleetHealthAlert({
           className: 'auth-dead',
-          dedupKey: `auth-dead:${classification.snippet}`,
+          dedupKey: `auth-dead:${authIncident.snippet}`,
           severity: 'error',
           title: 'FLEET AUTH ALERT',
           lines: [
             'Route: re-deploy setup-token path',
-            `Evidence: ${classification.snippet || '(auth marker)'}`,
+            `Evidence: ${authIncident.snippet || '(auth marker)'}`,
             `Suggested action: ${suggestSilentDeathAction('auth-dead')}`,
           ],
           meta: {
             agent: this.agent.name,
             class: 'auth-dead',
-            snippet: classification.snippet,
+            snippet: authIncident.snippet,
           },
           now,
         });
@@ -1237,7 +1245,6 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       return;
     }
 
-    const livenessFresh = ageMs <= FastChecker.SILENT_DEATH_STALE_MS;
     if (classification.className === 'tier-throttled' && livenessFresh && usage.accountWideCapped) {
       await this.maybeSendFleetHealthAlert({
         className: 'tier-throttled',
@@ -1321,12 +1328,63 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     await this.sendSilentDeathAlert(classification, ageMs, writtenAtMs, now);
   }
 
-  private updateMarkerReadCounts(className: SilentDeathClass, authSignalEligible: boolean): void {
-    for (const key of Object.keys(this.markerReadCounts) as SilentDeathClass[]) {
-      this.markerReadCounts[key] = authSignalEligible && key === className && className !== 'unknown-silent'
-        ? this.markerReadCounts[key] + 1
-        : 0;
+  private updateAuthDeadIncident(
+    classification: SilentDeathClassification,
+    data: Record<string, unknown>,
+    authSignalEligible: boolean,
+    livenessFresh: boolean,
+  ): AuthDeadIncident | null {
+    if (!authSignalEligible) {
+      this.authDeadIncident = null;
+      return null;
     }
+
+    const context = this.contextProgress(data);
+    if (classification.className === 'auth-dead') {
+      this.authDeadIncident = {
+        readCount: (this.authDeadIncident?.readCount ?? 0) + 1,
+        snippet: classification.snippet,
+        sessionId: context.sessionId,
+        tokenTotal: context.tokenTotal,
+      };
+      return this.authDeadIncident;
+    }
+
+    if (this.authDeadIncident === null) return null;
+    if (livenessFresh && this.hasAuthDeadRecovery(data)) {
+      this.authDeadIncident = null;
+      return null;
+    }
+
+    this.authDeadIncident = {
+      ...this.authDeadIncident,
+      readCount: this.authDeadIncident.readCount + 1,
+    };
+    return this.authDeadIncident;
+  }
+
+  private hasAuthDeadRecovery(data: Record<string, unknown>): boolean {
+    if (this.authDeadIncident === null) return false;
+    const context = this.contextProgress(data);
+    return this.authDeadIncident.sessionId !== null &&
+      context.sessionId === this.authDeadIncident.sessionId &&
+      this.authDeadIncident.tokenTotal !== null &&
+      context.tokenTotal !== null &&
+      context.tokenTotal > this.authDeadIncident.tokenTotal;
+  }
+
+  private contextProgress(data: Record<string, unknown>): ContextProgress {
+    const sessionId = typeof data.session_id === 'string' && data.session_id.trim() !== ''
+      ? data.session_id
+      : null;
+    const input = typeof data.total_input_tokens === 'number' && Number.isFinite(data.total_input_tokens)
+      ? data.total_input_tokens
+      : null;
+    const output = typeof data.total_output_tokens === 'number' && Number.isFinite(data.total_output_tokens)
+      ? data.total_output_tokens
+      : null;
+    const tokenTotal = input === null && output === null ? null : (input ?? 0) + (output ?? 0);
+    return { sessionId, tokenTotal };
   }
 
   private latestPromptSignal(): { latestAtMs: number; twoCronMs?: number } {
