@@ -590,6 +590,32 @@ describe('FastChecker', () => {
       expect(text).toContain('0/0');
     });
 
+    it('dedupes correlated usage-miscope and auth-dead alerts independently', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('correlated-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T21:29:00.000Z');
+      writeStdout('401 Invalid API key\n');
+      writeUsageSnapshot([{
+        account: 'icloud-max',
+        ok: true,
+        five_hour_pct: 0,
+        seven_day_pct: 0,
+        last_good: { five_hour_pct: 66, seven_day_pct: 42, fetched_at: '2026-07-12T21:20:00.000Z' },
+        fetched_at: '2026-07-12T21:29:00.000Z',
+      }]);
+
+      await runPollCycle(checker);
+      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      expect(String(api.sendMessage.mock.calls[0][1])).toContain('Class: usage-miscope');
+
+      await runPollCycle(checker);
+      expect(api.sendMessage).toHaveBeenCalledTimes(2);
+      expect(String(api.sendMessage.mock.calls[1][1])).toContain('Class: auth-dead');
+
+      await runPollCycle(checker);
+      expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    });
+
     it('does not alert for healthy fresh context with no marker', async () => {
       const api = createMockTelegramApi();
       const checker = new FastChecker(createMockAgent('healthy-agent'), paths, '/tmp/framework', { telegramApi: api });

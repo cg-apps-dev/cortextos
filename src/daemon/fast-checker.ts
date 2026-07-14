@@ -153,7 +153,7 @@ export class FastChecker {
   private ctxCircuitBrokenAt: number | null = null; // when circuit tripped (null = healthy)
   // Persisted to disk so --continue restarts don't reset the circuit breaker
   private ctxCircuitFile: string = '';
-  private fleetHealthAlert: SilentDeathAlertState | null = null;
+  private fleetHealthAlerts: Partial<Record<FleetHealthAlertClass, SilentDeathAlertState>> = {};
   private markerReadCounts: Record<SilentDeathClass, number> = {
     'auth-dead': 0,
     'tier-throttled': 0,
@@ -1287,10 +1287,10 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     }
 
     if (livenessFresh) {
-      if (this.fleetHealthAlert !== null && writtenAtMs > this.fleetHealthAlert.contextAtMs) {
-        const previous = this.fleetHealthAlert;
-        this.fleetHealthAlert = null;
-        await this.sendSilentDeathResolved(previous);
+      const activeAlert = this.activeSilentDeathAlert();
+      if (activeAlert !== null && writtenAtMs > activeAlert.contextAtMs) {
+        delete this.fleetHealthAlerts[activeAlert.className];
+        await this.sendSilentDeathResolved(activeAlert);
       }
       return;
     }
@@ -1561,17 +1561,16 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     contextAtMs?: number;
     now: number;
   }): Promise<void> {
-    const existing = this.fleetHealthAlert;
+    const existing = this.fleetHealthAlerts[args.className];
     if (
       existing &&
-      existing.className === args.className &&
       existing.dedupKey === args.dedupKey &&
       args.now - existing.alertedAtMs < FastChecker.FLEET_HEALTH_ALERT_COOLDOWN_MS
     ) {
       return;
     }
 
-    this.fleetHealthAlert = {
+    this.fleetHealthAlerts[args.className] = {
       className: args.className,
       dedupKey: args.dedupKey,
       contextAtMs: args.contextAtMs ?? args.now,
@@ -1588,6 +1587,14 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     ].join('\n');
     await this.sendFleetHealthTelegram(message);
     this.logFleetHealthEvent('fleet_health_silent_death_alert', args.severity, args.meta);
+  }
+
+  private activeSilentDeathAlert(): SilentDeathAlertState | null {
+    for (const key of ['auth-dead', 'tier-throttled', 'network-wedge', 'unknown-silent'] as FleetHealthAlertClass[]) {
+      const alert = this.fleetHealthAlerts[key];
+      if (alert) return alert;
+    }
+    return null;
   }
 
   private async sendFleetHealthTelegram(message: string): Promise<void> {
