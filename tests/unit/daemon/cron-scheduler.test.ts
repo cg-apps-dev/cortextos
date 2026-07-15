@@ -8,6 +8,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 // ---------------------------------------------------------------------------
 // Mock crons.ts I/O BEFORE importing CronScheduler so the module resolution
@@ -57,6 +60,25 @@ function makeCron(overrides: Partial<CronDefinition> = {}): CronDefinition {
 }
 
 const TICK = CronScheduler.TICK_INTERVAL_MS; // 30_000 ms
+let originalCtxRoot: string | undefined;
+let tempCtxRoot: string | undefined;
+
+function createTempCtxRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), 'cron-scheduler-'));
+  tempCtxRoot = root;
+  process.env.CTX_ROOT = root;
+  return root;
+}
+
+function writeDaemonStopMarker(agentName: string, stopMs: number): void {
+  const root = process.env.CTX_ROOT ?? createTempCtxRoot();
+  const stateDir = join(root, 'state', agentName);
+  mkdirSync(stateDir, { recursive: true });
+  const markerPath = join(stateDir, '.daemon-stop');
+  writeFileSync(markerPath, 'daemon shutdown (SIGTERM)', 'utf-8');
+  const markerDate = new Date(stopMs);
+  utimesSync(markerPath, markerDate, markerDate);
+}
 
 // ---------------------------------------------------------------------------
 // nextFireFromCron — unit tests for the cron expression parser
@@ -243,6 +265,8 @@ describe('CronScheduler', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    originalCtxRoot = process.env.CTX_ROOT;
+    createTempCtxRoot();
     logs   = [];
     fired  = [];
     mockReadCrons.mockReset();
@@ -266,6 +290,15 @@ describe('CronScheduler', () => {
   afterEach(() => {
     scheduler.stop();
     vi.useRealTimers();
+    if (originalCtxRoot === undefined) {
+      delete process.env.CTX_ROOT;
+    } else {
+      process.env.CTX_ROOT = originalCtxRoot;
+    }
+    if (tempCtxRoot !== undefined) {
+      rmSync(tempCtxRoot, { recursive: true, force: true });
+      tempCtxRoot = undefined;
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -349,6 +382,7 @@ describe('CronScheduler', () => {
         schedule: '1m',
         last_fired_at: new Date(Date.now() - 2 * 60_000).toISOString(),
       });
+      writeDaemonStopMarker('test-agent', Date.now() - 90_000);
       mockReadCrons.mockReturnValue([dueCron]);
       const gatedScheduler = new CronScheduler({
         agentName: 'test-agent',
@@ -387,6 +421,7 @@ describe('CronScheduler', () => {
           last_fired_at: new Date(Date.now() - 2 * 60_000).toISOString(),
         }),
       ]);
+      writeDaemonStopMarker('test-agent', Date.now() - 90_000);
       const gatedScheduler = new CronScheduler({
         agentName: 'test-agent',
         onFire: (cron) => { fired.push(cron); },
@@ -410,6 +445,7 @@ describe('CronScheduler', () => {
           last_fired_at: new Date(Date.now() - 2 * 60_000).toISOString(),
         }),
       ]);
+      writeDaemonStopMarker('test-agent', Date.now() - 90_000);
 
       scheduler.start();
       await vi.advanceTimersByTimeAsync(TICK);
@@ -443,6 +479,7 @@ describe('CronScheduler', () => {
         last_fired_at: new Date(Date.now() - 25 * 3_600_000).toISOString(),
       }),
     ]);
+    writeDaemonStopMarker('test-agent', Date.now() - 2 * 3_600_000);
 
     retryScheduler.start();
 
@@ -621,6 +658,7 @@ describe('CronScheduler', () => {
       makeCron({ name: 'doomed', schedule: '10m', last_fired_at: tenMinAgo, fire_count: 1 }),
       makeCron({ name: 'survivor', schedule: '24h', last_fired_at: new Date(Date.now() - 1_000).toISOString() }),
     ]);
+    writeDaemonStopMarker('test-agent', Date.now() - 5 * 60_000);
 
     auditScheduler.start();
 
@@ -664,6 +702,7 @@ describe('CronScheduler', () => {
     mockReadCrons.mockReturnValue([
       makeCron({ name: 'last-cron', schedule: '1m', last_fired_at: new Date(Date.now() - 30_000).toISOString() }),
     ]);
+    writeDaemonStopMarker('test-agent', Date.now() - 15_000);
     scheduler.start();
 
     // Fire once to confirm the schedule is live.
@@ -722,6 +761,7 @@ describe('CronScheduler', () => {
     mockReadCrons.mockReturnValue([
       makeCron({ name: 'racy', schedule: '10m', last_fired_at: tenMinAgo, fire_count: 1 }),
     ]);
+    writeDaemonStopMarker('test-agent', Date.now() - 5 * 60_000);
 
     raceScheduler.start();
 
@@ -788,6 +828,7 @@ describe('CronScheduler', () => {
     mockUpdateCron.mockImplementation((_agent: string, _name: string, patch: Partial<CronDefinition>) => {
       diskCron = { ...diskCron, ...patch };
     });
+    writeDaemonStopMarker('test-agent', Date.now() - 90 * 60_000);
 
     // Slow onFire we never resolve — simulates "fire began, agent received
     // the prompt, daemon crashed before completion."
@@ -852,6 +893,7 @@ describe('CronScheduler', () => {
         fire_count:    5,
       }),
     ]);
+    writeDaemonStopMarker('test-agent', Date.now() - 90 * 60_000);
 
     scheduler.start();
 
@@ -859,6 +901,72 @@ describe('CronScheduler', () => {
     await vi.advanceTimersByTimeAsync(TICK);
 
     expect(fired.some(c => c.name === 'overdue')).toBe(true);
+  });
+
+  it.each([
+    {
+      name: 'theta-wave',
+      schedule: '0 0 * * 1',
+      ref: '2026-07-13T05:00:00Z',
+      expected: '2026-07-20T07:00:00.000Z',
+    },
+    {
+      name: 'daily-digest',
+      schedule: '0 7 * * *',
+      ref: '2026-07-14T12:00:00Z',
+      expected: '2026-07-15T14:00:00.000Z',
+    },
+    {
+      name: 'nightly',
+      schedule: '30 20 * * *',
+      ref: '2026-07-15T01:30:00Z',
+      expected: '2026-07-16T03:30:00.000Z',
+    },
+  ])('skips stale restart recompute window for $name and schedules the next future slot', async ({ name, schedule, ref, expected }) => {
+    const now = Date.parse('2026-07-15T06:57:00Z');
+    vi.setSystemTime(now);
+    mockReadCrons.mockReturnValue([
+      makeCron({
+        name,
+        schedule,
+        last_fired_at: ref,
+      }),
+    ]);
+
+    scheduler.start();
+
+    const entry = scheduler.getNextFireTimes().find((item) => item.name === name);
+    expect(entry).toBeDefined();
+    expect(entry!.nextFireAt).toBeGreaterThan(now);
+    expect(new Date(entry!.nextFireAt).toISOString()).toBe(expected);
+
+    await vi.advanceTimersByTimeAsync(TICK);
+
+    expect(fired).toHaveLength(0);
+    expect(logs.some((line) => line.includes(`skip stale missed window for "${name}"`))).toBe(true);
+  });
+
+  it('catch-up fires when a missed calendar window is inside daemon-stop downtime', async () => {
+    const now = Date.parse('2026-07-15T06:57:00Z');
+    vi.setSystemTime(now);
+    writeDaemonStopMarker('test-agent', Date.parse('2026-07-15T06:50:00Z'));
+    mockReadCrons.mockReturnValue([
+      makeCron({
+        name: 'missed-during-downtime',
+        schedule: '55 23 * * *',
+        last_fired_at: '2026-07-15T05:00:00Z',
+      }),
+    ]);
+
+    scheduler.start();
+
+    expect(scheduler.getNextFireTimes()).toEqual([
+      { name: 'missed-during-downtime', nextFireAt: now },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(TICK);
+
+    expect(fired.map((cron) => cron.name)).toContain('missed-during-downtime');
   });
 
   it('does NOT fire on start when the cron is not yet due', async () => {

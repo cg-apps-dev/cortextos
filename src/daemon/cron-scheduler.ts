@@ -7,11 +7,10 @@
  *
  * CATCH-UP POLICY
  * ---------------
- * If the daemon was stopped and a cron's computed nextFireAt is in the past
- * on start(), we fire ONCE for the most recent missed window, then advance
- * nextFireAt to the next future slot.  We deliberately do not flood-fire all
- * missed windows — one catch-up is enough to inform the agent that time has
- * passed, and the agent can decide whether further action is needed.
+ * If the daemon was gracefully stopped and a cron's computed nextFireAt falls
+ * inside that downtime window, we fire ONCE for the missed window, then
+ * advance nextFireAt to the next future slot. Stale missed windows from before
+ * daemon downtime are skipped forward without firing.
  *
  * RETRY POLICY
  * ------------
@@ -25,6 +24,7 @@
  * New or modified crons get a freshly computed nextFireAt.
  */
 
+import { existsSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { parseDurationMs, readCronState } from '../bus/cron-state.js';
@@ -35,6 +35,7 @@ import type { GateDecision } from './cron-capacity-gate.js';
 import { appendExecutionLog } from './cron-execution-log.js';
 
 const CRON_TZ = process.env.CTX_TIMEZONE || 'America/Los_Angeles';
+const DAEMON_STOP_MARKER = '.daemon-stop';
 const WEEKDAY_TO_DOW: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -189,6 +190,29 @@ function computeNextFireAt(cron: CronDefinition, referenceMs: number): number {
   // Try as a cron expression
   const next = nextFireFromCron(cron.schedule, referenceMs);
   return next;
+}
+
+function readDaemonLastStopMs(stateDir: string): number | null {
+  const markerPath = join(stateDir, DAEMON_STOP_MARKER);
+  if (!existsSync(markerPath)) return null;
+  try {
+    const stopMs = statSync(markerPath).mtimeMs;
+    return Number.isFinite(stopMs) ? stopMs : null;
+  } catch {
+    return null;
+  }
+}
+
+function advanceNextFireAtToFuture(cron: CronDefinition, nextFireAt: number, now: number): number {
+  if (nextFireAt > now) return nextFireAt;
+
+  const durationMs = parseDurationMs(cron.schedule);
+  if (!isNaN(durationMs) && durationMs > 0) {
+    const missedIntervals = Math.floor((now - nextFireAt) / durationMs) + 1;
+    return nextFireAt + missedIntervals * durationMs;
+  }
+
+  return computeNextFireAt(cron, now);
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +400,7 @@ export class CronScheduler {
     const ctxRoot = process.env.CTX_ROOT ||
       join(homedir(), '.cortextos', process.env.CTX_INSTANCE_ID || 'default');
     const stateDir = join(ctxRoot, 'state', this.agentName);
+    const daemonLastStopMs = readDaemonLastStopMs(stateDir);
     let stateLastFireByName = new Map<string, string>();
     try {
       const stateFile = readCronState(stateDir);
@@ -436,14 +461,34 @@ export class CronScheduler {
         continue;
       }
 
-      // CATCH-UP POLICY: if nextFireAt is in the past (daemon was stopped),
-      // fire once immediately for the missed window, then recompute from now.
-      // We do NOT flood-fire all missed windows — one catch-up is sufficient.
+      // CATCH-UP POLICY: if nextFireAt is in the past, only fire immediately
+      // when that missed window falls inside the daemon's actual downtime.
+      // Otherwise it is a stale last-fire stamp from before the last daemon
+      // stop, so skip forward to the next future slot without firing.
       if (nextFireAt <= now) {
-        this.logger(
-          `[cron-scheduler] catch-up: cron "${def.name}" missed fire at ${new Date(nextFireAt).toISOString()} — scheduling immediate fire`
-        );
-        nextFireAt = now; // fire on the very next tick
+        const missedDuringDowntime =
+          daemonLastStopMs !== null &&
+          nextFireAt >= daemonLastStopMs &&
+          nextFireAt <= now;
+
+        if (missedDuringDowntime) {
+          this.logger(
+            `[cron-scheduler] catch-up: cron "${def.name}" missed fire at ${new Date(nextFireAt).toISOString()} during daemon downtime - scheduling immediate fire`
+          );
+          nextFireAt = now; // fire on the very next tick
+        } else {
+          const futureFireAt = advanceNextFireAtToFuture(def, nextFireAt, now);
+          if (isNaN(futureFireAt)) {
+            this.logger(
+              `[cron-scheduler] WARNING: cannot advance schedule "${def.schedule}" for cron "${def.name}" - skipping`
+            );
+            continue;
+          }
+          this.logger(
+            `[cron-scheduler] skip stale missed window for "${def.name}" at ${new Date(nextFireAt).toISOString()} - next future slot ${new Date(futureFireAt).toISOString()}`
+          );
+          nextFireAt = futureFireAt;
+        }
       }
 
       nextScheduled.set(def.name, { definition: def, nextFireAt, changeKey: key });
