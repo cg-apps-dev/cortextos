@@ -30,6 +30,7 @@ Maintained by the-sop-keeper. Changes land via a local branch reviewed by the-or
 | [meta-compliance-agent/](meta-compliance-agent/) | 3 | Scan-and-verdict process, M-code rules ownership, LP/advertorial review (agent files live in the brain; process documented here) |
 | [the-axon-agent/](the-axon-agent/) | 2 | Axon / AppLovin intake (all-boards creative detection -> Axon Ads Upload Sheet, fork-invert of the Meta engine) + phase-1 creative_set-grain analytics feed; phase-2 NC attribution staged behind a reconciliation gate |
 | [the-production-house/](the-production-house/) | stub | Creative-asset production engine (Higgsfield Soul personas, image/video/VO from briefs, asset-only mandate). Coverage stub: settled core noted, process playbooks deferred until asset-landing conventions lock |
+| [research-agent/](research-agent/) | stub | Deep-research specialist (competitor/market/product intel as cited documents to the shared KB, on-demand only, KB-first). Coverage stub: onboarding-settled operating model noted, process playbook deferred until the first research document proves the workflow stable |
 | [fleet/](fleet/) | 3 + rules | Cross-agent processes owned by no single agent: the zero-model launchd monitor layer + the RTK post-bounce engagement sweep (manual hook-verification method). Also holds [fleet/standing-rules.md](fleet/standing-rules.md), the home for cross-agent standing rules |
 
 The playbook system now covers the full active fleet.
