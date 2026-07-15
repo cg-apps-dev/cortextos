@@ -16,31 +16,22 @@ CASES = [
     ("Lab-tested for purity.",             "UNCLEAR"),
     ("Certificate of analysis on file.",   "UNCLEAR"),
     ("Farm-direct quality.",               "UNCLEAR"),
-    # eligible-states is creative=hard_fail, so it is not masked by the unclear de-code span.
-    ("Available where it's legal.",        "FAIL"),
-    ("Ships to legal states only.",        "FAIL"),
-    ("We ship where legal.",               "FAIL"),
-    ("Ships to eligible states.",          "FAIL"),
-    # standalone hard legality (outside any de-code span) -> FAIL (survives the mask)
-    ("100% legal. Premium quality.",       "FAIL"),
-    ("Federally legal product.",           "FAIL"),
-    ("Agriculture Act compliant.",         "FAIL"),
-    # hard M-2 not in the de-code set -> FAIL
-    ("No chemicals, ever.",                "FAIL"),
-    # GROWN-FAMILY HARD BAN (Adam 2026-07-01, brain PR #199/#204): 2026-06-22 accepted-risk ALLOW REVERSED.
-    # All grown-provenance phrasing (family/farm/home/usa/locally/organically grown, "grown in/on/by")
-    # = HARD FAIL M-19b via banned-terms.json hard[]. NOT accepted-risk anymore.
-    ("Family-grown quality, delivered.",   "FAIL"),
+    # Single vision-source hard hits route to UNCLEAR for human review, not hard FAIL.
+    ("Available where it's legal.",        "UNCLEAR"),
+    ("Ships to legal states only.",        "UNCLEAR"),
+    ("We ship where legal.",               "UNCLEAR"),
+    ("Ships to eligible states.",          "UNCLEAR"),
+    ("100% legal. Premium quality.",       "UNCLEAR"),
+    ("Federally legal product.",           "UNCLEAR"),
+    ("Agriculture Act compliant.",         "UNCLEAR"),
+    ("No chemicals, ever.",                "UNCLEAR"),
+    ("Family-grown quality, delivered.",   "UNCLEAR"),
+    ("Pre-rolls featured in the bundle.",  "UNCLEAR"),
+    ("Outdoor-grown quality.",             "UNCLEAR"),
     # clean
     ("Real quality delivered. 20% off.",   "PASS"),
-    # §10: eligible-states verb set remains broad, but it is hard_fail and must not be masked.
-    ("Sold in legal states.",              "FAIL"),
-    # SPAN-LOCAL make-or-break (claude-dev review, 2026-06-23): a de-code span ("ships to legal
-    # states" -> UNCLEAR/masked) CO-OCCURRING with a STANDALONE hard claim ("100% legal") in ONE
-    # creative MUST still FAIL the row. The standalone legal sits OUTSIDE the masked de-code span,
-    # survives the length-preserving blank, and FAILs. If the span-mask ever went row-scoped instead
-    # of span-LOCAL, ONLY this case catches it - the de-code would wrongly suppress the standalone FAIL.
-    ("Ships to legal states. 100% legal.", "FAIL"),
+    ("Sold in legal states.",              "UNCLEAR"),
+    ("Ships to legal states. 100% legal.", "UNCLEAR"),
 ]
 
 RECORD_CASES = [
@@ -75,6 +66,66 @@ RECORD_CASES = [
         "vision_text2": "",
         "ocr_text": "",
         "vo_text": "Federally compliant flower.",
+    }, "FAIL"),
+    ("IMG_697 pre-roll vision hallucination", {
+        "vision_text": "A bundle of pre-rolls appears before the offer.",
+        "vision_text2": "",
+        "ocr_text": "",
+        "vo_text": "",
+    }, "UNCLEAR"),
+    ("same-source repeated hard term does not corroborate", {
+        "vision_text": "Pre-rolls, pre-rolls, pre-rolls.",
+        "vision_text2": "",
+        "ocr_text": "",
+        "vo_text": "",
+    }, "UNCLEAR"),
+    ("two vision passes count as independent sources", {
+        "vision_text": "A bundle of pre-rolls appears before the offer.",
+        "vision_text2": "Pre-roll bundle shown on the table.",
+        "ocr_text": "",
+        "vo_text": "",
+    }, "FAIL"),
+    ("corroborated flower stays hard fail", {
+        "vision_text": "Large flower headline.",
+        "vision_text2": "",
+        "ocr_text": "FLOWER",
+        "vo_text": "",
+    }, "FAIL"),
+    ("exactly two independent sources stay hard fail", {
+        "vision_text": "Flower appears in the headline.",
+        "vision_text2": "",
+        "ocr_text": "FLOWER",
+        "vo_text": "",
+    }, "FAIL"),
+    ("OCR-only hard term is confirmable", {
+        "vision_text": "",
+        "vision_text2": "",
+        "ocr_text": "FLOWER",
+        "vo_text": "",
+    }, "FAIL"),
+    ("outdoor-grown vision-only provenance", {
+        "vision_text": "Outdoor-grown quality.",
+        "vision_text2": "",
+        "ocr_text": "",
+        "vo_text": "",
+    }, "UNCLEAR"),
+    ("outdoor-grown OCR corroborated provenance", {
+        "vision_text": "Outdoor-grown quality.",
+        "vision_text2": "",
+        "ocr_text": "Outdoor-grown quality.",
+        "vo_text": "",
+    }, "FAIL"),
+    ("OCR hard legality still fails", {
+        "vision_text": "",
+        "vision_text2": "",
+        "ocr_text": "100% legal. No chemicals, ever. Agriculture Act compliant.",
+        "vo_text": "",
+    }, "FAIL"),
+    ("span-local OCR hard claim still fails", {
+        "vision_text": "",
+        "vision_text2": "",
+        "ocr_text": "Ships to legal states. 100% legal.",
+        "vo_text": "",
     }, "FAIL"),
 ]
 

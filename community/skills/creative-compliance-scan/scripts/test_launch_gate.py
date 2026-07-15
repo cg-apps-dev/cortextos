@@ -127,6 +127,13 @@ def test_unclear_blocks_review():
         surface="creative",
         route_has="mc/Adam review",
     )
+    assert_single(
+        "single fixed unclear is held",
+        "UNCLEAR - single vision product term - scanned 2026-07-13 (frames+VO)",
+        "BLOCK",
+        route_has="mc/Adam review",
+        reason_has="creative UNCLEAR",
+    )
     assert_gate(
         "copy unclear",
         CREATIVE_PASS,

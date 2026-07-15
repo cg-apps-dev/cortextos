@@ -4,10 +4,10 @@ v2.1 fixes three audited defects of v2:
  (1) DIGIT FALSE-PASS: v2 leet-normalized (0->o,4->a,...) BEFORE matching, corrupting every
      digit pattern ("420"->"a2o", "60,000+ customers"->"6o,ooo+ customers"). v2.1 matches
      digit-bearing patterns on RAW lowered text; leet stays for alpha-only de-obfuscation.
- (2) FLOWER FALSE-FAIL: v2 FAILed on product words leaked from vision DESCRIPTIONS (category
-     word "flower" on clean offer cards, rows 786-793). v2.1 requires CORROBORATION for
-     single-token product bans: hit must appear in >=2 independent sources (vision pass 1,
-     vision pass 2, OCR, VO transcript) to FAIL; single-source hit -> UNCLEAR (human eye), never FAIL.
+ (2) VISION-ONLY FALSE-FAIL: v2 FAILed on product words leaked from vision DESCRIPTIONS
+     (category word "flower" on clean offer cards, rows 786-793; later "pre-roll" on IMG_697).
+     v2.1 requires CORROBORATION for hard creative hits sourced only from a single vision pass:
+     OCR/VO or >=2 independent sources FAIL; single vision-only hit -> UNCLEAR (human eye), never FAIL.
      Extraction prompts must demand VERBATIM on-image text only - a category word in a
      description is the scanner talking, not the ad.
  (3) DELIVERY-TIME OVER-BLOCK: plain shipping timeframes are NOT banned (brain rules.md M-3
@@ -290,39 +290,54 @@ def verdict_for(rec):
 
     fails=[]; unclears=[]; vision_adjudicate=[]
 
-    # corroboration count per single-token product ban across independent sources
-    def src_count(word):
-        n=0
-        for s in sources.values():
-            if s and re.search(r'\b'+re.escape(word)+r'\b', leet_norm(s)): n+=1
-        return n
+    masked_sources_raw = {k: flat(raw_norm(DECODE_CREATIVE_RE.sub(_blank, v))) for k, v in sources.items()}
+    masked_sources_leet = {k: flat(DECODE_CREATIVE_RE.sub(_blank, leet_norm(v))) for k, v in sources.items()}
 
-    seen=set()
-    for label, val in find_all(union_leet_l, HARD_ALPHA):
-        base = re.sub(r'[^a-z]','',val.split()[0]) if val else ''
-        tok = val.strip().lower()
-        if tok in SINGLE_TOKEN_BANS or base in SINGLE_TOKEN_BANS:
-            w = tok if tok in SINGLE_TOKEN_BANS else base
-            if src_count(w) >= 2:
-                fails.append(f"{label}:'{val}'")
-            else:
-                unclears.append(f"{label}(single-source, uncorroborated):'{val}' - verify on image")
-            seen.add(w)
+    def hit_sources(rx, source_texts):
+        return [name for name, text in source_texts.items() if text and rx.search(text)]
+
+    def single_vision_only(names):
+        return len(names) == 1 and names[0] in ("vision", "vision2")
+
+    def add_hard_hit(label, val, names):
+        if single_vision_only(names):
+            unclears.append(f"{label}(single-vision, uncorroborated):'{val}' - verify on image")
         else:
             fails.append(f"{label}:'{val}'")
-    for label, val in find_all(union_raw_l, HARD_DIGIT):
-        if label=="M-2 delivery-time-guarantee" and re.fullmatch(r'(24|48|72)[- ]?hours?', val.strip()):
-            # bare hours number: HARD only with a ship/deliver word in the text (else it could be product info)
-            if not SHIPCTX.search(union_raw_l):
-                unclears.append(f"{label}(no ship context):'{val}' - verify"); continue
-        fails.append(f"{label}:'{val}'")
+
+    seen=set()
+    for label, rx in HARD_ALPHA:
+        for m in rx.finditer(union_leet_l):
+            val = m.group(0)
+            names = hit_sources(rx, masked_sources_leet)
+            add_hard_hit(label, val, names)
+            base = re.sub(r'[^a-z]','',val.split()[0]) if val else ''
+            tok = val.strip().lower()
+            if tok in SINGLE_TOKEN_BANS or base in SINGLE_TOKEN_BANS:
+                w = tok if tok in SINGLE_TOKEN_BANS else base
+                seen.add(w)
+    for label, rx in HARD_DIGIT:
+        for m in rx.finditer(union_raw_l):
+            val = m.group(0)
+            names = hit_sources(rx, masked_sources_raw)
+            if single_vision_only(names):
+                unclears.append(f"{label}(single-vision, uncorroborated):'{val}' - verify on image")
+                continue
+            if label=="M-2 delivery-time-guarantee" and re.fullmatch(r'(24|48|72)[- ]?hours?', val.strip()):
+                # bare hours number: HARD only with a ship/deliver word in the text (else it could be product info)
+                if not SHIPCTX.search(union_raw_l):
+                    unclears.append(f"{label}(no ship context):'{val}' - verify"); continue
+            fails.append(f"{label}:'{val}'")
 
     # brain-derived hard[] union pass (raw lowered text; dedup vs already-failed values)
     already = {f.split(":'",1)[1].rstrip("'") for f in fails if ":'" in f}
-    for label, val in find_all(union_raw_l, BRAIN_HARD):
-        if val in already: continue
-        already.add(val)
-        fails.append(f"{label}:'{val}'")
+    for label, rx in BRAIN_HARD:
+        for m in rx.finditer(union_raw_l):
+            val = m.group(0)
+            if val in already: continue
+            already.add(val)
+            names = hit_sources(rx, masked_sources_raw)
+            add_hard_hit(label, val, names)
 
     # Strain lexicon floor/live union. A strain name alone is ambiguous because some names can be
     # ordinary product/flavor language. A strain plus any other cannabis/M-2 signal in the same record
@@ -353,8 +368,12 @@ def verdict_for(rec):
                 unclears.append(f"{SINGLE_TOKEN_LABEL.get(w,'M-2')}(despaced,single-source):'{w}' - verify on image")
 
     if product == "gummies":
-        for label, val in find_all(union_leet_l, GUM_HARD_ALPHA): fails.append(f"{label}:'{val}'")
-        for label, val in find_all(union_raw_l,  GUM_HARD_DIGIT): fails.append(f"{label}:'{val}'")
+        for label, rx in GUM_HARD_ALPHA:
+            for m in rx.finditer(union_leet_l):
+                add_hard_hit(label, m.group(0), hit_sources(rx, masked_sources_leet))
+        for label, rx in GUM_HARD_DIGIT:
+            for m in rx.finditer(union_raw_l):
+                add_hard_hit(label, m.group(0), hit_sources(rx, masked_sources_raw))
         for label, val in find_all(union_leet_l, GUM_AMBIG_ALPHA): unclears.append(f"{label}:'{val}'")
 
     for label, val in find_all(union_leet_l, AMBIG_ALPHA): unclears.append(f"{label}:'{val}'")
