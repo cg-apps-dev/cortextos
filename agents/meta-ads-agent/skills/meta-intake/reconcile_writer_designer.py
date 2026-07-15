@@ -9,13 +9,21 @@ conventions so convention-covered cards never need a human:
 
     MB_CG_IMG_*  ->  Writer = MB (Mason Blair),  Designer = TS (Tatsiana)
 
+The MB_CG_IMG convention keys off BOTH the resolved card name AND the sheet's
+Code/Variant cell (Code like `IMG_565_V1` == the MB_CG_IMG series) so it still
+applies when a row has no ClickUp Card ID (manual / card-less MB_CG_IMG rows).
+
+Columns are HEADER-RESOLVED per tab at runtime (never hardcoded letters) - the
+sheet's column layout drifts (the Flower tabs shifted +2 on ~2026-07; the
+hardcoded-letter version silently misread and produced false residuals).
+
 Deterministic + safe-direction: it only ever FILLS a blank cell (never overwrites
 an existing initial), and only writes a value the resolver/convention actually
 produced. Dry-run by default; pass --write to apply.
 
 Usage:
     python3 reconcile_writer_designer.py [--write] [--since YYYY-MM-DD]
-        --since limits to rows whose 'Added to Sheet' (col D) is on/after the date
+        --since limits to rows whose 'Added to Sheet' is on/after the date
         (default: no date filter - sweeps the whole active tab).
 
 Reads the same deterministic resolver fields as resolve_cards.py (Brief Writer /
@@ -27,18 +35,19 @@ SHEET = "1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME"
 ACCT = "adam@cleangreen.com"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# Per-tab column letters (header-verified 2026-06-28). (added, id/code, writer, designer, cardid)
+# The 4 active tabs. Per-tab the "key" header is the Code (images) or Variant # (videos).
 TABS = {
-    "IMAGES (Flower)":        {"added":"D","writer":"R","designer":"S","card":"T","key":"P"},
-    "VIDEOS (Flower)":        {"added":"D","writer":"T","designer":"U","card":"V","key":"P"},
-    "IMAGES (Sleep Gummies)": {"added":"D","writer":"J","designer":"K","card":"L","key":"H"},
-    "VIDEOS (Sleep Gummies)": {"added":"D","writer":"L","designer":"M","card":"N","key":"H"},
+    "IMAGES (Flower)":        "Code",
+    "VIDEOS (Flower)":        "Variant #",
+    "IMAGES (Sleep Gummies)": "Code",
+    "VIDEOS (Sleep Gummies)": "Variant #",
 }
 
-def col_to_idx(letter):
-    i = 0
-    for ch in letter: i = i*26 + (ord(ch)-64)
-    return i-1
+def col_letter(i):
+    s = ""; i += 1
+    while i:
+        i, r = divmod(i - 1, 26); s = chr(65 + r) + s
+    return s
 
 def gog_get(rng):
     out = subprocess.run(["gog","sheets","get",SHEET,rng,"-a",ACCT,"-j","--results-only"],
@@ -55,6 +64,12 @@ def gog_batch(data):
         raise RuntimeError(f"gog batch-update failed: {out.stderr[:300]}")
     return len(data)
 
+def header_map(tab):
+    """Resolve {header_name_lower: index} from the tab's row 1 (drift-proof)."""
+    row = gog_get(f"{tab}!1:1")
+    hdr = row[0] if row else []
+    return {(h or "").replace("\n", " ").strip().lower(): i for i, h in enumerate(hdr)}
+
 def resolve_cards(card_ids):
     """Call resolve_cards.py -> {card_id: {'writer','designer','name'}}."""
     if not card_ids: return {}
@@ -67,11 +82,21 @@ def resolve_cards(card_ids):
         except Exception: pass
     return res
 
-def conv(name):
-    """Standing conventions -> (writer, designer) defaults, '' where none."""
-    if (name or "").startswith("MB_CG_IMG"):
-        return "MB","TS"
-    return "",""
+def conv(name, code):
+    """Standing conventions -> (writer, designer) defaults, '' where none.
+    Keys off the card NAME or the sheet CODE. Designer '=WRITER' is a sentinel the
+    caller resolves to the row's writer value."""
+    n = (name or "")
+    if n.startswith("MB_CG_IMG") or re.match(r"(MB_CG_)?IMG_\d+", code or ""):
+        return "MB", "TS"
+    # Self-finished dance / Gridbank short-form (team-lead 2026-07-13): editor-less
+    # BY DESIGN (no editor step is the whole point of the format), so Designer = Writer
+    # (whoever wrote it, not hardcoded Sam). Auto-fills the missing-designer default.
+    # Exception is automatic: if a real Designer/Editor is ever set (card or sheet), it
+    # wins by precedence (card/sheet designer is checked BEFORE this convention default).
+    if re.search(r"short dancing ad|dancing ad|gridbank", n, re.I):
+        return "", "=WRITER"
+    return "", ""
 
 def cid_of(url):
     m = re.search(r"/t/([A-Za-z0-9]+)", url) or re.search(r"([A-Za-z0-9]{6,})$", url or "")
@@ -81,52 +106,64 @@ def main():
     write = "--write" in sys.argv
     since = None
     if "--since" in sys.argv:
-        since = sys.argv[sys.argv.index("--since")+1]
+        since = sys.argv[sys.argv.index("--since") + 1]
 
     all_writes, residual = [], []
-    for tab, c in TABS.items():
-        lo = min(col_to_idx(c[k]) for k in ("added","writer","designer","card","key"))
-        hi = max(col_to_idx(c[k]) for k in ("added","writer","designer","card","key"))
-        loL = chr(65+lo) if lo < 26 else None  # all our cols are A-Z single-letter
-        rng = f"{tab}!{chr(65+lo)}2:{chr(65+hi)}"
-        rows = gog_get(rng)
-        ai, wi, di, ci = (col_to_idx(c["added"])-lo, col_to_idx(c["writer"])-lo,
-                          col_to_idx(c["designer"])-lo, col_to_idx(c["card"])-lo)
-        # collect candidate rows (blank W or D, has card)
+    for tab, keyname in TABS.items():
+        H = header_map(tab)
+        need = {"added": "added to sheet", "writer": "writer", "designer": "designer",
+                "card": "clickup card id", "key": keyname.lower()}
+        idx = {}
+        missing_hdr = []
+        for k, name in need.items():
+            if name in H: idx[k] = H[name]
+            else: missing_hdr.append(name)
+        if missing_hdr:
+            print(f"  WARN {tab}: headers not found {missing_hdr} - skipping tab")
+            continue
+        lo, hi = min(idx.values()), max(idx.values())
+        rows = gog_get(f"{tab}!{col_letter(lo)}2:{col_letter(hi)}")
+        off = {k: v - lo for k, v in idx.items()}
+        g = lambda r, i: (r[i].strip() if i < len(r) and r[i] else "")
         cand = []
-        for idx, r in enumerate(rows):
-            g = lambda i: (r[i].strip() if i < len(r) and r[i] else "")
-            added, w, d, card = g(ai), g(wi), g(di), g(ci)
+        for ridx, r in enumerate(rows):
+            added, w, d, card, code = (g(r, off["added"]), g(r, off["writer"]), g(r, off["designer"]),
+                                       g(r, off["card"]), g(r, off["key"]))
             if since and (not added or added[:10] < since): continue
-            if (w and d) or not card: continue
-            cand.append({"row":idx+2,"w":w,"d":d,"card":cid_of(card)})
+            if w and d: continue          # already complete
+            cand.append({"row": ridx + 2, "w": w, "d": d, "card": cid_of(card), "code": code})
         res = resolve_cards(sorted({x["card"] for x in cand if x["card"]}))
+        wcol, dcol = col_letter(idx["writer"]), col_letter(idx["designer"])
         for x in cand:
             rv = res.get(x["card"], {})
-            cw, cd = conv(rv.get("name",""))
-            new_w = x["w"] or rv.get("writer","") or cw
-            new_d = x["d"] or rv.get("designer","") or cd
+            cw, cd = conv(rv.get("name", ""), x["code"])
+            new_w = x["w"] or rv.get("writer", "") or (cw if cw != "=WRITER" else "")
+            if cd == "=WRITER":            # self-finished dance: designer = the row's writer
+                cd = new_w
+            new_d = x["d"] or rv.get("designer", "") or cd
             if not x["w"] and new_w:
-                all_writes.append({"range":f"{tab}!{c['writer']}{x['row']}","values":[[new_w]]})
+                all_writes.append({"range": f"{tab}!{wcol}{x['row']}", "values": [[new_w]]})
             if not x["d"] and new_d:
-                all_writes.append({"range":f"{tab}!{c['designer']}{x['row']}","values":[[new_d]]})
+                all_writes.append({"range": f"{tab}!{dcol}{x['row']}", "values": [[new_d]]})
             if not new_w or not new_d:
-                residual.append({"tab":tab,"row":x["row"],"card":x["card"],
-                                 "need_w":not new_w,"need_d":not new_d,"name":rv.get("name","")})
+                residual.append({"tab": tab, "row": x["row"], "card": x["card"],
+                                 "need_w": not new_w, "need_d": not new_d,
+                                 "name": rv.get("name", "") or x["code"]})
 
-    print(f"{'WOULD FILL' if not write else 'FILLED'}: {len(all_writes)} cells")
+    print(f"{'FILLED' if write else 'WOULD FILL'}: {len(all_writes)} cells")
     for w in all_writes: print("  ", w["range"], "=", w["values"][0][0])
     if write and all_writes:
         n = gog_batch(all_writes); print(f"applied {n} cells")
     print(f"RESIDUAL (still blank after resolve+conventions): {len(residual)} rows")
     by = {}
     for r in residual:
-        k = r["card"]; by.setdefault(k,{"name":r["name"],"tab":r["tab"],"rows":[],"need_w":False,"need_d":False})
-        by[k]["rows"].append(r["row"]); by[k]["need_w"]|=r["need_w"]; by[k]["need_d"]|=r["need_d"]
-    for cid,g in sorted(by.items(), key=lambda x:x[1]["tab"]):
-        miss = "W+D" if g["need_w"] and g["need_d"] else ("WRITER" if g["need_w"] else "DESIGNER")
-        print(f"  [{g['tab']}] rows {min(g['rows'])}-{max(g['rows'])} miss:{miss} {g['name'][:40]} t/{cid}")
-    json.dump(residual, open("/tmp/reconcile_wd_residual.json","w"))
+        k = r["card"] or f"{r['tab']}:{r['name']}"
+        by.setdefault(k, {"name": r["name"], "tab": r["tab"], "rows": [], "need_w": False, "need_d": False})
+        by[k]["rows"].append(r["row"]); by[k]["need_w"] |= r["need_w"]; by[k]["need_d"] |= r["need_d"]
+    for cid, gg in sorted(by.items(), key=lambda x: x[1]["tab"]):
+        miss = "W+D" if gg["need_w"] and gg["need_d"] else ("WRITER" if gg["need_w"] else "DESIGNER")
+        print(f"  [{gg['tab']}] rows {min(gg['rows'])}-{max(gg['rows'])} miss:{miss} {gg['name'][:40]} {cid}")
+    json.dump(residual, open("/tmp/reconcile_wd_residual.json", "w"))
 
 if __name__ == "__main__":
     main()

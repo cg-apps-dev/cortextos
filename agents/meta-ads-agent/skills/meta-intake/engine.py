@@ -10,7 +10,7 @@ import resolve_cards
 SHEET_ID = "1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME"
 GOG_BIN = os.environ.get("GOG_BIN", "gog")
 GOG_ACCOUNT = os.environ.get("GOG_ACCOUNT", "adam@cleangreen.com")
-# Per-file sharing is ON BY DEFAULT — the col-A =IMAGE preview and the sheet asset
+# Per-file sharing is ON BY DEFAULT - the col-A =IMAGE preview and the sheet asset
 # links require each Drive file to be anyone-with-link readable, or the sheet renders
 # blank/access-page. Opt OUT only via an explicit off value (the Composio->gog port had
 # stubbed this to a no-op, which shipped unshared files = blank previews every run).
@@ -67,7 +67,7 @@ def _read(tab, a1):
 
 def _headers(tab):
     """Live header map name->idx (0-based). Flags duplicate headers."""
-    hdr = _read(tab, "A1:AZ1")
+    hdr = _read(tab, "A1:BZ1")  # widened from AZ (2026-07-06): the E-0828/E-0750 col insert pushed VIDEOS (Flower)'s Actor Age Bracket/Gender past AZ, making them invisible to _headers (set_actor_vision failed). BZ = 78 cols headroom.
     hdr = hdr[0] if hdr else []
     idx, dups = {}, []
     for i, h in enumerate(hdr):
@@ -250,7 +250,13 @@ def _reintake_guard(
 # ---------- IMAGE intake ----------
 # Robust: extract <n>,<v> and the ratio INDEPENDENTLY so BOTH known orderings parse
 # (prefix "1x1 - MB_CG_IMG_<n>_V<v>.jpg"  AND  suffix "MB_CG_IMG_<n>_V<v>_1x1.png"), any extension.
-IMG_NV = re.compile(r'MB_CG_IMG_(\d+)_V(\d+)', re.I)
+# Optional letters-only descriptive infix between the number and _V<v> so names like
+# MB_CG_IMG_582_news_V1_1x1 / MB_CG_IMG_584_billboard_V2_9x16 still parse to (n, v).
+# PURELY ADDITIVE: the infix group is non-greedy (zero tried first), so every name the
+# old `MB_CG_IMG_(\d+)_V(\d+)` matched still matches identically; it only rescues names
+# that previously fell to FILES_PRESENT_UNPARSEABLE. (2026-07-14: IMG_582 held off-sheet
+# purely by the `_news_` infix - Adam: never withhold a finished creative for a nit.)
+IMG_NV = re.compile(r'MB_CG_IMG_(\d+)(?:_[A-Za-z]+)*?_V(\d+)', re.I)
 IMG_RATIO = re.compile(r'(?:^|[ _\-/])(1x1|9x16)(?:[ _\-./]|$)', re.I)
 
 def intake_image_card(card_id, folder_id, tab, writer, designer, description, dry_run=True, confirm_reintake=False):
@@ -281,9 +287,9 @@ def intake_image_card(card_id, folder_id, tab, writer, designer, description, dr
         nonfolder = [f["name"] for f in files if not f.get("mimeType","").startswith("application/vnd.google-apps.folder")]
         if not nonfolder:
             return {"card": card_id, "status": "EMPTY_FOLDER",
-                    "reason": f"Drive folder {folder_id} empty — no files at all; add finished 1x1/9x16 assets or remove from Ready-to-Post."}
+                    "reason": f"Drive folder {folder_id} empty - no files at all; add finished 1x1/9x16 assets or remove from Ready-to-Post."}
         return {"card": card_id, "status": "FILES_PRESENT_UNPARSEABLE",
-                "reason": f"Drive folder {folder_id} HAS {len(nonfolder)} file(s) but NONE parse as 1x1/9x16 'MB_CG_IMG_<n>_V<v>' variants — likely a naming/rename issue, NOT empty. Needs review/rename.",
+                "reason": f"Drive folder {folder_id} HAS {len(nonfolder)} file(s) but NONE parse as 1x1/9x16 'MB_CG_IMG_<n>_V<v>' variants - likely a naming/rename issue, NOT empty. Needs review/rename.",
                 "files_present": nonfolder, "unparsed": unparsed}
     # FILE-ID DEDUP
     present = _ids_on_tab(tab, [H["1x1"], H["9x16"]])
@@ -331,14 +337,14 @@ def intake_image_card(card_id, folder_id, tab, writer, designer, description, dr
               ("%s%d" % (_col_letter(c0), start), data),
               ("%s%d" % (_col_letter(H["1x1"]), start), [[r["p1"] and f'https://drive.google.com/file/d/{r["p1"]}/view?usp=drive_link'] for r in fresh]),
               ("%s%d" % (_col_letter(H["9x16"]), start), [[f'https://drive.google.com/file/d/{r["p9"]}/view?usp=drive_link'] for r in fresh])]
-    # "Added to Sheet" intake timestamp (col B as of 2026-06-04) — set-once: engine only ever writes
+    # "Added to Sheet" intake timestamp (col B as of 2026-06-04) - set-once: engine only ever writes
     # freshly-appended rows, so this never overwrites an existing stamp. Header-resolved; skip if absent.
     if "Added to Sheet" in H:
         ts = _now_iso()
         blocks.append(("%s%d" % (_col_letter(H["Added to Sheet"]), start), [[ts] for _ in fresh]))
     # verify Code..ClickUp is contiguous (else fall back to per-cell)
     if not (H["Description"]==c0+1 and H["Writer"]==c0+2 and H["Designer"]==c0+3 and H["ClickUp Card ID"]==c0+4):
-        raise RuntimeError("Code..ClickUp not contiguous — abort, needs per-cell write")
+        raise RuntimeError("Code..ClickUp not contiguous - abort, needs per-cell write")
     _write_multi(tab, blocks)
     shared, total = _share([x for r in fresh for x in (r["p1"], r["p9"])])
     plan["shared"] = f"{shared}/{total}"
@@ -373,7 +379,7 @@ def set_actor_vision(tab, results):
     to re-run (overwrites only these two cells for the given rows)."""
     H = _headers(tab)
     for k in ("Actor Age Bracket", "Gender"):
-        if k not in H: raise RuntimeError(f"missing header '{k}' on {tab} — run the 2026-06-04 structural change first")
+        if k not in H: raise RuntimeError(f"missing header '{k}' on {tab} - run the 2026-06-04 structural change first")
     blocks = []
     for r in results:
         age = (r["age"] or "").strip()
@@ -387,13 +393,13 @@ def set_actor_vision(tab, results):
 
 # ---------- VIDEO intake (2026-06-04) ----------
 # Pod/UGC + Video-Ads video deliverables: finished assets live in a NESTED subfolder whose name
-# varies by pod ("- Finished", "- Exports", "Finished Videos - After Edit", "Finished (Upload!)"…) —
+# varies by pod ("- Finished", "- Exports", "Finished Videos - After Edit", "Finished (Upload!)"…) -
 # found fuzzily. Top-level files are raw source clips (Hook*.mov, Broll*, IMG_*) and are ignored.
 # Finished naming is consistent across pods: "UGC-<n>- V<vv> - <Actor> - Hook <h> - <ratio>.mp4"
 # (ratio = 4x5 | 9x16; trailing chars like "9x16-.mp4" and intra-folder dupes tolerated).
 # One row per (variant, hook) ad, each needing BOTH 4x5 + 9x16. Same hard gates as intake_image_card:
 # file-id dedup, anti-clobber append (key col = "Variant #"), per-file share, read-back, render-gate
-# (9x16 thumbnailLink — video poster lags async, so gate on it). col-A = =IMAGE(9x16 thumbnail).
+# (9x16 thumbnailLink - video poster lags async, so gate on it). col-A = =IMAGE(9x16 thumbnail).
 # AI-VO convention (2026-06-27) has NO <Actor> token ("AI #<n> - V<vv> - Hook <h> - <ratio>(_<dupe>)?.mp4"):
 # the <Actor> group is OPTIONAL, guarded by (?!Hook\b) so it cannot swallow the Hook token; when absent
 # the parse defaults actor="AI" (actor-vision age bracket = NO-ACTOR is set later by the agent vision pass).
@@ -468,7 +474,7 @@ def intake_video_card(card_id, folder_id, tab, writer, designer, video_script=""
         if k not in H: raise RuntimeError(f"missing header '{k}' on {tab}")
     fin_id, fin_name = _find_finished_folder(folder_id)
     if not fin_id:
-        fin_id, fin_name = folder_id, "(root)"   # no finished subfolder — try the root itself
+        fin_id, fin_name = folder_id, "(root)"   # no finished subfolder - try the root itself
     # RECURSE: finished exports are frequently in per-actor subfolders (Thomas/Mia/Sofia/Helen…)
     # INSIDE the finished folder. A flat list of the finished folder sees only those subfolders (no
     # files) and would false-flag EMPTY. Collect files from the finished folder AND nested subfolders.
@@ -508,7 +514,7 @@ def intake_video_card(card_id, folder_id, tab, writer, designer, video_script=""
         nonfolder = [f["name"] for f in files if not f.get("mimeType", "").startswith("application/vnd.google-apps.folder")]
         if not nonfolder:
             return {"card": card_id, "status": "EMPTY_FOLDER",
-                    "reason": f"finished folder '{fin_name}' empty — add finished 4x5/9x16 assets or remove from Ready-to-Post."}
+                    "reason": f"finished folder '{fin_name}' empty - add finished 4x5/9x16 assets or remove from Ready-to-Post."}
         return {"card": card_id, "status": "FILES_PRESENT_UNPARSEABLE",
                 "reason": f"finished folder '{fin_name}' HAS files but NONE parse as 'V<vv> - <Actor> - Hook <h> - <ratio>' - naming/rename issue, needs review.",
                 "finished_folder": fin_name, "files_present": nonfolder, "unparsed": unparsed}
@@ -545,7 +551,7 @@ def intake_video_card(card_id, folder_id, tab, writer, designer, video_script=""
     if dry_run:
         return plan
     # BUILD cell blocks. col-A preview = 9x16 thumbnail (video). Per-column writes (VIDEOS layout is
-    # NOT a contiguous block like images — write each resolved col separately to avoid clobbering gaps).
+    # NOT a contiguous block like images - write each resolved col separately to avoid clobbering gaps).
     clickurl = f"https://app.clickup.com/t/{card_id}"
     def colvals(name, vals):
         return ("%s%d" % (_col_letter(H[name]), start), [[v] for v in vals])
@@ -576,7 +582,7 @@ def intake_video_card(card_id, folder_id, tab, writer, designer, video_script=""
         rb.append({"row": start + i, "variant_ok": bool(g(H["Variant #"])), "4x5": bool(g(H["4x5"])), "9x16": bool(g(H["9x16"]))})
     plan["readback"] = rb
     plan["all_ok"] = all(x["variant_ok"] and x["4x5"] and x["9x16"] for x in rb)
-    # RENDER-GATE on the 9x16 (video poster builds async on Drive — gate on thumbnailLink present)
+    # RENDER-GATE on the 9x16 (video poster builds async on Drive - gate on thumbnailLink present)
     th = _thumbs([r["p9"] for r in fresh])
     plan["rendered"] = (sum(th) == len(th))
     plan["render_detail"] = f"{sum(th)}/{len(th)} 9x16 thumbnailLink present"

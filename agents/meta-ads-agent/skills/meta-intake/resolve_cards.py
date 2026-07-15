@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Deterministic ClickUp card-metadata resolver for the Meta Ads runner.
 # Runs in the AGENT's OWN session (has REST token + filesystem). ALWAYS does GET /task/{id}
-# (full, includes custom_fields) — never relies on the list/filter payload depth.
+# (full, includes custom_fields) - never relies on the list/filter payload depth.
 # Usage: python3 resolve_cards.py <card_id> [<card_id> ...]   -> prints one JSON object per line.
 import os, sys, re, json, urllib.request
 
@@ -26,6 +26,60 @@ DESIGNER_FIELD_IDS = {
 }
 WRITER_NAME_SUBSTRS = ("Brief Writer",)
 DESIGNER_NAME_SUBSTRS = ("Designer", "Editor")
+
+# Customer Avatar (Adam 2026-07-06): pull the avatar from the card's "Customer Avatar" drop_down
+# custom field and map its option name to the EXACT sheet-dropdown value. The card labels differ
+# from the sheet's validation strings, so this is an explicit map (never a blind prefix-swap):
+# strip "Flower: " -> "FCA=", "Gummies > Deep Sleep: " -> "DSCA=", with the semantic normalizations
+# (Shop Switcher -> The Shop Switcher; Skeptic/First-Time -> The Skeptic 1st Time Online Buyer).
+# "Multiple Avatars" is intentionally None -> ambiguous, do NOT auto-write (flag/leave for a human).
+AVATAR_FIELD_NAME = "Customer Avatar"
+AVATAR_MAP = {
+    "Flower: Shop Switcher": "FCA=The Shop Switcher",
+    "Flower: Skeptic / First-Time Online Buyer": "FCA=The Skeptic 1st Time Online Buyer",
+    "Flower: Skeptic / First Time Online Buyer": "FCA=The Skeptic 1st Time Online Buyer",
+    "Flower: Daily Unwind": "FCA=Daily Unwind",
+    "Flower: Pain Relief": "FCA=Pain Relief",
+    "Flower: Better Sleep": "FCA=Better Sleep",
+    "Flower: Multiple Avatars": None,
+    "Gummies > Deep Sleep: Tried Everything": "DSCA=Tried Everything",
+    "Gummies > Deep Sleep: Racing Mind": "DSCA=Racing Mind",
+    "Gummies > Deep Sleep: Wellness Stacker": "DSCA=Wellness Stacker",
+    "Gummies > Deep Sleep: Better Mornings": "DSCA=Better Mornings",
+    "Gummies > Deep Sleep: Multiple Avatars": None,
+}
+
+def resolve_avatar(cf_list):
+    """Return (sheet_avatar(s)_or_'', raw_card_label(s)_or_''). Reads the '🐵 Customer Avatars'
+    field, which is a LABELS (multi-select) type - NOT a single drop_down (fixed 2026-07-14: the
+    old code matched name=='Customer Avatar' + type=='drop_down' and silently missed the real
+    'Customer Avatars' labels field, returning blank for cards that HAD avatars set).
+
+    MULTIPLE avatars are ALLOWED (Adam 2026-07-14: "it is okay to set multiple customer avatars on
+    the card and to have multiple on the sheet"). Resolve EVERY selected label via AVATAR_MAP and
+    join the mapped sheet values with ', '. Emoji-agnostic match on the 'Customer Avatar' name
+    substring. '' if unset. A label that only maps to None (e.g. '... Multiple Avatars') is skipped;
+    if nothing maps, returns '' (row stays flagged for a human). NEVER infers from the card name."""
+    for cf in cf_list:
+        if "Customer Avatar" not in cf.get("name", "") or cf.get("type") != "labels":
+            continue
+        v = cf.get("value")
+        if not v:
+            continue
+        ids = v if isinstance(v, list) else [v]
+        opts = {o.get("id"): (o.get("label") or o.get("name")) for o in cf.get("type_config", {}).get("options", [])}
+        raws, mapped = [], []
+        for lid in ids:
+            label = opts.get(lid)
+            if not label:
+                continue
+            raws.append(label.strip())
+            m = AVATAR_MAP.get(label.strip(), AVATAR_MAP.get(label))
+            if m:
+                mapped.append(m)
+        mapped = list(dict.fromkeys(mapped))  # dedup, preserve order
+        return (", ".join(mapped), ", ".join(raws))
+    return ("", "")
 
 def pick_initials(cf_list, ids, name_substrs):
     """Resolve a user-field's initials: by known field id first, then by an
@@ -75,15 +129,17 @@ def resolve(cid):
     pl = (m.group(1).strip() if m else "").lower()
     nm = name.lower()
     # Pod UGC cards carry the product in the NAME (e.g. "Shelby Sims 2 - Sleep Gummies - 4-15-26"),
-    # not a PRODUCT: line — so detect gummies/flower from the name too (2026-06-04 Pod-board fix).
+    # not a PRODUCT: line - so detect gummies/flower from the name too (2026-06-04 Pod-board fix).
     sleep = any(k in pl for k in ("gumm", "sleep", "seep")) or any(k in nm for k in ("deepsleep", "deep sleep", "gummies", "gummy"))
     flower = "flower" in pl or "flower" in nm
     product = "Sleep Gummies" if sleep and not flower else ("Flower" if flower and not sleep else "AMBIGUOUS")
     # Description = card name minus 'MB_CG_IMG_<n> - ' prefix
     desc = re.sub(r"^MB_CG_IMG_\d+\s*-\s*", "", name).strip()
     if desc == name: desc = ""  # bare name -> blank
+    avatar, avatar_raw = resolve_avatar(cf_list)
     return {"card": cid, "name": name, "product": product, "writer": w, "designer": d,
-            "folder": folder, "description": desc, "status": t.get("status", {}).get("status")}
+            "folder": folder, "description": desc, "avatar": avatar, "avatar_raw": avatar_raw,
+            "status": t.get("status", {}).get("status")}
 
 def get_list_statuses(list_id):
     req = urllib.request.Request(f"https://api.clickup.com/api/v2/list/{list_id}", headers=H)
