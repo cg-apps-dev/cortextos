@@ -77,7 +77,10 @@ export function classifySilentDeath(stdoutTail: string): SilentDeathClassificati
   const recent = clean.slice(-80);
   const findLine = (re: RegExp) => recent.find(line => re.test(line)) ?? '';
 
-  const auth = findLine(/Please run \/login|Invalid API key|\b401\b/i);
+  // A bare "\b401\b" is NOT an auth marker: stripped TUI spinner frames concatenate elapsed/token
+  // counters into free digits, so healthy agents matched "401" constantly (2026-07-15 alert storm,
+  // 511 false FLEET AUTH ALERTs). Require 401 to sit in an error-shaped line instead.
+  const auth = findLine(/Please run \/login|Invalid API key|Invalid authentication|(?:API Error|Request rejected)\S*.{0,80}\b401\b|\b401\b.{0,80}(?:unauthorized|invalid|authentication)/i);
   if (auth) return { className: 'auth-dead', snippet: truncateSnippet(auth) };
 
   const throttled = findLine(/temporarily limiting requests|Rate limited|\b429\b/i);
@@ -170,6 +173,9 @@ export class FastChecker {
   // Dedup key for the informational tier-throttle LOG-ONLY trace (no Telegram). Keyed on the
   // 429 snippet WITHOUT usage.generatedAt so the dashboard record does not churn every refresh.
   private lastTierThrottleInfoKey: string | null = null;
+  // Dedup for the informational auth-marker LOG-ONLY trace (fresh liveness, no Telegram).
+  // Keyed on agent name - the snippet is volatile TUI frame junk that churns every read.
+  private lastAuthDeadInfoKey: string | null = null;
   private authDeadIncident: AuthDeadIncident | null = null;
 
   private static readonly SILENT_DEATH_STALE_MS = 10 * 60_000;
@@ -1236,7 +1242,9 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       if (authIncident.readCount >= FastChecker.AUTH_DEAD_DEBOUNCE_READS && (!livenessFresh || !this.hasAuthDeadRecovery(data))) {
         await this.maybeSendFleetHealthAlert({
           className: 'auth-dead',
-          dedupKey: `auth-dead:${authIncident.snippet}`,
+          // Stable per-agent dedup key: the old key embedded the volatile TUI snippet, so the
+          // 60-min cooldown never matched and alerts fired every fast-loop cycle (~1/s bursts).
+          dedupKey: `auth-dead:${this.agent.name}`,
           severity: 'error',
           title: 'FLEET AUTH ALERT',
           lines: [
@@ -1351,16 +1359,39 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
 
     const context = this.contextProgress(data);
     if (classification.className === 'auth-dead') {
+      // Recovery must be evaluated even while the marker KEEPS matching. An agent discussing an
+      // auth incident (or replaying scrollback) re-matches every read, and the old code only
+      // checked recovery once the marker disappeared - so a healthy, token-producing agent could
+      // never clear the incident and alerted forever (2026-07-15 storm). Same-session token
+      // progress while the marker persists = the agent is generating = mention, not condition.
+      if (livenessFresh && this.hasAuthDeadRecovery(data)) {
+        if (this.lastAuthDeadInfoKey !== this.agent.name) {
+          this.lastAuthDeadInfoKey = this.agent.name;
+          this.logFleetHealthEvent('fleet_health_silent_death_alert', 'info', {
+            agent: this.agent.name,
+            class: 'auth-dead',
+            route: 'informational',
+            snippet: classification.snippet,
+          });
+        }
+        this.authDeadIncident = null;
+        return null;
+      }
       this.authDeadIncident = {
         readCount: (this.authDeadIncident?.readCount ?? 0) + 1,
         snippet: classification.snippet,
         sessionId: context.sessionId,
-        tokenTotal: context.tokenTotal,
+        tokenTotal: this.authDeadIncident?.tokenTotal ?? context.tokenTotal,
       };
       return this.authDeadIncident;
     }
 
-    if (this.authDeadIncident === null) return null;
+    if (this.authDeadIncident === null) {
+      // Marker gone and no incident: episode fully over - allow the next episode's informational
+      // trace to log again.
+      this.lastAuthDeadInfoKey = null;
+      return null;
+    }
     if (livenessFresh && this.hasAuthDeadRecovery(data)) {
       this.authDeadIncident = null;
       return null;

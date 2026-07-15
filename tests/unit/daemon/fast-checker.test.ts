@@ -507,7 +507,9 @@ describe('FastChecker', () => {
       const checker = new FastChecker(createMockAgent('auth-agent'), paths, '/tmp/framework', { telegramApi: api });
       writeContextStatus('2026-07-12T21:00:00.000Z');
       writeCronAttempt('2026-07-12T21:20:00.000Z');
-      writeStdout('401 sk-ant-oat01-' + 'A'.repeat(95) + '\nPlease run /login\n');
+      // Token must sit on an error-shaped line: a bare "401 <token>" no longer classifies
+      // (bare \b401\b matched TUI spinner counters on healthy agents - 2026-07-15 alert storm).
+      writeStdout('401 Invalid authentication sk-ant-oat01-' + 'A'.repeat(95) + '\nPlease run /login\n');
 
       await runPollCycle(checker);
       expect(api.sendMessage).not.toHaveBeenCalled();
