@@ -79,12 +79,15 @@ RECORD_CASES = [
         "ocr_text": "",
         "vo_text": "",
     }, "UNCLEAR"),
-    ("two vision passes count as independent sources", {
+    # THE ORIGIN CASE (real IMG_697): the "pre-rolls" hallucination landed in BOTH vision passes. Two
+    # vision passes are the SAME modality (correlated re-reads) = NOT independent corroboration -> UNCLEAR.
+    # The earlier name-count fix wrongly FAILed this; caught only by the real-record post-land regression.
+    ("IMG_697 both-vision-passes are same modality, not independent -> UNCLEAR", {
         "vision_text": "A bundle of pre-rolls appears before the offer.",
         "vision_text2": "Pre-roll bundle shown on the table.",
         "ocr_text": "",
         "vo_text": "",
-    }, "FAIL"),
+    }, "UNCLEAR"),
     ("corroborated flower stays hard fail", {
         "vision_text": "Large flower headline.",
         "vision_text2": "",
@@ -102,6 +105,14 @@ RECORD_CASES = [
         "vision_text2": "",
         "ocr_text": "FLOWER",
         "vo_text": "",
+    }, "FAIL"),
+    # Asymmetric tooth: VO (whisper/audio) is a non-vision, self-trusting modality - a single VO hit FAILs,
+    # never routes to UNCLEAR (a symmetric >=2-modality rule would wrongly UNCLEAR this).
+    ("VO-only hard term is confirmable (asymmetric tooth)", {
+        "vision_text": "",
+        "vision_text2": "",
+        "ocr_text": "",
+        "vo_text": "Large flower shown in the video.",
     }, "FAIL"),
     ("outdoor-grown vision-only provenance", {
         "vision_text": "Outdoor-grown quality.",
@@ -141,6 +152,22 @@ def test_all():
             bad.append((name, want, got))
     assert not bad, "verdict mismatches: " + "; ".join(f"{t!r} want {w} got {g_}" for t,w,g_ in bad)
 
+def test_single_vision_only_modality():
+    # Corroboration is MODALITY-based, not source-NAME-count. Vision-modality-only (any # of passes) is
+    # uncorroborated -> UNCLEAR (True); a NON-vision modality (ocr/vo) present -> corroborated -> FAIL (False).
+    assert g.single_vision_only(["vision"]) is True                      # single vision pass
+    assert g.single_vision_only(["vision", "vision2"]) is True           # both passes = SAME modality (IMG_697)
+    # vision3-INJECTION: proves the CLASS-fix (prefix modality-tag), NOT a hardcoded {vision,vision2} set -
+    # a name-count/hardcoded impl would FAIL these and re-introduce the bug when a 3rd vision pass lands.
+    assert g.single_vision_only(["vision", "vision3"]) is True
+    assert g.single_vision_only(["vision2", "vision3"]) is True
+    # Asymmetric teeth: a SINGLE non-vision (self-trusting) modality corroborates -> FAIL, never UNCLEAR.
+    assert g.single_vision_only(["ocr"]) is False                        # OCR-only -> FAIL
+    assert g.single_vision_only(["vo"]) is False                         # VO-only -> FAIL
+    assert g.single_vision_only(["vision", "ocr"]) is False              # cross-modality -> FAIL
+    assert g.single_vision_only([]) is False                             # empty -> fail-closed (FAIL)
+
 if __name__ == "__main__":
     test_all()
-    print(f"OK: {len(CASES) + len(RECORD_CASES)} de-code/span-mask/corpus cases pass")
+    test_single_vision_only_modality()
+    print(f"OK: {len(CASES) + len(RECORD_CASES)} de-code/span-mask/corpus cases + modality-tag unit cases pass")

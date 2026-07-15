@@ -262,6 +262,21 @@ def find_all(text, pats):
             hits.append((label, m.group(0)))
     return hits
 
+def single_vision_only(names):
+    """A hard hit is uncorroborated (-> UNCLEAR, human review) IFF EVERY source it hit is the VISION
+    modality (native-vision LLM read). Vision is GENERATIVE + hallucination-prone (an LLM describing an
+    image can invent a term), and a hallucination recurs across passes, so N vision passes are the SAME
+    modality = NOT independent corroboration (IMG_697 "pre-rolls" landed in vision_text AND vision_text2,
+    which the earlier name-count fix wrongly FAILed). Corroboration = >=1 NON-vision modality (OCR reads
+    pixels / VO reads audio - non-generative, SELF-TRUSTING; a SINGLE ocr/vo hit -> FAIL, asymmetric per
+    mc rule #219/#220) or legible-confirm. MODALITY-TAGGED by the "vision" name-prefix, NOT a source-NAME
+    count/set: a future vision3 pass auto-maps to the vision modality with zero code-edit, so the bug
+    cannot recur on an added pass (both the name-count bug and the vision3-recurrence closed by
+    construction). Empty names -> fail-closed FAIL (all([]) is True, so the guard is explicit)."""
+    if not names:
+        return False
+    return all(name.startswith("vision") for name in names)
+
 def verdict_for(rec):
     product = rec.get("product","flower")
     vis  = rec.get("vision_text","") or ""
@@ -296,8 +311,7 @@ def verdict_for(rec):
     def hit_sources(rx, source_texts):
         return [name for name, text in source_texts.items() if text and rx.search(text)]
 
-    def single_vision_only(names):
-        return len(names) == 1 and names[0] in ("vision", "vision2")
+    # single_vision_only is a module-level pure function (importable + unit-testable, incl. vision3-injection)
 
     def add_hard_hit(label, val, names):
         if single_vision_only(names):
