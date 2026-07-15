@@ -1294,9 +1294,11 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       // because its dedupKey embedded usage.generatedAt, which churns on every usage-refresh so the
       // dedup never held; it also wrote fleetHealthAlerts, yielding a spurious "resolved" Telegram on
       // recovery. Log-only + no fleetHealthAlerts write kills both. Dedup the dashboard trace on the
-      // 429 snippet alone (no generatedAt) so the event record does not churn either. The real
+      // AGENT NAME (stable), NOT the 429 snippet: the snippet is volatile TUI frame junk that churns
+      // every read, so a snippet-keyed dedup logged ~1/s and polluted the event log (~3000 events/day
+      // observed 2026-07-15 - same volatile-snippet root as the auth-dead storm). The real
       // account-wide-cap ALERT above (accountWideCapped, dead-for-runtime) stays on Telegram.
-      const infoKey = `tier-throttled-info:${classification.snippet}`;
+      const infoKey = `tier-throttled-info:${this.agent.name}`;
       if (this.lastTierThrottleInfoKey !== infoKey) {
         this.lastTierThrottleInfoKey = infoKey;
         this.logFleetHealthEvent('fleet_health_silent_death_alert', 'info', {
