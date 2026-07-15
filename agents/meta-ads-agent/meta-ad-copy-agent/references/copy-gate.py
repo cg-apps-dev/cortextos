@@ -106,7 +106,7 @@ EM_DASH = "\u2014"
 # >=2 of the 5 headlines must be direct offer-CTA headlines. Tokens kept specific so a bare
 # "try"/"save" never matches; no outer \b (a "%"-ending token before a period would fail it).
 # Recognized offers: TRY20, Subscribe & Save, a % off / save % discount, AND a free-gift offer
-# (🎁 / "free gift" / "free <item> with your/every ...") — free-gift is a playbook §C valid close.
+# (🎁 / "free gift" / "free <item> with your/every ...") - free-gift is a playbook §C valid close.
 # The (?!to\b) guard after "free" blocks the benign "free TO <verb> ... with your/every" false-PASS
 # ("feel free to share it with your friends") while keeping "free <item> with your/every" matching.
 _OFFER_CTA = r"TRY\s*20|Subscribe\s*(?:&|and)\s*Save|\d{1,3}\s*%\s*off|save\s+\d{1,3}\s*%|🎁|free\s+gift|free\s+(?!to\b)[\w\s]{0,25}?\bwith\s+(?:your|every)"
