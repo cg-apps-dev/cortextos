@@ -9,6 +9,7 @@ import { getDueReminders, markReminderDelivered, type Reminder } from '../bus/re
 import { updateApproval } from '../bus/approval.js';
 import { logEvent } from '../bus/event.js';
 import { readCronState, parseDurationMs } from '../bus/cron-state.js';
+import { updateHeartbeat } from '../bus/heartbeat.js';
 import { AgentProcess } from './agent-process.js';
 import type { TelegramAPI } from '../telegram/api.js';
 import { KEYS } from '../pty/inject.js';
@@ -228,9 +229,15 @@ export class FastChecker {
     const agentName = this.agent.name;
     this.heartbeatTimer = setInterval(() => {
       const ts = new Date().toISOString();
-      execFile('cortextos', ['bus', 'update-heartbeat', `[watchdog] ${agentName} alive - idle session ${ts}`], (err) => {
-        if (err) this.log(`Heartbeat watchdog error: ${err.message}`);
-      });
+      try {
+        const config = this.agent.getConfig() as { org?: string; timezone?: string };
+        updateHeartbeat(this.paths, agentName, `[watchdog] ${agentName} alive - idle session ${ts}`, {
+          org: config.org ?? process.env.CTX_ORG ?? '',
+          timezone: config.timezone ?? process.env.CTX_TIMEZONE,
+        });
+      } catch (err) {
+        this.log(`Heartbeat watchdog error: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }, HEARTBEAT_INTERVAL_MS);
 
     while (this.running) {
