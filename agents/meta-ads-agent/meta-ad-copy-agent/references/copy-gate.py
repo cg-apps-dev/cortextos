@@ -37,12 +37,14 @@ AVATARS = {
         "FCA=Better Sleep",
         "FCA=Subscribe and Save",
         "FCA=The Well Seeker",
+        "FCA=BOF/Promo",  # BOF/Promo rollout (Adam 2026-07-15), mirrors resolve_cards AVATAR_MAP
     },
     "gummies": {
         "DSCA=Tried Everything",
         "DSCA=Racing Mind",
         "DSCA=Wellness Stacker",
         "DSCA=Better Mornings",
+        "DSCA=BOF/Promo",  # BOF/Promo rollout (Adam 2026-07-15), mirrors resolve_cards AVATAR_MAP
     },
 }
 
