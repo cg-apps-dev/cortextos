@@ -47,6 +47,10 @@ AVATAR_MAP = {
     "Gummies > Deep Sleep: Wellness Stacker": "DSCA=Wellness Stacker",
     "Gummies > Deep Sleep: Better Mornings": "DSCA=Better Mornings",
     "Gummies > Deep Sleep: Multiple Avatars": None,
+    # BOF/Promo avatar-category rollout (Adam 2026-07-15): promo/offer BOF creatives (not persona-specific).
+    # Sheet dropdown values added by Adam ("yes add it to sheets"). Card labels use a bare "<Product>: BOF/Promo" prefix.
+    "Deep Sleep: BOF/Promo": "DSCA=BOF/Promo",
+    "Flower: BOF/Promo": "FCA=BOF/Promo",
 }
 
 def resolve_avatar(cf_list):
