@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 vi.mock('child_process', () => ({ execFile: vi.fn() }));
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { FastChecker } from '../../../src/daemon/fast-checker';
@@ -725,28 +725,43 @@ describe('FastChecker', () => {
       expect(text).not.toContain('Class: auth-dead');
     });
 
-    it('treats lone tier 429 with fresh liveness as informational, not death', async () => {
+    it('treats lone tier 429 with fresh liveness as informational LOG-ONLY, never Telegram (Adam-spam fix)', async () => {
       const api = createMockTelegramApi();
       const checker = new FastChecker(createMockAgent('fresh-tier-agent'), paths, '/tmp/framework', { telegramApi: api });
       writeContextStatus('2026-07-12T21:29:00.000Z');
       writeStdout('429 temporarily limiting requests on Fable tier\n');
-      writeUsageSnapshot([{
+      const acct = {
         account: 'cg-team-seat',
         ok: true,
         five_hour_pct: 12,
         seven_day_pct: 18,
         scoped_limits: [{ model: 'Fable', percent: 100, severity: 'critical', is_active: true }],
         fetched_at: '2026-07-12T21:29:00.000Z',
-      }]);
-
+      };
+      // Root-cause repro: usage generated_at CHURNS on every usage-refresh. The old dedupKey embedded
+      // generatedAt, so the dedup never held and the INFO alert re-sent to Telegram every cycle. Drive
+      // three cycles with a DIFFERENT generatedAt each time - the fix must send ZERO Telegram across all.
+      writeUsageSnapshot([acct], '2026-07-12T21:29:00.000Z');
+      await runPollCycle(checker);
+      writeUsageSnapshot([acct], '2026-07-12T21:29:30.000Z');
+      await runPollCycle(checker);
+      writeUsageSnapshot([acct], '2026-07-12T21:30:00.000Z');
       await runPollCycle(checker);
 
-      expect(api.sendMessage).toHaveBeenCalledTimes(1);
-      const text = String(api.sendMessage.mock.calls[0][1]);
-      expect(text).toContain('FLEET TIER THROTTLE INFO');
-      expect(text).toContain('Severity: info');
-      expect(text).toContain('not account-dead');
-      expect(text).not.toContain('context_status written_at stale for');
+      // Informational tier-throttle is LOG-ONLY now: no Telegram at all, even across churned refreshes.
+      expect(api.sendMessage).not.toHaveBeenCalled();
+
+      // ...but a dashboard event trace IS still written (log-only, not silent), deduped on the snippet.
+      const eventsAgentDir = join(paths.analyticsDir, 'events', 'fresh-tier-agent');
+      expect(existsSync(eventsAgentDir)).toBe(true);
+      const logged = readdirSync(eventsAgentDir)
+        .filter(f => f.endsWith('.jsonl'))
+        .map(f => readFileSync(join(eventsAgentDir, f), 'utf-8'))
+        .join('');
+      expect(logged).toContain('fleet_health_silent_death_alert');
+      expect(logged).toContain('informational');
+      // Deduped on snippet without generatedAt: exactly ONE trace across the three churned cycles.
+      expect(logged.split('informational').length - 1).toBe(1);
     });
 
     it('alerts fresh 429 when passive usage shows an account-wide cap', async () => {

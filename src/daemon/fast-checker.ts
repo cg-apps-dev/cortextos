@@ -167,6 +167,9 @@ export class FastChecker {
   // Persisted to disk so --continue restarts don't reset the circuit breaker
   private ctxCircuitFile: string = '';
   private fleetHealthAlerts: Partial<Record<FleetHealthAlertClass, SilentDeathAlertState>> = {};
+  // Dedup key for the informational tier-throttle LOG-ONLY trace (no Telegram). Keyed on the
+  // 429 snippet WITHOUT usage.generatedAt so the dashboard record does not churn every refresh.
+  private lastTierThrottleInfoKey: string | null = null;
   private authDeadIncident: AuthDeadIncident | null = null;
 
   private static readonly SILENT_DEATH_STALE_MS = 10 * 60_000;
@@ -1278,32 +1281,32 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       return;
     }
     if (classification.className === 'tier-throttled' && livenessFresh && !usage.accountWideCapped) {
-      await this.maybeSendFleetHealthAlert({
-        className: 'tier-throttled',
-        dedupKey: `tier-throttled-info:${classification.snippet}:${usage.snapshot?.generatedAt ?? 'no-usage'}`,
-        severity: 'info',
-        title: 'FLEET TIER THROTTLE INFO',
-        lines: [
-          'Route: informational tier-throttled, not account-dead',
-          `Model: ${this.agent.getConfig().model ?? 'unknown-model'}`,
-          `Evidence: ${classification.snippet || '(429 marker)'}`,
-          `Usage: ${usage.tierSummary}`,
-          `Suggested action: ${suggestSilentDeathAction('tier-throttled')}`,
-        ],
-        meta: {
+      // Informational tier-throttle (fresh liveness, NOT account-wide capped): LOG-ONLY, never Telegram.
+      // Fix (Adam-spam): the old maybeSendFleetHealthAlert path spammed Adam on every fast-loop cycle
+      // because its dedupKey embedded usage.generatedAt, which churns on every usage-refresh so the
+      // dedup never held; it also wrote fleetHealthAlerts, yielding a spurious "resolved" Telegram on
+      // recovery. Log-only + no fleetHealthAlerts write kills both. Dedup the dashboard trace on the
+      // 429 snippet alone (no generatedAt) so the event record does not churn either. The real
+      // account-wide-cap ALERT above (accountWideCapped, dead-for-runtime) stays on Telegram.
+      const infoKey = `tier-throttled-info:${classification.snippet}`;
+      if (this.lastTierThrottleInfoKey !== infoKey) {
+        this.lastTierThrottleInfoKey = infoKey;
+        this.logFleetHealthEvent('fleet_health_silent_death_alert', 'info', {
           agent: this.agent.name,
           class: 'tier-throttled',
           route: 'informational',
           model: this.agent.getConfig().model ?? 'unknown-model',
           snippet: classification.snippet,
           usage_summary: usage.tierSummary,
-        },
-        now,
-      });
+        });
+      }
       return;
     }
 
     if (livenessFresh) {
+      // Fresh and no longer in the info-throttle branch above: clear the info-dedup so a
+      // genuinely new tier-throttle episode logs its trace once (not suppressed forever).
+      this.lastTierThrottleInfoKey = null;
       const activeAlert = this.activeSilentDeathAlert();
       if (activeAlert !== null && writtenAtMs > activeAlert.contextAtMs) {
         delete this.fleetHealthAlerts[activeAlert.className];
