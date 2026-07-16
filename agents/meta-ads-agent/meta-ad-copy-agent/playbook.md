@@ -61,7 +61,7 @@ You write Meta ad copy for Clean Green: per row, **5 headlines + 5 primary-text 
 
 ### §De-code - FLOWER/GUMMIES VOCAB (M-19f, canonical, brain PR #139/#140)
 - NO shipping/eligible-states/legal-in language. NO lab/COA/"third-party tested"/"tested before it ships" testing claims.
-- NEVER: grown (EXCEPT in `family-grown`, Adam-allowed 2026-06-22), harvest, cultivat*, strain, bud, flower (as product noun → "the good stuff"/"premium"/"small-batch"), marijuana, cannabis, THC, CBD, CBN, dispensary, weed, pot, joint, eighth, 3.5g, hand-roll*, gas station. RETIRED: farm-direct. ALLOWED (adam_accepted_risk, NOT in de_code_hard_remove): family-grown.
+- NEVER: grown (ALL forms incl `family-grown` — M-19b banned, Adam 2026-07-01; the pre-2026-07-01 "Adam-allowed 2026-06-22" carve-out is SUPERSEDED/RETIRED), harvest, cultivat*, strain, bud, flower (as product noun → "the good stuff"/"premium"/"small-batch"), marijuana, cannabis, THC, CBD, CBN, dispensary, weed, pot, joint, eighth, 3.5g, hand-roll*, gas station. RETIRED: farm-direct. ALLOWED substitute for provenance: `family-owned` (ownership/craft claim, mc-approved 2026-07-16 — NOT a cultivation-provenance claim, not term-banned).
 - M-3 substitutes (rotate, stop over-using "real"): premium / small-batch / quality / gold standard / the good stuff / what we ship / carefully crafted / real deal.
 - "Pure Nature" only inside the "clean green PURE NATURE" lockup, never standalone.
 - **DeepSleep formula = SIX ingredients** (built around ashwagandha, L-theanine, magnesium, B2; two of six are M-2-unnameable). A count claim is allowed ONLY as the true count ("six"/"6 natural ingredients") - never "four/three" (FALSE), never invent a number. Ingredient lists always framed NON-EXHAUSTIVE ("built around X, Y, Z"), never "that's all that's in it". Re-verify the count against the brain product page each run.
@@ -96,10 +96,19 @@ You write Meta ad copy for Clean Green: per row, **5 headlines + 5 primary-text 
 
 One pass; ANY hit = rewrite that cell, re-gate. (Reference impl `references/copy-gate.py`; term-set rebuilt from live brain rules.md each run.)
 
+**PREFLIGHT — ensure the brain term-set (MANDATORY before any `copy-gate.py` call; deploy-prereq for the fail-closed gate).** The gate loads banned-terms / coding-signals / strain-lexicon from `$BANNED_TERMS_JSON` / `$CODING_SIGNALS_JSON` / `$STRAIN_LEXICON_JSON`, else a framework-root default that is NOT deployed here. Under fail-closed, a failed load HARD-STOPS the gate. So EVERY copy flow — this playbook run, the `meta-ad-copy-agent` skill invoked **standalone**, AND the `meta-weekly-copy-scan` cron — MUST first ensure a fresh brain clone and export the env (mirrors the creative-scan `/tmp/brain` pull; ~60-min TTL so it is not a slow re-clone every run):
+```
+cd /tmp && { [ -d brain ] && find brain -maxdepth 0 -mmin -60 | grep -q brain; } || { rm -rf brain && gh repo clone CLEAN-APPS-DEV/clean-green-marketing-brain brain -- --depth 1; }
+export BANNED_TERMS_JSON=/tmp/brain/agents/meta-compliance-agent/data/banned-terms.json
+export CODING_SIGNALS_JSON=/tmp/brain/agents/meta-compliance-agent/data/cannabis-coding-signals.json
+export STRAIN_LEXICON_JSON=/tmp/brain/agents/meta-compliance-agent/data/strain-lexicon.json
+```
+Confirm the gate prints NO `DEGRADED` / `LAST_KNOWN` warning. NEVER run `copy-gate.py` without this preflight. **Also note (interim, until the candidate-loading fix lands): `copy-gate.py` loads only the HARD bucket and MISSES candidate-tier terms (`grown` / `product` / `calm` / `body`) — run a candidate-tier tripwire (or `grep_verdict.py`, which loads candidates) in addition, and route any hit to meta-compliance for Tier-2 context adjudication (do not auto-FAIL).**
+
 1. **FORMAT:** every body has `\n\n` (zero single-newline-only); no `\n\n\n`; no headline has a newline; no dramatic ellipsis outside a quote.
 2. **SECOND PERSON / TESTIMONIAL:** no third-person-character subject (He/She/His/Her about the ad's person) in any cell; no BARE first-person (I/I'm/I've/my/me) OUTSIDE quotes "…"/parens (…). (Brand we/our allowed.)
 3. **HEADLINES:** each ≤40 chars, 6-10 words, no newline; ≥3 of 5 name the category; ≥2 crystal-clear (1 product + 1 promo); no "Sleep Gummies"; no diagnostic-question; no two share first 5 words.
-4. **DE-CODE + BANNED:** zero of the de-code/banned set (grown [EXCEPT `family-grown`, allowed]/cultivat/strain/bud/flower-noun/lab/COA/third-party-tested/states/farm-direct/medical/M-5 negations/M-6a scam-fake/M-13 sleep-onset on gummies/M-20 superiority/"Clean Green" brand name). family-grown is ALLOWED (adam_accepted_risk).
+4. **DE-CODE + BANNED:** zero of the de-code/banned set (grown [ALL forms — bare `grown`, `family-grown`, `*-grown`, `grown on/in/by` — M-19b, banned]/cultivat/strain/bud/flower-noun/lab/COA/third-party-tested/states/farm-direct/medical/M-5 negations/M-6a scam-fake/M-13 sleep-onset on gummies/M-20 superiority/"Clean Green" brand name). **`family-grown` is BANNED (M-19b) — the old "adam_accepted_risk / allowed" carve-out is RETIRED (Adam 2026-07-01 anything-about-grown intent; confirmed by mc + the 2026-07-16 copy false-pass incident). Use "family-owned".**
 5. **EMOJI / DASH:** only ✅/⭐️/🎁; no 🌿🍃; no em dashes.
 6. **AVATAR + FUNNEL:** each avatar is an exact member of the canonical list (§D) AND the drift-tripwire passed; each funnel ∈ {TOF,MOF,BOF}; neither overwrites a non-empty cell.
 7. **SCHEMA / CLOSE:** exactly 5 headlines + 5 bodies; one close per body (never both); offer line present + last where applicable; ✅-stack minimums met; close matches the CTA button.
