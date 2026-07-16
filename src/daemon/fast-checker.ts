@@ -173,6 +173,9 @@ export class FastChecker {
   // Dedup key for the informational tier-throttle LOG-ONLY trace (no Telegram). Keyed on the
   // 429 snippet WITHOUT usage.generatedAt so the dashboard record does not churn every refresh.
   private lastTierThrottleInfoKey: string | null = null;
+  // Dedup for the informational usage-attribution-divergence LOG-ONLY trace. Keyed on the AGENT (stable),
+  // NOT usage.generatedAt, which the launchd usage sampler regenerates every few min (2026-07-16 storm).
+  private lastUsageMiscopeInfoKey: string | null = null;
   // Dedup for the informational auth-marker LOG-ONLY trace (fresh liveness, no Telegram).
   // Keyed on agent name - the snippet is volatile TUI frame junk that churns every read.
   private lastAuthDeadInfoKey: string | null = null;
@@ -1219,23 +1222,28 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
 
     const usage = this.assessFleetUsage(now);
     if (usage.misScoped) {
-      await this.maybeSendFleetHealthAlert({
-        className: 'usage-miscope',
-        dedupKey: `usage-miscope:${usage.snapshot?.generatedAt ?? 'unknown'}`,
-        severity: 'error',
-        title: 'FLEET USAGE ANOMALY',
-        lines: [
-          'Route: usage-read-suspect',
-          `Summary: ${usage.anomalySummary}`,
-        ],
-        meta: {
+      // OPERATIONAL usage-vs-cost divergence (a zero/low live read against attributed burn - most often a
+      // benign ATTRIBUTION MISLABEL: burn is attributed to the usage_account LABEL while the labeled agents
+      // bill a different account via their runtime .env token). LOG-ONLY, never Telegram, per Adam's standing
+      // comms rule (operational alerts route to the log/orchestrator, NOT raw-Telegram to Adam - same as the
+      // tier-throttle INFO path). Deduped on the AGENT (stable), NOT usage.generatedAt: the old dedupKey
+      // embedded the snapshot timestamp, which the launchd usage sampler regenerates every few minutes, so
+      // the 60-min cooldown never held and it re-fired every regen (2026-07-16 storm - the same
+      // generatedAt-in-dedupKey class as the tier-throttle da612a4 fix).
+      const infoKey = `usage-miscope:${this.agent.name}`;
+      if (this.lastUsageMiscopeInfoKey !== infoKey) {
+        this.lastUsageMiscopeInfoKey = infoKey;
+        this.logFleetHealthEvent('fleet_health_silent_death_alert', 'info', {
           agent: this.agent.name,
           class: 'usage-miscope',
+          route: 'informational-usage-vs-cost-attribution-divergence',
           usage_generated_at: usage.snapshot?.generatedAt,
           summary: usage.anomalySummary,
-        },
-        now,
-      });
+        });
+      }
+    } else {
+      // Anomaly cleared -> allow the next distinct incident to log its trace once.
+      this.lastUsageMiscopeInfoKey = null;
     }
 
     if (authIncident !== null) {
@@ -1266,7 +1274,10 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     if (classification.className === 'tier-throttled' && livenessFresh && usage.accountWideCapped) {
       await this.maybeSendFleetHealthAlert({
         className: 'tier-throttled',
-        dedupKey: `tier-throttled-account-wide:${classification.snippet}:${usage.snapshot?.generatedAt ?? 'no-usage'}`,
+        // Stable per-agent dedup key (NOT the volatile 429 snippet OR usage.generatedAt, both of which
+        // churn - the generatedAt-in-dedupKey class). Keeps the Telegram (account-wide cap = real
+        // dead-for-runtime emergency); the stable key just stops it spamming when it does fire.
+        dedupKey: `tier-throttled-account-wide:${this.agent.name}`,
         severity: 'error',
         title: 'FLEET TIER THROTTLE ALERT',
         lines: [

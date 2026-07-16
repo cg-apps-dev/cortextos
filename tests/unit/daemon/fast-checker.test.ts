@@ -789,11 +789,11 @@ describe('FastChecker', () => {
       expect(text).toContain('account-wide cap');
     });
 
-    it('alerts usage-miscope on fresh 0/0 usage while burn evidence exists', async () => {
+    it('routes usage-miscope LOG-ONLY, never Telegram - even across churned snapshots (Adam-spam fix)', async () => {
       const api = createMockTelegramApi();
       const checker = new FastChecker(createMockAgent('mis-scope-agent'), paths, '/tmp/framework', { telegramApi: api });
       writeContextStatus('2026-07-12T21:29:00.000Z');
-      writeUsageSnapshot([{
+      const acct = {
         account: 'icloud-max',
         ok: true,
         five_hour_pct: 0,
@@ -801,18 +801,30 @@ describe('FastChecker', () => {
         extra_usage: { is_enabled: true, used_credits: 4 },
         last_good: { five_hour_pct: 44, seven_day_pct: 31, fetched_at: '2026-07-12T21:20:00.000Z' },
         fetched_at: '2026-07-12T21:29:00.000Z',
-      }]);
-
+      };
+      // Root-cause repro: the old dedupKey embedded usage.generatedAt, which the launchd sampler regenerates
+      // every few min, so the 60-min cooldown never held and it re-Telegrammed every regen. Churn 3 snapshots.
+      writeUsageSnapshot([acct], '2026-07-12T21:29:00.000Z');
+      await runPollCycle(checker);
+      writeUsageSnapshot([acct], '2026-07-12T21:29:30.000Z');
+      await runPollCycle(checker);
+      writeUsageSnapshot([acct], '2026-07-12T21:30:00.000Z');
       await runPollCycle(checker);
 
-      expect(api.sendMessage).toHaveBeenCalledTimes(1);
-      const text = String(api.sendMessage.mock.calls[0][1]);
-      expect(text).toContain('Class: usage-miscope');
-      expect(text).toContain('Route: usage-read-suspect');
-      expect(text).toContain('0/0');
+      // Operational usage-vs-cost attribution divergence is LOG-ONLY now: zero Telegram across churned snapshots.
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      // ...but a dashboard event trace IS written (log-only), deduped per-agent = exactly one across the 3 cycles.
+      const eventsAgentDir = join(paths.analyticsDir, 'events', 'mis-scope-agent');
+      expect(existsSync(eventsAgentDir)).toBe(true);
+      const logged = readdirSync(eventsAgentDir)
+        .filter(f => f.endsWith('.jsonl'))
+        .map(f => readFileSync(join(eventsAgentDir, f), 'utf-8'))
+        .join('');
+      expect(logged).toContain('usage-miscope');
+      expect(logged.split('usage-miscope').length - 1).toBe(1);
     });
 
-    it('dedupes correlated usage-miscope and auth-dead alerts independently', async () => {
+    it('never Telegrams usage-miscope, even when a real auth-dead co-occurs', async () => {
       const api = createMockTelegramApi();
       const checker = new FastChecker(createMockAgent('correlated-agent'), paths, '/tmp/framework', { telegramApi: api });
       writeContextStatus('2026-07-12T21:29:00.000Z');
@@ -827,15 +839,13 @@ describe('FastChecker', () => {
       }]);
 
       await runPollCycle(checker);
-      expect(api.sendMessage).toHaveBeenCalledTimes(1);
-      expect(String(api.sendMessage.mock.calls[0][1])).toContain('Class: usage-miscope');
-
       await runPollCycle(checker);
-      expect(api.sendMessage).toHaveBeenCalledTimes(2);
-      expect(String(api.sendMessage.mock.calls[1][1])).toContain('Class: auth-dead');
-
       await runPollCycle(checker);
-      expect(api.sendMessage).toHaveBeenCalledTimes(2);
+      // usage-miscope is LOG-ONLY regardless of co-occurring alerts: NO Telegram ever carries it. (A 401
+      // with no token-growth recovery IS a real auth-dead and may Telegram - a separate, wanted alert; the
+      // point here is usage-miscope itself never reaches Adam's Telegram.)
+      const usageTelegrams = api.sendMessage.mock.calls.filter(c => String(c[1]).includes('usage-miscope'));
+      expect(usageTelegrams.length).toBe(0);
     });
 
     it('does not alert for healthy fresh context with no marker', async () => {
