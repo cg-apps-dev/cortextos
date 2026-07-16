@@ -44,11 +44,13 @@ test-results/
 # Spurious directory created when ${APPDATA} env var unexpanded during npm link on Windows
 ${APPDATA}/
 
+# Python bytecode (blanket - covers all __pycache__ dirs anywhere, incl. new ones from py_compile/test runs)
+**/__pycache__/
+*.pyc
+*.pyo
+
 # Knowledge base
 knowledge-base/venv/
-knowledge-base/__pycache__/
-knowledge-base/scripts/__pycache__/
-knowledge-base/scripts/_test_clients/__pycache__/
 tests/playwright/dashboard-ui.spec.ts
 
 # Local ops docs (personal, not for public repo)
