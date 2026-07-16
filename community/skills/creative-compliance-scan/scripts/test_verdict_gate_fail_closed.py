@@ -317,6 +317,8 @@ def test_copy_gate_hard_error_is_loud(tmp):
     old_chat = os.environ.get("CTX_TELEGRAM_CHAT_ID")
     try:
         c.verdict_core._ALERTED.clear()
+        os.environ["CTX_ROOT"] = str(tmp)  # isolate the cross-process dedup state per test
+        c.verdict_core._alert_recovery()
         c.verdict_core.subprocess.run = fake_run
         os.environ.pop("CTX_TEST", None)
         os.environ.pop("PYTEST_CURRENT_TEST", None)
@@ -339,7 +341,8 @@ def test_copy_gate_hard_error_is_loud(tmp):
                 os.environ[key] = value
     flat = [" ".join(call[:5]) for call in calls]
     assert any("notify-agent meta-compliance-agent" in item for item in flat)
-    assert any("notify-agent meta-ads-agent" in item for item in flat)
+    assert any("notify-agent the-orchestrator" in item for item in flat)
+    assert not any("notify-agent meta-ads-agent" in item for item in flat)  # Adam-facing runner dropped
     assert any("log-event error verdict_core_authority_failure" in item for item in flat)
     assert not any("send-telegram" in item for item in flat)
 
@@ -359,6 +362,8 @@ def test_authority_alert_test_context_keeps_log_but_skips_pages(tmp):
     try:
         core._ALERTED.clear()
         core.subprocess.run = fake_run
+        os.environ["CTX_ROOT"] = str(tmp)  # isolate the cross-process dedup state per test
+        core._alert_recovery()
         os.environ["CTX_TEST"] = "1"
         os.environ["CTX_TELEGRAM_CHAT_ID"] = "123"
         verdict = core.classify("plain", authority, surface="copy")
@@ -398,6 +403,8 @@ def test_authority_alert_ci_alone_stays_loud(tmp):
         core.subprocess.run = fake_run
         os.environ.pop("CTX_TEST", None)
         os.environ.pop("PYTEST_CURRENT_TEST", None)
+        os.environ["CTX_ROOT"] = str(tmp)  # isolate the cross-process dedup state per test
+        core._alert_recovery()
         os.environ["CI"] = "1"
         os.environ["CTX_TELEGRAM_CHAT_ID"] = "123"
         verdict = core.classify("plain", authority, surface="copy")
@@ -417,7 +424,8 @@ def test_authority_alert_ci_alone_stays_loud(tmp):
     flat = [" ".join(call[:5]) for call in calls]
     assert any("log-event error verdict_core_authority_failure" in item for item in flat)
     assert any("notify-agent meta-compliance-agent" in item for item in flat)
-    assert any("notify-agent meta-ads-agent" in item for item in flat)
+    assert any("notify-agent the-orchestrator" in item for item in flat)
+    assert not any("notify-agent meta-ads-agent" in item for item in flat)  # Adam-facing runner dropped
     assert not any("send-telegram" in item for item in flat)
 
 
@@ -531,7 +539,7 @@ def test_ensure_brain_cached_valid_past_ttl_proceeds_and_logs_degrade(tmp):
         env,
         ttl_seconds=10,
         now=old + 1000,
-        clone_fn=lambda: (_ for _ in ()).throw(RuntimeError("clone down")),
+        clone_fn=lambda dest: (_ for _ in ()).throw(RuntimeError("clone down")),
         log_fn=logs.append,
     )
     assert authority.status == "ok"
@@ -547,7 +555,7 @@ def test_ensure_brain_no_valid_clone_hard_class(tmp):
         env,
         ttl_seconds=10,
         now=2000,
-        clone_fn=lambda: (_ for _ in ()).throw(RuntimeError("clone down")),
+        clone_fn=lambda dest: (_ for _ in ()).throw(RuntimeError("clone down")),
     )
     assert authority.status == "failed"
     assert authority.authority_class == "core_loss"

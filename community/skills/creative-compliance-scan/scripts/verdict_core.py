@@ -21,7 +21,11 @@ Extraction record fields:
   row, fileid, asset, product ("flower"|"gummies"), meta,
   vision_text, [vision_text2 optional], ocr_text, vo_text, bud_plant, leaf_icon, low_conf
 """
-import json, os, re, shutil, subprocess, sys, time
+import hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
+try:
+    import fcntl  # POSIX flock for the ensure_brain concurrency lock (absent on non-POSIX)
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 _LEET = str.maketrans({'0':'o','1':'i','3':'e','4':'a','5':'s','@':'a','$':'s'})
 _BANNED_TERMS_VERSION_FLOOR = (1, 0, 11)
@@ -574,68 +578,297 @@ def _max_data_mtime(env=None):
     return max(mtimes) if mtimes else 0
 
 
-def ensure_brain(env=None, ttl_seconds=3600, now=None, clone_fn=None, log_fn=None):
+_BRAIN_STORE_ENV = "CGM_BRAIN_STORE"
+
+
+def _stable_store():
+    """Reaper-resilient, reboot-surviving base for versioned brain clones + the refresh lock.
+    NOT under /tmp (a /tmp reaper must not wipe a clone mid-flight). Overridable via CGM_BRAIN_STORE."""
+    base = os.environ.get(_BRAIN_STORE_ENV) or os.path.join(os.path.expanduser("~"), ".cgm-brain-store")
+    try:
+        os.makedirs(base, exist_ok=True)
+        return base
+    except Exception:
+        return tempfile.gettempdir()  # last resort; lock+atomic still help even here
+
+
+def _load_from_root(root, source):
+    """load() pointed at a specific brain root's data dir - used to VERIFY a temp clone (floor+canary)
+    BEFORE it is swapped over the good brain. A partial/corrupt clone -> status != ok -> not swapped."""
+    data = os.path.join(root, "agents", "meta-compliance-agent", "data")
+    probe = dict(source)
+    probe["BANNED_TERMS_JSON"] = os.path.join(data, "banned-terms.json")
+    probe["CODING_SIGNALS_JSON"] = os.path.join(data, "cannabis-coding-signals.json")
+    probe["STRAIN_LEXICON_JSON"] = os.path.join(data, "strain-lexicon.json")
+    return load(probe)
+
+
+def _brain_lock(timeout):
+    """Exclusive flock on the shared refresh lock, with a TIMEOUT. Returns the open fd, or None on
+    timeout / no-fcntl. On None the caller MUST NOT hang - it degrades to use-cached-else-fail-closed.
+    Serializes refreshers so N callers never race rm+clone (the 2026-07-16 incident)."""
+    if fcntl is None:
+        return None
+    fd = open(os.path.join(_stable_store(), "brain.refresh.lock"), "w")
+    deadline = time.time() + timeout
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.time() >= deadline:
+                fd.close()
+                return None
+            time.sleep(0.25)
+
+
+def _release_lock(fd):
+    if fd is None:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        try:
+            fd.close()
+        except Exception:
+            pass
+
+
+def _gc_old_clones(store, keep, grace_seconds=600):
+    """Best-effort bounded GC: remove our own brain.new.* dirs that are not the current target and
+    are older than a grace window (so no concurrent reader is mid-read). Never raises."""
+    now = time.time()
+    keep_real = os.path.realpath(keep) if keep else None
+    try:
+        for name in os.listdir(store):
+            if not name.startswith("brain.new."):
+                continue
+            p = os.path.join(store, name)
+            if os.path.realpath(p) == keep_real:
+                continue
+            try:
+                if now - os.path.getmtime(p) > grace_seconds:
+                    shutil.rmtree(p, ignore_errors=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _default_clone_into(dest):
+    """Default clone step: gh-clone the brain INTO dest (a fresh dir; never touches the live root)."""
+    subprocess.run(
+        ["gh", "repo", "clone", "CLEAN-APPS-DEV/clean-green-marketing-brain", dest],
+        check=True, timeout=180,
+    )
+
+
+def _atomic_refresh(root, source, clone_fn):
+    """NON-DESTRUCTIVE atomic brain refresh (mc (a)-(d) / orch 1-5): clone into a fresh versioned dir
+    under the reaper-safe stable store -> VERIFY floor+canary BEFORE any swap -> atomically repoint
+    `root` (a symlink) to the new dir -> only THEN GC old dirs. NEVER rm/replace the good brain before
+    the new one is validated-ready. Raises on any failure WITHOUT having touched the existing good
+    root (caller falls back to cached-valid or fail-closed). clone_fn(dest) populates dest (injectable
+    for tests; default = gh clone)."""
+    store = _stable_store()
+    new_dir = tempfile.mkdtemp(prefix="brain.new.", dir=store)  # non-/tmp, reaper-safe
+    try:
+        clone_fn(new_dir)  # clone/populate INTO new_dir (does NOT touch the live root)
+        # VERIFY-BEFORE-SWAP: a partial/corrupt clone must NOT become the live brain.
+        probe = _load_from_root(new_dir, source)
+        if probe.status != "ok":
+            raise RuntimeError(f"refreshed clone failed verify (status={probe.status}; {probe.reasons}); not swapping")
+        # ATOMIC SWAP: repoint the root symlink -> new_dir. os.replace on a symlink is atomic; a
+        # concurrent reader always sees the old-or-new target dir, never an absent/torn root.
+        old_target = os.path.realpath(root) if os.path.lexists(root) else None
+        link_tmp = os.path.join(store, "brain.link." + str(os.getpid()))
+        if os.path.lexists(link_tmp):
+            os.remove(link_tmp)
+        os.symlink(new_dir, link_tmp)
+        if os.path.islink(root) or not os.path.lexists(root):
+            os.replace(link_tmp, root)  # atomic symlink repoint (root is a symlink or absent)
+        else:
+            # first-time conversion only: root is a REAL dir. Minimal-window swap; root stays a symlink after.
+            backup = root + ".old." + str(os.getpid())
+            os.rename(root, backup)
+            try:
+                os.replace(link_tmp, root)
+            finally:
+                shutil.rmtree(backup, ignore_errors=True)
+        _gc_old_clones(store, keep=new_dir)
+    except Exception:
+        shutil.rmtree(new_dir, ignore_errors=True)  # failed refresh: drop the temp, leave root intact
+        raise
+
+
+def ensure_brain(env=None, ttl_seconds=3600, now=None, clone_fn=None, log_fn=None, lock_timeout=45):
+    """Availability-hardened (2026-07-16 concurrency/reaper incident): NON-DESTRUCTIVE atomic refresh
+    + concurrency LOCK + SKIP-IF-VALID + reaper-safe stable store + lock-TIMEOUT-non-hang, all
+    preserving the FAIL-CLOSED invariant. A refresh never destroys a good brain, N callers never race,
+    a lock-timeout degrades to use-cached-else-fail-closed (never hangs), and a genuinely-unrestorable
+    brain STILL fail-closes (core_loss -> classify never-PASS)."""
     source = env if env is not None else os.environ
     clock = time.time() if now is None else now
-    cached = load(source)
-    fresh = clock - _max_data_mtime(source) <= ttl_seconds
-    if cached.status == "ok" and fresh:
+
+    def _snapshot():
+        auth = load(source)
+        fresh = clock - _max_data_mtime(source) <= ttl_seconds
+        return auth, (auth.status == "ok" and fresh)
+
+    # (d) SKIP-IF-VALID-PRESENT: cheap, lock-free common case - a valid+fresh brain needs no refresh.
+    cached, ok_fresh = _snapshot()
+    if ok_fresh:
         return cached
-    if clone_fn is None:
-        def clone_fn():
-            root = _brain_root(source)
-            if os.path.exists(root):
-                shutil.rmtree(root)
-            subprocess.run(
-                ["gh", "repo", "clone", "CLEAN-APPS-DEV/clean-green-marketing-brain", root],
-                check=True,
-                timeout=120,
-            )
-    try:
-        clone_fn()
-        return load(source)
-    except Exception as exc:
-        if cached.status == "ok":
-            msg = f"brain refresh failed; using cached floor+canary-passing authority: {exc}"
+
+    def _fallback(cached_auth, exc):
+        # (a) fail-closed preserved: cached-valid if present (mc #5, reachable now the old copy is
+        # never destroyed first), else the failed authority (core_loss) - never PASS.
+        if cached_auth.status == "ok":
+            msg = f"brain refresh failed; using cached valid authority: {exc}"
             if log_fn:
                 log_fn(msg)
-            cached.degradations.append(msg)
+            cached_auth.degradations.append(msg)
+            return cached_auth
+        return cached_auth
+
+    # The clone STEP is injectable (clone_fn(dest) populates dest); it ALWAYS runs through the hardened
+    # lock + verify-before-swap + atomic path (no legacy bypass - the hardening protects every caller).
+    clone = clone_fn if clone_fn is not None else _default_clone_into
+
+    lock_fd = _brain_lock(lock_timeout)
+    if lock_fd is None:
+        # (c) LOCK-TIMEOUT / no-fcntl: NEVER hang. Use an existing valid brain, else fail-closed.
+        recheck = load(source)
+        if recheck.status == "ok":
+            msg = "ensure_brain refresh lock unavailable; proceeding on existing valid brain"
+            if log_fn:
+                log_fn(msg)
+            recheck.degradations.append(msg)
+            return recheck
+        return recheck  # fail-closed (core_loss)
+    try:
+        # Re-check under the lock: a winner may have just refreshed -> skip the clone entirely (mc-d).
+        cached, ok_fresh = _snapshot()
+        if ok_fresh:
             return cached
-        return cached
+        try:
+            _atomic_refresh(_brain_root(source), source, clone)
+            refreshed = load(source)
+            if refreshed.status == "ok":
+                return refreshed
+            raise RuntimeError(f"post-refresh load status={refreshed.status}")
+        except Exception as exc:
+            return _fallback(cached, exc)
+    finally:
+        _release_lock(lock_fd)
+
+
+# Ops-only alert recipients (2026-07-16 incident B): meta-ads-agent DROPPED - it is the Adam-facing
+# runner (CTX_TELEGRAM_CHAT_ID=Adam), so notifying it forwarded the internal alert to Adam's user chat.
+# meta-compliance-agent = fix-owner; the-orchestrator = ops. NO Adam-facing runner.
+_ALERT_OPS_TARGETS = ("meta-compliance-agent", "the-orchestrator")
+_ALERT_DEDUP_TTL = 600  # re-alert a persistent failure after this (never permanent-silence)
+
+
+def _alert_dedup_dir():
+    """CROSS-PROCESS dedup state on a STABLE non-/tmp path (a /tmp file would vanish with the reaper
+    that starts these incidents). CTX_ROOT (instance state) if set, else ~/.cortextos."""
+    base = os.environ.get("CTX_ROOT") or os.path.join(os.path.expanduser("~"), ".cortextos")
+    return os.path.join(base, "verdict_core_alert_dedup")
+
+
+def _normalize_reason(reason):
+    """Redact variable tokens so the dedup key is stable-per-failure-TYPE, not per-exact-string (mc
+    forward-robustness): a future reason carrying a tmp-path / pid / timestamp / clone-temp-name must
+    not defeat the cross-process dedup by making each instance a distinct key -> re-flood. Keeps the
+    stable TYPE signature (the basename / prefix) so distinct failure-classes stay distinct (b3)."""
+    r = re.sub(r"/[^\s:'\"]*/", "/", reason)  # collapse path dirs -> '/' (keep basename = the type)
+    r = re.sub(r"\b\w*(?:tmp|pack|\.new|\.link)\w*\b", "TMP", r, flags=re.IGNORECASE)  # temp/clone names
+    r = re.sub(r"\d+", "#", r)  # digits (pids / timestamps / counts) -> #
+    return r.strip()
+
+
+def _alert_key(authority):
+    norm = "|".join(_normalize_reason(x) for x in authority.reasons)
+    raw = (authority.authority_class + "|" + norm).encode("utf-8", "replace")
+    return hashlib.sha256(raw).hexdigest()[:40]
+
+
+def _alert_recovery():
+    """Healthy authority -> CLEAR the cross-process dedup so a resolved-then-recurring failure RE-ALERTS
+    (mc b2: a dedup latched past recovery would SILENTLY suppress a genuine recurrence = over-suppression)."""
+    _ALERTED.clear()
+    d = _alert_dedup_dir()
+    try:
+        names = os.listdir(d)
+    except Exception:
+        return
+    for n in names:
+        try:
+            os.remove(os.path.join(d, n))
+        except Exception:
+            pass
+
+
+def _alert_notify_once(authority):
+    """CROSS-PROCESS, per-failure-class dedup for the NOTIFY (mc b1 flood->one, b3 per-class-distinct).
+    Atomic first-claim via O_CREAT|O_EXCL on the stable state file; a stale (>TTL) claim re-fires (never
+    permanent-silence). Falls back to per-process dedup if the state dir is unusable (fail toward
+    alerting-once, never flooding). Returns True iff THIS process should send the notify."""
+    proc_key = (authority.authority_class, tuple(authority.reasons))
+    proc_seen = proc_key in _ALERTED
+    _ALERTED.add(proc_key)
+    try:
+        d = _alert_dedup_dir()
+        os.makedirs(d, exist_ok=True)
+        kf = os.path.join(d, _alert_key(authority))
+    except Exception:
+        return not proc_seen  # no stable dir -> per-process dedup (fail toward alert-once)
+    now = time.time()
+    try:
+        fd = os.open(kf, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.write(fd, str(int(now)).encode())
+        os.close(fd)
+        return True  # first cross-process claim -> notify
+    except FileExistsError:
+        try:
+            if now - os.path.getmtime(kf) > _ALERT_DEDUP_TTL:
+                os.utime(kf, (now, now))
+                return True  # stale -> re-alert (persistent failure, not silent)
+        except Exception:
+            pass
+        return False  # another process already notified for this failure-class -> dedup
+    except Exception:
+        return not proc_seen
 
 
 def _alert(authority):
+    # RECOVERY: healthy authority clears the dedup (mc b2). classify() calls _alert on the ok path too.
     if authority.status == "ok":
+        _alert_recovery()
         return
-    key = (authority.authority_class, tuple(authority.reasons))
-    if key in _ALERTED:
-        return
-    _ALERTED.add(key)
     msg = (
         "VERDICT-CORE AUTHORITY FAILURE: "
         + "; ".join(authority.reasons)
-        + " - fail-closed. Restore by re-cloning /tmp/brain or setting authoritative env paths and re-run."
+        + " - fail-closed. Restore the brain (re-clone) or set authoritative env paths and re-run."
     )
+    # LOG-EVENT ALWAYS (mc: audit never silent) - per-process, before the notify-dedup.
     try:
         subprocess.run(
             [
-                "cortextos",
-                "bus",
-                "log-event",
-                "error",
-                "verdict_core_authority_failure",
-                "error",
-                "--meta",
-                json.dumps({"authority_class": authority.authority_class, "reasons": authority.reasons}),
+                "cortextos", "bus", "log-event", "error", "verdict_core_authority_failure", "error",
+                "--meta", json.dumps({"authority_class": authority.authority_class, "reasons": authority.reasons}),
             ],
-            timeout=15,
-            check=False,
+            timeout=15, check=False,
         )
     except Exception:
         pass
+    # NOTIFY: cross-process deduped (flood->one), ops-only, test-quiet.
+    if not _alert_notify_once(authority):
+        return
     if _is_test_context():
         return
-    for agent in ("meta-compliance-agent", "meta-ads-agent"):
+    for agent in _ALERT_OPS_TARGETS:
         try:
             subprocess.run(["cortextos", "bus", "notify-agent", agent, msg], timeout=15, check=False)
         except Exception:
@@ -756,6 +989,9 @@ def classify(text_or_record, authority, surface="creative"):
             authority_class=authority_class,
             must_not_pass=True,
         )
+    # Healthy authority: a clean classify IS the recovery signal -> clear the cross-process alert-dedup
+    # so a resolved-then-recurring failure re-alerts immediately (mc b2, preserve-visibility).
+    _alert_recovery()
     if surface == "copy":
         return _copy_classify(str(text_or_record or ""), authority)
     return _with_creative_authority(text_or_record or {}, authority)
