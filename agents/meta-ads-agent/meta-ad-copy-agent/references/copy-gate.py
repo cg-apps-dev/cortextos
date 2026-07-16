@@ -9,25 +9,29 @@ The de-code/banned term-set is loaded from the meta-compliance-agent banned term
 import json
 import os
 import re
-import subprocess
 import sys
+from pathlib import Path
 
-BANNED_TERMS_VERSION_FLOOR = (1, 0, 11)
-CODING_SIGNALS_VERSION_FLOOR = (1, 1, 5)
-BANNED_TERMS_CANARY = ("bud", "flower", "cannabis", "thc", "family grown")
-CODING_SIGNALS_CANARY = ("lab-tested",)
-_BRAIN_DATA_ROOT = "/tmp/brain/agents/meta-compliance-agent/data"
+_CORE_DIR = Path(__file__).resolve().parents[4] / "community/skills/creative-compliance-scan/scripts"
+if str(_CORE_DIR) not in sys.path:
+    sys.path.insert(0, str(_CORE_DIR))
+import verdict_core
 
 HEAD = ["headline", "hv1", "hv2", "hv3", "hv4"]
 BODY = ["primary", "pv1", "pv2", "pv3", "pv4"]
 VALID_FUNNELS = {"TOF", "MOF", "BOF"}
-_GATE_DEGRADATIONS = []
-_GATE_HARD_ERRORS = []
-_GATE_ALERTED = [False]
+_AUTHORITY = None
 
 
 class GateAuthorityError(RuntimeError):
     """Raised when a core authority is unavailable and the run must write nothing."""
+
+
+def _authority():
+    global _AUTHORITY
+    if _AUTHORITY is None:
+        _AUTHORITY = verdict_core.ensure_brain()
+    return _AUTHORITY
 
 # Canonical avatar lists (the authority - gog can't read the live dropdown; API doesn't reject invalid).
 AVATARS = {
@@ -53,11 +57,6 @@ AVATARS = {
 FIRST_PERSON_RE = re.compile(r"\b(I(?:['\u2019]m|['\u2019]ve|['\u2019]ll|['\u2019]d)?|my|me|mine)\b", re.IGNORECASE)
 THIRD_PERSON_HEADLINE_RE = re.compile(r"^\s*(he|she|they)\b|\b(his|her|their)\b", re.IGNORECASE)
 PRESS_RE = re.compile(r"\b(CBS|FOX|USA Today|MSNBC|NBC|ABC News)\b", re.IGNORECASE)
-# De-code HARD-REMOVE is LIVE-SOURCED from cannabis-coding-signals.json (single source, mc owns it):
-# de_code_hard_remove.patterns[].pattern, compiled into DECODE_HARD_RE below. The old hardcoded
-# DECODE_SHIP_RE is retired - it under-covered (eligible-states only) and was a second source of
-# truth. family-grown is NOT in de_code_hard_remove (it's adam_accepted_risk) so it correctly passes.
-# surface_handling.copy = HARD-REMOVE/FAIL -> this gate fails on any hit (must return 0 to pass).
 EM_DASH = "\u2014"
 # Offer-CTA recognition (Adam rules 2026-06-22): every body must CLOSE on an offer CTA, and
 # >=2 of the 5 headlines must be direct offer-CTA headlines. Tokens kept specific so a bare
@@ -69,185 +68,6 @@ EM_DASH = "\u2014"
 _OFFER_CTA = r"TRY\s*20|Subscribe\s*(?:&|and)\s*Save|\d{1,3}\s*%\s*off|save\s+\d{1,3}\s*%|🎁|free\s+gift|free\s+(?!to\b)[\w\s]{0,25}?\bwith\s+(?:your|every)"
 BODY_CTA_RE = re.compile(rf"({_OFFER_CTA})", re.IGNORECASE)
 HEAD_CTA_RE = re.compile(rf"({_OFFER_CTA}|get\s+\d{{1,3}}\s*%\s*off|Limited\s+Time)", re.IGNORECASE)
-
-
-def _record_degradation(reason):
-    _GATE_DEGRADATIONS.append(reason)
-    print(reason, file=sys.stderr)
-
-
-def _record_hard_error(reason):
-    _GATE_HARD_ERRORS.append(reason)
-    print(reason, file=sys.stderr)
-
-
-def _fire_operator_alert():
-    reasons = _GATE_HARD_ERRORS + _GATE_DEGRADATIONS
-    if not reasons or _GATE_ALERTED[0]:
-        return
-    _GATE_ALERTED[0] = True
-    prefix = "COPY-GATE HARD-ERROR" if _GATE_HARD_ERRORS else "COPY-GATE DEGRADED"
-    msg = (
-        prefix
-        + ": "
-        + "; ".join(reasons)
-        + " - fail-closed. Restore by re-cloning /tmp/brain or setting BANNED_TERMS_JSON "
-        + "and CODING_SIGNALS_JSON to the current meta-compliance data, then re-run."
-    )
-    # Route to the FIX-OWNER first (meta-compliance-agent owns banned-terms.json +
-    # cannabis-coding-signals.json) then the RUNNER (meta-ads, whose in-flight verdicts are
-    # degraded). The stdout marker already covers the runner; this wakes the owner who fixes
-    # the data. Best-effort per target; never raise (CI/test/no-binary must not crash the gate).
-    for _agent in ("meta-compliance-agent", "meta-ads-agent"):
-        try:
-            subprocess.run(
-                ["cortextos", "bus", "notify-agent", _agent, msg],
-                timeout=15,
-                check=False,
-            )
-        except Exception:
-            pass
-    try:
-        subprocess.run(
-            [
-                "cortextos",
-                "bus",
-                "log-event",
-                "error",
-                "copy_gate_authority_failure",
-                "error",
-                "--meta",
-                json.dumps({"reasons": reasons}),
-            ],
-            timeout=15,
-            check=False,
-        )
-    except Exception:
-        pass
-    chat_id = os.environ.get("CTX_TELEGRAM_CHAT_ID")
-    if chat_id:
-        try:
-            subprocess.run(
-                ["cortextos", "bus", "send-telegram", chat_id, msg],
-                timeout=15,
-                check=False,
-            )
-        except Exception:
-            pass
-
-
-def _brain_data_path(env_name, filename):
-    return os.environ.get(env_name) or os.path.join(_BRAIN_DATA_ROOT, filename)
-
-
-def _parse_version(value):
-    if not isinstance(value, str) or not value.strip():
-        return None
-    parts = value.strip().split(".")
-    parsed = []
-    for part in parts:
-        if not part.isdigit():
-            return None
-        parsed.append(int(part))
-    return tuple(parsed)
-
-
-def _version_at_least(value, floor):
-    parsed = _parse_version(value)
-    if parsed is None:
-        return False
-    width = max(len(parsed), len(floor))
-    return parsed + (0,) * (width - len(parsed)) >= floor + (0,) * (width - len(floor))
-
-
-def _require_version(data, floor, label):
-    version = data.get("version")
-    if not _version_at_least(version, floor):
-        raise ValueError(f"{label} version {version!r} below floor {'.'.join(map(str, floor))}")
-
-
-def _assert_banned_canary(compiled):
-    missing = [term for term in BANNED_TERMS_CANARY if not any(rx.search(term) for rx in compiled.values())]
-    if missing:
-        raise ValueError("banned-terms canary missing: " + ", ".join(missing))
-
-
-def _assert_coding_canary(compiled):
-    missing = [term for term in CODING_SIGNALS_CANARY if not compiled.search(term)]
-    if missing:
-        raise ValueError("coding-signals canary missing: " + ", ".join(missing))
-
-
-def _compile_hard_terms(entries):
-    grouped = {}
-    for item in entries:
-        m_code = str(item.get("m_code", "")).strip()
-        pattern = item.get("pattern")
-        if not m_code or not isinstance(pattern, str) or not pattern:
-            continue
-        grouped.setdefault(m_code, []).append(pattern)
-
-    if not grouped:
-        raise ValueError("no usable hard banned-term patterns found")
-
-    return {
-        m_code: re.compile("|".join(f"(?:{pattern})" for pattern in patterns), re.IGNORECASE)
-        for m_code, patterns in grouped.items()
-    }
-
-
-def _load_hard_terms():
-    path = _brain_data_path("BANNED_TERMS_JSON", "banned-terms.json")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        _require_version(data, BANNED_TERMS_VERSION_FLOOR, "banned-terms")
-        hard = data.get("hard")
-        if not isinstance(hard, list):
-            raise ValueError("top-level 'hard' is not an array")
-        compiled = _compile_hard_terms(hard)
-        _assert_banned_canary(compiled)
-        return compiled
-    except Exception as exc:
-        _record_hard_error(
-            f"failed to load authoritative banned terms from {path}: {exc}"
-        )
-        return {}
-
-
-HARD_TERMS = _load_hard_terms()
-
-
-def _load_decode_hard_remove():
-    """Compile de_code_hard_remove.patterns from cannabis-coding-signals.json (single source).
-
-    copy surface = HARD-REMOVE/FAIL (this gate). family-grown is NOT in this set (it is
-    adam_accepted_risk), so it passes. On load failure, force-UNCLEAR instead of PASS.
-    """
-    path = _brain_data_path("CODING_SIGNALS_JSON", "cannabis-coding-signals.json")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        _require_version(data, CODING_SIGNALS_VERSION_FLOOR, "coding-signals")
-        pats = [
-            p["pattern"]
-            for p in data["de_code_hard_remove"]["patterns"]
-            if isinstance(p.get("pattern"), str) and p["pattern"]
-        ]
-        if not pats:
-            raise ValueError("de_code_hard_remove.patterns is empty")
-        compiled = re.compile("|".join(f"(?:{p})" for p in pats), re.IGNORECASE)
-        _assert_coding_canary(compiled)
-        return compiled
-    except Exception as exc:
-        _record_degradation(
-            f"failed to load de-code signals from {path}: {exc}; force-UNCLEAR for all rows"
-        )
-        return None
-
-
-DECODE_HARD_RE = _load_decode_hard_remove()
-
 
 def _strip_quoted(text):
     """Remove quoted/parenthetical text so bare narration checks only test unquoted copy."""
@@ -283,28 +103,33 @@ def _valid_funnel(value):
 
 
 def gate(card):
-    if _GATE_HARD_ERRORS:
-        raise GateAuthorityError("; ".join(_GATE_HARD_ERRORS))
     p = []
+    authority = _authority()
+    authority_probe = verdict_core.classify("", authority, surface="copy")
+    if authority_probe.must_not_pass:
+        if authority_probe.authority_class != "component_loss":
+            raise GateAuthorityError(authority_probe.evidence)
     prod = card["product"]
     copy = card["copy"]
     cells = {k: _as_text(v) for k, v in dict(copy).items()}
     cells["ad_description"] = _as_text(card.get("ad_description", ""))
 
     for f, t in cells.items():
-        for m_code, pattern in HARD_TERMS.items():
-            if m_code == "M-13" and prod != "gummies":
-                continue
-            m = pattern.search(t)
-            if m:
-                p.append((f, m_code, m.group(0)))
-
-        if DECODE_HARD_RE is None:
-            p.append((f, "authority_degraded_force_unclear", "; ".join(_GATE_DEGRADATIONS)))
-        else:
-            m = DECODE_HARD_RE.search(t)
-            if m:
-                p.append((f, "decode_hard_remove", m.group(0)))
+        verdict = verdict_core.classify(t, authority, surface="copy")
+        if verdict.must_not_pass:
+            if verdict.authority_class == "component_loss":
+                for item in verdict.unclears or [verdict.evidence]:
+                    p.append((f, "verdict_core_unclear", item))
+            else:
+                raise GateAuthorityError(verdict.evidence)
+        elif verdict.verdict == "FAIL":
+            for item in verdict.fails:
+                if item.startswith("M-13") and prod != "gummies":
+                    continue
+                p.append((f, "verdict_core_fail", item))
+        elif verdict.verdict == "UNCLEAR":
+            for item in verdict.unclears:
+                p.append((f, "verdict_core_unclear", item))
 
         m = PRESS_RE.search(t)
         if m:
@@ -408,24 +233,6 @@ def gate(card):
 
 if __name__ == "__main__":
     card = json.load(open(sys.argv[1], encoding="utf-8")) if len(sys.argv) > 1 else json.load(sys.stdin)
-    # Surface a degraded term-set BEFORE running the gate: the degradation is known at
-    # import (the loaders populated _GATE_DEGRADATIONS), and gate() may raise on a malformed
-    # card - the operator must be alerted to a degraded gate regardless.
-    _fire_operator_alert()
-    if _GATE_HARD_ERRORS:
-        print(
-            "GATE HARD-ERROR:",
-            "; ".join(_GATE_HARD_ERRORS),
-            "(write nothing; restore /tmp/brain or authoritative env paths and re-run)",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    if _GATE_DEGRADATIONS:
-        print(
-            "GATE DEGRADED:",
-            "; ".join(_GATE_DEGRADATIONS),
-            "(force-UNCLEAR; restore /tmp/brain or authoritative env paths and re-run)",
-        )
     try:
         problems = gate(card)
     except GateAuthorityError as exc:
