@@ -11,12 +11,22 @@ Usage: python3 flag_writer_cards.py [--write] <card_id> [<card_id> ...]
        (dry-run prints intended actions; --write performs them)
 """
 import os, sys, json, urllib.request
+import resolve_cards as rc  # reuse the AUTHORITATIVE writer/designer field-detection (both ✍️ + 📝 Brief Writer instances, id-then-name-substring)
 
 TOKEN = ""
 for line in open("/Users/adamfolker/cortextos/orgs/clean-green-marketing/secrets.env"):
     if line.startswith("CLICKUP_API_TOKEN="):
         TOKEN = line.split("=", 1)[1].strip()
 H = {"Authorization": TOKEN}
+
+def writer_present(task):
+    """VERIFY (fresh read) whether the card actually has a Brief Writer set - checking BOTH the ✍️
+    and 📝 Brief Writer field instances via the authoritative resolver logic. NEVER flag / never post
+    "Brief Writer is unset" when a writer exists (the 2026-07-16 false-flag bug: this script used to
+    blindly flag whatever card id it was handed, off a possibly-stale caller read, and hardcode
+    "Brief Writer is unset" even when only the Designer was empty - it flagged 4 render-verified cards
+    whose writer WAS Sam Snyder). Returns the writer initials ('' if genuinely absent)."""
+    return rc.pick_initials(task.get("custom_fields", []), rc.WRITER_FIELD_IDS, rc.WRITER_NAME_SUBSTRS)
 LEEZA_ID = 4660837
 MARKER = "🤖 META-AGENT AUTO-FLAG"
 
@@ -78,6 +88,16 @@ def main():
     for cid in cards:
         t = get_task(cid)
         name = t.get("name","")[:50]
+        # VERIFY-BEFORE-FLAG (2026-07-16 fix): re-read the card's OWN fields; if the Brief Writer is
+        # actually set, this is NOT a missing-writer card - do NOT flag, do NOT post the false
+        # "Brief Writer is unset" comment. An empty Designer ALONE is never a flag condition (the
+        # resolver defaults Designer -> Writer for these UGC cards). Only a genuinely-absent writer
+        # (both ✍️ and 📝 Brief Writer empty) is flag-worthy. This makes the flag SELF-verifying
+        # instead of trusting the caller's (possibly stale) read.
+        w = writer_present(t)
+        if w:
+            print(f"{cid} {name!r} writer PRESENT ({w}) -> NOT missing, NO FLAG (skip; empty-designer defaults to writer)")
+            continue
         cur = (t.get("status") or {}).get("status","")
         fs = flagged_status_name(t)
         marked = already_marked(cid)

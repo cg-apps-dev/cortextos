@@ -123,6 +123,15 @@ def resolve(cid):
     # (covers ✍️ Brief Writer AND 📝 Brief Writer across the different boards).
     w = pick_initials(cf_list, WRITER_FIELD_IDS, WRITER_NAME_SUBSTRS)
     d = pick_initials(cf_list, DESIGNER_FIELD_IDS, DESIGNER_NAME_SUBSTRS)
+    # DESIGNER DEFAULTS TO THE BRIEF WRITER when the card's 🎨 Designer/Editor field is empty
+    # (Adam 2026-07-16: "designer for these is Sam" = the same person who wrote the brief; on the
+    # Pod/UGC boards one person routinely writes+designs). A REAL designer value always wins - this
+    # only fills a genuinely-blank designer. Prevents the false MISSING_DESIGNER flags that flagged +
+    # agent-flagged render-verified cards whose writer WAS set (Format2 Skeptic / Andy Alvarado / Jen
+    # Rutledge / Tony Cascio, 2026-07-16). If the writer is also blank, designer stays blank (nothing
+    # to default from) and the genuinely-missing WRITER is what gets flagged.
+    if not d and w:
+        d = w
     # Folder
     folder = ""
     for cf in t.get("custom_fields", []):
