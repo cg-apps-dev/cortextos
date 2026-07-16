@@ -24,6 +24,42 @@ Extraction record fields:
 import json, os, re, sys
 
 LEET = str.maketrans({'0':'o','1':'i','3':'e','4':'a','5':'s','@':'a','$':'s'})
+BANNED_TERMS_VERSION_FLOOR = (1, 0, 11)
+STRAIN_VERSION_FLOOR = (1, 0, 0)
+STRAIN_COUNT_FLOOR = 71
+BANNED_TERMS_CANARY = ("bud", "flower", "cannabis", "thc", "family grown")
+_BRAIN_DATA_ROOT = "/tmp/brain/agents/meta-compliance-agent/data"
+AUTHORITY_FORCE_UNCLEAR = []
+
+def brain_data_path(env_name, filename):
+    return os.environ.get(env_name) or os.path.join(_BRAIN_DATA_ROOT, filename)
+
+def parse_version(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    parts = value.strip().split(".")
+    parsed = []
+    for part in parts:
+        if not part.isdigit():
+            return None
+        parsed.append(int(part))
+    return tuple(parsed)
+
+def version_at_least(value, floor):
+    parsed = parse_version(value)
+    if parsed is None:
+        return False
+    width = max(len(parsed), len(floor))
+    return parsed + (0,) * (width - len(parsed)) >= floor + (0,) * (width - len(floor))
+
+def require_version(data, floor, label):
+    version = data.get("version")
+    if not version_at_least(version, floor):
+        raise ValueError(f"{label} version {version!r} below floor {'.'.join(map(str, floor))}")
+
+def record_force_unclear(reason):
+    AUTHORITY_FORCE_UNCLEAR.append(reason)
+    print(reason, file=sys.stderr)
 
 def leet_norm(text):
     return (text or "").lower().translate(LEET)
@@ -131,11 +167,11 @@ GUM_AMBIG_ALPHA = [
 #    "vision flag, not a blind grep".) A "Clean Green Flower" mockup still hard-FAILs independently on
 #    M-2 'flower'; the cleangreen.com domain URL stays exempt. Generalized to ALL claim_surface_only.
 def _load_brain_hard():
-    path = os.environ.get("BANNED_TERMS_JSON",
-                          "/tmp/brain/agents/meta-compliance-agent/data/banned-terms.json")
+    path = brain_data_path("BANNED_TERMS_JSON", "banned-terms.json")
     out = []; claim = []
     try:
         d = json.load(open(path, encoding="utf-8"))
+        require_version(d, BANNED_TERMS_VERSION_FLOOR, "banned-terms")
         ver = d.get("version", "?")
         for p in d.get("hard", []):
             pat = p.get("pattern")
@@ -153,10 +189,14 @@ def _load_brain_hard():
                 out.append(entry)
         if not out:
             raise ValueError("hard[] empty")
+        missing = [term for term in BANNED_TERMS_CANARY if not any(rx.search(term) for _, rx in out)]
+        if missing:
+            raise ValueError("banned-terms canary missing: " + ", ".join(missing))
         print(f"brain hard[] loaded: {len(out)} hard + {len(claim)} claim-surface->vision (banned-terms v{ver})", file=sys.stderr)
     except Exception as e:
-        print(f"WARNING: banned-terms.json load failed ({e}); running INLINE floor only - "
-              f"brain-added terms NOT covered this run, fix the file/path", file=sys.stderr)
+        record_force_unclear(
+            f"WARNING: banned-terms.json component load failed ({e}); force-UNCLEAR all creative rows"
+        )
         out = []; claim = []
     return out, claim
 BRAIN_HARD, BRAIN_CLAIM_SURFACE = _load_brain_hard()
@@ -221,21 +261,25 @@ LAST_KNOWN_STRAINS = [
 ]
 
 def _load_strains():
-    path = os.environ.get("STRAIN_LEXICON_JSON",
-                          "/tmp/brain/agents/meta-compliance-agent/data/strain-lexicon.json")
+    path = brain_data_path("STRAIN_LEXICON_JSON", "strain-lexicon.json")
     strains = set(LAST_KNOWN_STRAINS)
     try:
         d = json.load(open(path, encoding="utf-8"))
+        require_version(d, STRAIN_VERSION_FLOOR, "strain-lexicon")
         live = d.get("strains")
         if not isinstance(live, list):
             raise ValueError("strains is not a list")
         added = {s.strip().lower() for s in live if isinstance(s, str) and s.strip()}
         if not added:
             raise ValueError("strains empty")
+        if len(added) < STRAIN_COUNT_FLOOR:
+            raise ValueError(f"strain count {len(added)} below floor {STRAIN_COUNT_FLOOR}")
         strains |= added
         print(f"strain lexicon loaded: {len(added)} live + {len(LAST_KNOWN_STRAINS)} floor", file=sys.stderr)
     except Exception as e:
-        print(f"WARNING: strain-lexicon.json load failed ({e}); using LAST_KNOWN_STRAINS floor", file=sys.stderr)
+        record_force_unclear(
+            f"WARNING: strain-lexicon.json component load failed ({e}); force-UNCLEAR all creative rows"
+        )
     return sorted(strains, key=len, reverse=True)
 
 def _phrase_re(phrase):
@@ -400,6 +444,8 @@ def verdict_for(rec):
         unclears.append(f"de-code on-creative (Adam review):'{dv}'")
 
     if rec.get("low_conf"): unclears.append("low-confidence read")
+    for reason in AUTHORITY_FORCE_UNCLEAR:
+        unclears.append(f"authority degraded: {reason}")
 
     fails = list(dict.fromkeys(fails)); unclears = list(dict.fromkeys(unclears))
     vision_adjudicate = list(dict.fromkeys(vision_adjudicate))

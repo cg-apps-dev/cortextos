@@ -12,20 +12,22 @@ import re
 import subprocess
 import sys
 
-# banned-terms.json lives in the meta-compliance-agent (the single compliance source). When this
-# gate sits in the brain repo (agents/meta-ads-agent/meta-ad-copy-agent/references/), resolve it
-# relative to __file__ (4 dirs up = the agents/ dir). Override with $BANNED_TERMS_JSON; on any load
-# failure the embedded LAST_KNOWN_HARD fallback is used. rules.md/banned-terms.json stay the authority.
-DEFAULT_BANNED_TERMS_JSON = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-    "meta-compliance-agent", "data", "banned-terms.json",
-)
+BANNED_TERMS_VERSION_FLOOR = (1, 0, 11)
+CODING_SIGNALS_VERSION_FLOOR = (1, 1, 5)
+BANNED_TERMS_CANARY = ("bud", "flower", "cannabis", "thc", "family grown")
+CODING_SIGNALS_CANARY = ("lab-tested",)
+_BRAIN_DATA_ROOT = "/tmp/brain/agents/meta-compliance-agent/data"
 
 HEAD = ["headline", "hv1", "hv2", "hv3", "hv4"]
 BODY = ["primary", "pv1", "pv2", "pv3", "pv4"]
 VALID_FUNNELS = {"TOF", "MOF", "BOF"}
 _GATE_DEGRADATIONS = []
+_GATE_HARD_ERRORS = []
 _GATE_ALERTED = [False]
+
+
+class GateAuthorityError(RuntimeError):
+    """Raised when a core authority is unavailable and the run must write nothing."""
 
 # Canonical avatar lists (the authority - gog can't read the live dropdown; API doesn't reject invalid).
 AVATARS = {
@@ -48,43 +50,6 @@ AVATARS = {
     },
 }
 
-LAST_KNOWN_HARD = [
-    {"m_code": "M-2", "pattern": r"\b(bud|flower|pre-roll|strain|harvest|cannabis|marijuana|weed|thc|thca|cbd|hemp)\b"},
-    {"m_code": "M-2", "pattern": r"\bhand[- ]?roll(s|ed|ing|er)?\b"},
-    {"m_code": "M-2", "pattern": r"\b(eighth|eighths|gram|grams|nug|nugs|dank|dime bag|dub sack)\b"},
-    {"m_code": "M-2", "pattern": r"\b(discreet|discreetly|stealth|vacuum sealed|plain box|plain billing|unmarked)\b"},
-    {"m_code": "M-2", "pattern": r"no (smells|labels|logos|giveaways|markings)"},
-    {"m_code": "M-2", "pattern": r"nothing on the (box|statement|card)"},
-    {"m_code": "M-2", "pattern": r"(generic line item|generic statement)"},
-    {"m_code": "M-2", "pattern": r"\b(potency|potent|strong enough|side effects|kicks in)\b"},
-    {"m_code": "M-2", "pattern": r"\b(no medical card|no prescription|without a doctor|loophole)\b"},
-    {"m_code": "M-2", "pattern": r"\b(federally compliant|farm bill|agriculture act)\b"},
-    {"m_code": "M-2", "pattern": r"(certificate of analysis|coa)\b"},
-    {"m_code": "M-2", "pattern": r"\b(no pesticides|no sprays)\b"},
-    {"m_code": "M-2", "pattern": r"(selling stigma|war on drugs|big pharma|dispensary|dispensaries)"},
-    {"m_code": "M-2", "pattern": r"\b(legal|legally|legality|illegal|illegally)\b", "claim_surface_only": True},
-    {"m_code": "M-2", "pattern": r"\b(scam|scams|scammy)\b", "claim_surface_only": True},
-    {"m_code": "M-2", "pattern": r"\b(package seizure|dea)\b"},
-    {"m_code": "M-2", "pattern": r"\b(72|48|24)\s*-?\s*(hour|hr)s?\b"},
-    {"m_code": "M-16", "pattern": r"\b\d+\s*-?\s*(hour|hr|hrs|day|days|minute|min)s?\s+(deliver|delivery|shipping|ship)\b|\b(deliver(ed|y|s)?|ship(s|ped|ping)?|arrives?)\b[^.\n]{0,12}\bin\s+\d+\s*(hour|hr|hrs|day|days|minute|min)s?\b"},
-    {"m_code": "M-2", "pattern": r"\bmedical\b"},
-    {"m_code": "M-19a", "pattern": r"\b(stoned|smoke|smoking|cbn|indica|sativa|ganja|reefer|mary ?jane|blazed|blaze up|get lifted)\b"},
-    {"m_code": "M-19a", "pattern": r"\b(delta[ -]?8|delta[ -]?9|delta[ -]?10|hhc|thc[ -]?o|thc[ -]?p|thcp|thcv|tetrahydrocannabinol)\b"},
-    {"m_code": "M-19a", "pattern": r"\b(bong|dab rig|rolling papers?|rolling tray|one-hitter|bubbler|spliff)\b"},
-    {"m_code": "M-19e", "pattern": "\U0001F33F|\U0001F343|\U0001F4A8|\U0001F6AC|\U0001F48A"},
-    {"m_code": "M-24a", "pattern": r"\bclean green\b", "claim_surface_only": True},
-    {"m_code": "M-21a", "pattern": r"\b(cocaine|heroin|fentanyl|methamphetamine|oxycodone|oxycontin|percocet|mdma|ecstasy|ketamine|psilocybin|lsd|opioids?)\b"},
-    {"m_code": "M-25a", "pattern": r"\bscams?\b|\bscam(med|my)\b|\brip-?offs?\b|\bripped off\b|\bfake[ds]?\b|\bfaking\b|\bfraud(ulent)?\b|\bcounterfeits?\b|\bknock-?offs?\b|\bbogus\b|\bhoax(es)?\b|\bswindle[ds]?\b|\bswindling\b|\billegitimate\b|too good to be true", "claim_surface_only": True},
-    {"m_code": "M-16", "pattern": r"you won'?t believe|doctors hate|the truth they don'?t want|big (pharma|sleep|wellness|sleep industry)|shocking|game.?changer|mind.?blowing|works in (minutes|seconds)|knocks you out|guaranteed sleep|instant relief|one weird trick"},
-    {"m_code": "M-16", "pattern": r"\b(URGENT|WARNING|DANGER|ALERT)\b|(?<!no )(?<!zero )\brisk\b(?!-? ?free)"},
-    {"m_code": "M-16a", "pattern": r"\b\d[\d,]{2,}\+?\s*(customers|reviews|people|subscribers|households|orders|families|users)\b|\b\d[\d,]*\+?\s*(5[- ]?star|five[- ]?star)\b|\b\d(\.\d)?\s*(\u2605|stars?)\b[^.\n]{0,15}(rating|review)"},
-    {"m_code": "M-18", "pattern": r"guaranteed results|results guaranteed|guaranteed to (work|help|cure|heal|relieve|fix|solve|stop|improve|reduce|eliminate|make you)|we guarantee you( will|'?ll)"},
-    {"m_code": "M-12", "pattern": r"struggl(e|ing|ed) (to|with)|tired of (being|feeling)|are you (anxious|depressed|stressed|overwhelmed|tired|exhausted)|if (you|your).*(diagnosed|suffering|managing)|for (people|those|anyone) (dealing with|managing|struggling|with)[^.\n]*\b(sleep|insomnia|anxiety|stress|pain)\b|can'?t (sleep|fall asleep|stay asleep)"},
-    {"m_code": "M-22a", "pattern": r"get rid of your|fix your (ugly|bad|problem|stubborn)|stop being embarrassed|finally (lose|get rid of)|tired of feeling (fat|ugly|old|gross|tired)|the body you deserve|perfect body"},
-    {"m_code": "M-5", "pattern": r"\b(no|not|without|zero)\s+(next[- ]?day\s+)?(grog|groggy|grogginess|fog|foggy|haze|hazy|hangover|sluggish|sluggishness|drowsy|drowsiness)\b"},
-    {"m_code": "M-13", "pattern": r"wake up (refreshed|rested|clear[- ]?headed|renewed|energized)|wakes? up (refreshed|rested|clear[- ]?headed)|clear[- ]?headed and refreshed"},
-]
-
 FIRST_PERSON_RE = re.compile(r"\b(I(?:['\u2019]m|['\u2019]ve|['\u2019]ll|['\u2019]d)?|my|me|mine)\b", re.IGNORECASE)
 THIRD_PERSON_HEADLINE_RE = re.compile(r"^\s*(he|she|they)\b|\b(his|her|their)\b", re.IGNORECASE)
 PRESS_RE = re.compile(r"\b(CBS|FOX|USA Today|MSNBC|NBC|ABC News)\b", re.IGNORECASE)
@@ -93,14 +58,6 @@ PRESS_RE = re.compile(r"\b(CBS|FOX|USA Today|MSNBC|NBC|ABC News)\b", re.IGNORECA
 # DECODE_SHIP_RE is retired - it under-covered (eligible-states only) and was a second source of
 # truth. family-grown is NOT in de_code_hard_remove (it's adam_accepted_risk) so it correctly passes.
 # surface_handling.copy = HARD-REMOVE/FAIL -> this gate fails on any hit (must return 0 to pass).
-DEFAULT_CODING_SIGNALS_JSON = os.path.join(
-    os.path.dirname(DEFAULT_BANNED_TERMS_JSON), "cannabis-coding-signals.json"
-)
-LAST_KNOWN_DECODE = [
-    r"\b(ships?|shipping|available|delivery)\b[^.\n]{0,20}\b(eligible|select|certain|legal)\s+states\b|\beligible states\b|\bstate list\b|\bwhere (it'?s )?legal\b",
-    r"\b(lab[- ]?tested|test results|third[- ]?party tested|independently tested|tested before it ships|certificate of analysis|\bcoa\b)\b",
-    r"\bfarm[- ]?direct\b",
-]
 EM_DASH = "\u2014"
 # Offer-CTA recognition (Adam rules 2026-06-22): every body must CLOSE on an offer CTA, and
 # >=2 of the 5 headlines must be direct offer-CTA headlines. Tokens kept specific so a bare
@@ -119,15 +76,23 @@ def _record_degradation(reason):
     print(reason, file=sys.stderr)
 
 
+def _record_hard_error(reason):
+    _GATE_HARD_ERRORS.append(reason)
+    print(reason, file=sys.stderr)
+
+
 def _fire_operator_alert():
-    if not _GATE_DEGRADATIONS or _GATE_ALERTED[0]:
+    reasons = _GATE_HARD_ERRORS + _GATE_DEGRADATIONS
+    if not reasons or _GATE_ALERTED[0]:
         return
     _GATE_ALERTED[0] = True
+    prefix = "COPY-GATE HARD-ERROR" if _GATE_HARD_ERRORS else "COPY-GATE DEGRADED"
     msg = (
-        "COPY-GATE DEGRADED: "
-        + "; ".join(_GATE_DEGRADATIONS)
-        + " - running on LAST_KNOWN reduced term-set, verdicts may MISS banned terms. "
-        + "FIX the data file + re-run."
+        prefix
+        + ": "
+        + "; ".join(reasons)
+        + " - fail-closed. Restore by re-cloning /tmp/brain or setting BANNED_TERMS_JSON "
+        + "and CODING_SIGNALS_JSON to the current meta-compliance data, then re-run."
     )
     # Route to the FIX-OWNER first (meta-compliance-agent owns banned-terms.json +
     # cannabis-coding-signals.json) then the RUNNER (meta-ads, whose in-flight verdicts are
@@ -142,6 +107,75 @@ def _fire_operator_alert():
             )
         except Exception:
             pass
+    try:
+        subprocess.run(
+            [
+                "cortextos",
+                "bus",
+                "log-event",
+                "error",
+                "copy_gate_authority_failure",
+                "error",
+                "--meta",
+                json.dumps({"reasons": reasons}),
+            ],
+            timeout=15,
+            check=False,
+        )
+    except Exception:
+        pass
+    chat_id = os.environ.get("CTX_TELEGRAM_CHAT_ID")
+    if chat_id:
+        try:
+            subprocess.run(
+                ["cortextos", "bus", "send-telegram", chat_id, msg],
+                timeout=15,
+                check=False,
+            )
+        except Exception:
+            pass
+
+
+def _brain_data_path(env_name, filename):
+    return os.environ.get(env_name) or os.path.join(_BRAIN_DATA_ROOT, filename)
+
+
+def _parse_version(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    parts = value.strip().split(".")
+    parsed = []
+    for part in parts:
+        if not part.isdigit():
+            return None
+        parsed.append(int(part))
+    return tuple(parsed)
+
+
+def _version_at_least(value, floor):
+    parsed = _parse_version(value)
+    if parsed is None:
+        return False
+    width = max(len(parsed), len(floor))
+    return parsed + (0,) * (width - len(parsed)) >= floor + (0,) * (width - len(floor))
+
+
+def _require_version(data, floor, label):
+    version = data.get("version")
+    if not _version_at_least(version, floor):
+        raise ValueError(f"{label} version {version!r} below floor {'.'.join(map(str, floor))}")
+
+
+def _assert_banned_canary(compiled):
+    missing = [term for term in BANNED_TERMS_CANARY if not any(rx.search(term) for rx in compiled.values())]
+    if missing:
+        raise ValueError("banned-terms canary missing: " + ", ".join(missing))
+
+
+def _assert_coding_canary(compiled):
+    missing = [term for term in CODING_SIGNALS_CANARY if not compiled.search(term)]
+    if missing:
+        raise ValueError("coding-signals canary missing: " + ", ".join(missing))
 
 
 def _compile_hard_terms(entries):
@@ -163,19 +197,22 @@ def _compile_hard_terms(entries):
 
 
 def _load_hard_terms():
-    path = os.environ.get("BANNED_TERMS_JSON", DEFAULT_BANNED_TERMS_JSON)
+    path = _brain_data_path("BANNED_TERMS_JSON", "banned-terms.json")
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
+        _require_version(data, BANNED_TERMS_VERSION_FLOOR, "banned-terms")
         hard = data.get("hard")
         if not isinstance(hard, list):
             raise ValueError("top-level 'hard' is not an array")
-        return _compile_hard_terms(hard)
+        compiled = _compile_hard_terms(hard)
+        _assert_banned_canary(compiled)
+        return compiled
     except Exception as exc:
-        _record_degradation(
-            f"WARNING: failed to load banned terms from {path}: {exc}; using LAST_KNOWN fallback"
+        _record_hard_error(
+            f"failed to load authoritative banned terms from {path}: {exc}"
         )
-        return _compile_hard_terms(LAST_KNOWN_HARD)
+        return {}
 
 
 HARD_TERMS = _load_hard_terms()
@@ -185,12 +222,13 @@ def _load_decode_hard_remove():
     """Compile de_code_hard_remove.patterns from cannabis-coding-signals.json (single source).
 
     copy surface = HARD-REMOVE/FAIL (this gate). family-grown is NOT in this set (it is
-    adam_accepted_risk), so it passes. On any load failure, fall back to LAST_KNOWN_DECODE.
+    adam_accepted_risk), so it passes. On load failure, force-UNCLEAR instead of PASS.
     """
-    path = os.environ.get("CODING_SIGNALS_JSON", DEFAULT_CODING_SIGNALS_JSON)
+    path = _brain_data_path("CODING_SIGNALS_JSON", "cannabis-coding-signals.json")
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
+        _require_version(data, CODING_SIGNALS_VERSION_FLOOR, "coding-signals")
         pats = [
             p["pattern"]
             for p in data["de_code_hard_remove"]["patterns"]
@@ -198,12 +236,14 @@ def _load_decode_hard_remove():
         ]
         if not pats:
             raise ValueError("de_code_hard_remove.patterns is empty")
+        compiled = re.compile("|".join(f"(?:{p})" for p in pats), re.IGNORECASE)
+        _assert_coding_canary(compiled)
+        return compiled
     except Exception as exc:
         _record_degradation(
-            f"WARNING: failed to load de-code signals from {path}: {exc}; using LAST_KNOWN_DECODE"
+            f"failed to load de-code signals from {path}: {exc}; force-UNCLEAR for all rows"
         )
-        pats = LAST_KNOWN_DECODE
-    return re.compile("|".join(f"(?:{p})" for p in pats), re.IGNORECASE)
+        return None
 
 
 DECODE_HARD_RE = _load_decode_hard_remove()
@@ -243,6 +283,8 @@ def _valid_funnel(value):
 
 
 def gate(card):
+    if _GATE_HARD_ERRORS:
+        raise GateAuthorityError("; ".join(_GATE_HARD_ERRORS))
     p = []
     prod = card["product"]
     copy = card["copy"]
@@ -257,9 +299,12 @@ def gate(card):
             if m:
                 p.append((f, m_code, m.group(0)))
 
-        m = DECODE_HARD_RE.search(t)
-        if m:
-            p.append((f, "decode_hard_remove", m.group(0)))
+        if DECODE_HARD_RE is None:
+            p.append((f, "authority_degraded_force_unclear", "; ".join(_GATE_DEGRADATIONS)))
+        else:
+            m = DECODE_HARD_RE.search(t)
+            if m:
+                p.append((f, "decode_hard_remove", m.group(0)))
 
         m = PRESS_RE.search(t)
         if m:
@@ -367,13 +412,25 @@ if __name__ == "__main__":
     # import (the loaders populated _GATE_DEGRADATIONS), and gate() may raise on a malformed
     # card - the operator must be alerted to a degraded gate regardless.
     _fire_operator_alert()
+    if _GATE_HARD_ERRORS:
+        print(
+            "GATE HARD-ERROR:",
+            "; ".join(_GATE_HARD_ERRORS),
+            "(write nothing; restore /tmp/brain or authoritative env paths and re-run)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     if _GATE_DEGRADATIONS:
         print(
             "GATE DEGRADED:",
             "; ".join(_GATE_DEGRADATIONS),
-            "(running on LAST_KNOWN reduced set - verdicts may MISS terms; FIX the data file)",
+            "(force-UNCLEAR; restore /tmp/brain or authoritative env paths and re-run)",
         )
-    problems = gate(card)
+    try:
+        problems = gate(card)
+    except GateAuthorityError as exc:
+        print(f"GATE HARD-ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
     print("GATE:", "CLEAN" if not problems else f"{len(problems)} HITS")
     for x in problems:
         print(" ", x)

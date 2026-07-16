@@ -290,7 +290,7 @@ The deterministic pipeline shells out to local binaries. A fresh host (or re-cre
 | `tesseract` | Phase 1 + 1-V OCR text source (`scripts/extract_text.sh`) | `brew install tesseract` |
 | `ffmpeg` | Image quadrant tiling (Phase 1 Step 3), video frame sampling + audio extraction (Phase 1-V) | `brew install ffmpeg` |
 | `whisper` | Phase 1-V local audio transcription (zero LLM tokens) | openai-whisper at `~/Library/Python/3.9/bin` (`pip3 install openai-whisper`), or whisper.cpp `whisper-cli -m ~/.cortextos/models/ggml-tiny.en.bin` |
-| `python3` | Deterministic gate scripts (`scripts/grep_verdict.py`, `scripts/copy_gate.py`) | system python3 |
+| `python3` | Creative-scan gate: `scripts/grep_verdict.py`. Copy gate: the single authoritative brain-derived `agents/meta-ads-agent/meta-ad-copy-agent/references/copy-gate.py` only. | system python3 |
 | `gh` | Live brain-repo rules pull (COMPLIANCE SOURCE RULE) | authed with read on `CLEAN-APPS-DEV/clean-green-marketing-brain` |
 
 Quick check: `command -v tesseract ffmpeg gh python3 && (command -v whisper || ls ~/Library/Python/3.9/bin/whisper)` - resolve any miss before starting a run (video scans hard-require all of tesseract/ffmpeg/whisper).
