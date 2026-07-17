@@ -64,6 +64,8 @@ Why prefix and not the full header string: live headers carry a curated ` | <des
 > 2. **Descriptor rebrand `Flower 2` → `Flow 2`.** Adam renamed ALL FOUR Flower-2-line E-code headers (E-0842, E-0930, E-0828, E-0750) to `| Flow 2` (the "Flower" → "Flow" sheet rebrand). Matching is unaffected (it is on the name-PREFIX before the first ` | `, not the descriptor), but the table above now reflects the `Flow 2` descriptors. The rebrand applies only to the descriptor suffix; the E-code prefix is unchanged and remains the authoritative match key.
 > 3. **LAUNCH PROTOCOL (recontextualizes STEP 2 status semantics).** New ads launch into a SANDBOX campaign kept **OFF** purely to TEST Meta approval - it never runs live. An **APPROVED** sandbox ad's effectiveStatus reads `CAMPAIGN_PAUSED` (passed review), a **REJECTED** one reads `DISAPPROVED`. Approved ads then get **DUPLICATED into the PROSPECTING campaign** to go live. The **live-signal to monitor is PROSPECTING `effectiveStatus` ACTIVE, NOT the sandbox pause-state** - a sandbox `CAMPAIGN_PAUSED` ad is approved-but-not-live, never treat it as a live launch. (Origin: Adam clarified the protocol 2026-07-03; the E-0828 batch's 20 `CAMPAIGN_PAUSED` ads were the sandbox approval-test, not live ads.)
 
+> **2026-07-12 (dual-id keying, mmb + orchestrator):** a sandbox-then-prospecting creative exists as TWO live ads with the SAME name (a sandbox ad `CAMPAIGN_PAUSED` + a prospecting dup that carries the real live status incl `DISAPPROVED`). Because the combined per-account cell freezes the FIRST-seen (usually sandbox) ad id as the set-once id, a later prospecting rejection was NOT reflected (observed on E-0828 IMG_409_V1: sheet cell held the sandbox id/`CAMPAIGN_PAUSED` while the prospecting dup `120248489985590207` was live-`DISAPPROVED`). **RULE going forward: when a creative has both a sandbox and a prospecting instance, KEY the per-account cell on the PROSPECTING dup - its ad id (set-once) AND its effectiveStatus (the refresh field, the live signal per the 2026-07-03 protocol), not the sandbox id/pause-state.** Do NOT mass-backfill historical sandbox-keyed cells (set-once, low value); apply going-forward + stamp any live prospecting rejection found. Under the own-cred AdManage MCP, `list_ads` (account-wide, returns both instances w/ effectiveStatus) is the source - pick the prospecting-campaign instance to key.
+
 ### Per-account column = ONE combined tracking cell (2026-06-10, Adam-directed)
 
 Each per-account column (header == account Short Name) holds a SINGLE combined cell:
@@ -106,7 +108,7 @@ GUMMIES_TABS = ["VIDEOS (Sleep Gummies)", "IMAGES (Sleep Gummies)"]
 
 ## STEP 0: Resolve columns from live headers (HARD GATE - run first, every run)
 
-Before doing anything else, read row 1 of the tabs you will touch via **gog CLI** (own-credential, bearer-safe — NOT Composio, which is dead under this agent's bearer token and hangs). One `gog sheets get` per tab:
+Before doing anything else, read row 1 of the tabs you will touch via **gog CLI** (own-credential, bearer-safe - NOT Composio, which is dead under this agent's bearer token and hangs). One `gog sheets get` per tab:
 
 ```
 gog sheets get 1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME "'VIDEOS (Flower)'!A1:BA1" --account adam@cleangreen.com -j
@@ -121,6 +123,14 @@ For each tab build a `header → column-letter` map. From it resolve:
 ---
 
 ## STEP 1: Pull Recent Launches from AdManage
+
+> **2026-07-14 (ACCOUNT SET = FULL, not a hardcoded subset - mmb + orchestrator):** the account set to scan is the **entire live `list_ad_accounts` set (own-cred), NOT the hardcoded account table above.** Under the own-cred AdManage MCP the `list_activity_log` path is unavailable, so launches are detected via a per-account `list_ads` scan - which means the account enumeration is explicit and MUST be the full visible list, filtered to real creatives at read-time.
+
+> **REAL-CREATIVE test - do NOT gate on a non-empty card-id (2026-07-14 fix, Adam-caught):** a "real creative" = its ad name has the **structured creative format** (contains `FCA=` / `lp=` / `hp=` / a `Vxx`/`IMG_xxx` prefix / the ` - ID=` field), **even when the `ID=` card-id value is BLANK** (e.g. `V01 - KU Creative Test - Claymation - ... - ID= - hp=home - lp=cleangreen.delivery/...`). Engagement/test JUNK = unstructured names like `Heart`, `Heart 1 - Copy`, `New Engagement Ad`, `Sarah 1`, `Vid 1`, `Img 1` with none of those fields. The earlier heuristic "real = has a card-id value" WRONGLY bucketed a blank-card-id creative (KU Claymation, launched to CG-AGY-1) as junk and reported the account as having zero real creatives → a live ad was missed. Match a blank-card-id creative to its sheet row by the **full date-stripped ad name** (card-id key is unavailable when `ID=` is blank). Never conclude "not launched" for an account from the read-time filter alone - a blank-card-id or off-sheet launch can hide behind it. **Never pre-narrow to a subset of "active" accounts** - new/warming accounts launch too, and a pre-excluded account is a silent blind-spot (on 2026-07-14 a hardcoded-4 scope missed 3 live 07-13 rejections in E-0639 (warming) + E-0682 (new account added that day), all `DISAPPROVED`, caught only when Adam flagged "there's more than 4 accounts"). A "no recent launches" account is cheap to scan and confirms quiet.
+
+> **AUTO-ADD COLUMN for new accounts (Adam HARD RULE 2026-07-14):** if a scanned account has real launches but **no per-account tracking column** on the relevant tab, do NOT just surface it - **ADD a matching per-account column and stamp**, on BOTH tabs of that account's category (IMAGES + VIDEOS). Match the EXACT existing format: header = the account Short Name per the `E-XXXX | <descriptor>` convention (place it in the per-account block after the last existing account column), and replicate the per-account cell format INCLUDING the shared conditional-formatting fill (Rejected=red / Pending=yellow / Active=green) by copying an existing per-account column's format + extending the conditional-format rule range to cover the new column. Because a column insert is a STRUCTURAL sheet change that shifts references, run it under the writer-quiet **FREEZE protocol** and coordinate with meta-ads (who owns the conditional-formatting rules) so colors match and no formulas break - batch it with any other in-flight column-add into one freeze cycle. Then stamp the account's launches/rejections into the new column. Never leave a launched-to account unstamped for lack of a column.
+
+Accounts returning `meta_graph #200` (ads_read not granted) → surface for a Meta owner-grant.
 
 Call `list_activity_log` with these filters:
 - `action`: `launch_ads`
@@ -167,7 +177,7 @@ Determine which tabs to search based on the accounts found in Step 2:
 - If any Flower account appears → load Ad Name columns from both Flower tabs
 - If any Gummies account appears → load Ad Name columns from both Gummies tabs
 
-For each tab that needs loading, read via **gog CLI** (own-credential Google Sheets; the Composio claude.ai bridge is dead under this agent's bearer token, so it hangs — NEVER use Composio `GOOGLESHEETS_*` here):
+For each tab that needs loading, read via **gog CLI** (own-credential Google Sheets; the Composio claude.ai bridge is dead under this agent's bearer token, so it hangs - NEVER use Composio `GOOGLESHEETS_*` here):
 
 ```
 gog sheets get 1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME "'{tab_name}'!{ad_name_col}:{ad_name_col}" --account adam@cleangreen.com -j
@@ -251,7 +261,7 @@ For each `(adName, adAccountId, ...)` from Step 2:
 4. Resolve the per-account column (header == the account Short Name) from STEP 0
 5. Resolve the `Meta Compliance Agent` verdict column from STEP 0
 
-Read via **gog CLI** (NOT Composio — bearer kills the Composio bridge). `gog sheets get` reads one range per call, so read each per-account column range and the `Meta Compliance Agent` column range you need (a whole-column read like `'{tab}'!{col}2:{col}` covers all rows at once — prefer one read per column over one per cell to respect rate limits):
+Read via **gog CLI** (NOT Composio - bearer kills the Composio bridge). `gog sheets get` reads one range per call, so read each per-account column range and the `Meta Compliance Agent` column range you need (a whole-column read like `'{tab}'!{col}2:{col}` covers all rows at once - prefer one read per column over one per cell to respect rate limits):
 
 ```
 gog sheets get 1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME "'{tab}'!{account_col}2:{account_col}" --account adam@cleangreen.com -j
@@ -261,7 +271,11 @@ You only need the launching account's own column (each account's cell is indepen
 
 ---
 
-## STEP 5: Write the Combined Per-Account Cell (write-once fields + refresh status)
+## STEP 5: Write the Combined Per-Account Cell
+
+> **2026-07-14 - SET-ONCE RETIRED for these status columns (Adam-requested, orchestrator-authorized; this is the ONGOING semantics, not a one-off):** the per-account cell now reflects the creative's **CURRENT LIVE status**, not a frozen first-launch snapshot. Re-dups into the prospecting campaign spawn NEW off-sheet ad IDs and the original stamped ID goes stale/`ARCHIVED` - which Adam flagged as unhelpful. So on every run, **re-map each creative to its CURRENT live ad** in that account (the newest NON-archived / prospecting instance = the live signal per the 2026-07-03 protocol) and stamp `{current-status} - {that ad's launch date MM/DD/YYYY h:mm AM/PM PT} - Ad ID: {that ad's current id}`. Both the STATUS **and** the Ad ID (and date) now refresh to the current live ad. `ARCHIVED` drops to the real current `Active`/`Rejected`/`Pending`. **This OVERRIDES the set-once date/Ad-ID rule described below for the per-account status columns** - the set-once language below is retained only as history. (Preserve the original first-launch date off-cell - on the ClickUp card - if it is not captured anywhere else, before overwriting.) If a creative's current live ad cannot be resolved (over the 200-ad cap, or the account is unreadable), FLAG the cell - never leave a stale stamp looking fresh.
+
+### Combined-cell format (write-once fields + refresh status - HISTORY, superseded above for status cols)
 
 Each per-account column cell holds ONE combined string:
 
@@ -276,7 +290,7 @@ Write rules per matched `(adAccountId, row)`:
 
 This makes **status a REFRESH field** (re-evaluated every run) and **date/time + Ad ID set-once fields** (frozen at launch), all inside one cell. Parse defensively: split the existing value on the first ` - ` to separate `Status` from the fixed tail; if the cell does not match the expected shape (legacy bare date, or hand-edited), rewrite it cleanly from this run's values and log it.
 
-Write via **gog CLI** (NOT Composio — the Composio claude.ai bridge is dead under this agent's bearer token and a Composio sheet-write HANGS the whole session; this is the confirmed root cause of the launch-tracker stalls). Use `gog sheets batch-update --data-json` with `--input RAW`, all target cells in ONE call (it handles multi-range natively — no Composio wrapper limit):
+Write via **gog CLI** (NOT Composio - the Composio claude.ai bridge is dead under this agent's bearer token and a Composio sheet-write HANGS the whole session; this is the confirmed root cause of the launch-tracker stalls). Use `gog sheets batch-update --data-json` with `--input RAW`, all target cells in ONE call (it handles multi-range natively - no Composio wrapper limit):
 
 ```
 gog sheets batch-update --data-json '[{"range":"'\''{tab}'\''!{account_col}{row}","values":[["{Status} - {MM/DD/YYYY H:MM AM/PM PT} - Ad ID: {adId}"]]}, ... more ranges ...]' 1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME --input RAW --account adam@cleangreen.com -j
@@ -392,4 +406,4 @@ This is the same string STEP 5.5 already emits; this section only NAMES it as th
 ## TOOLS REQUIRED
 
 - **AdManage MCP:** `list_activity_log`, `get_activity_log_details`, `get_batch_status`, `get_batch_delivery_statuses`
-- **Google Sheets via `gog` CLI (own-credential, bearer-safe — NOT Composio):** `gog sheets get <SPREADSHEET_ID> "<range>" --account adam@cleangreen.com -j` (read), `gog sheets batch-update --data-json '[{range,values}...]' <SPREADSHEET_ID> --input RAW --account adam@cleangreen.com -j` (write). The claude.ai Composio bridge (`COMPOSIO_MULTI_EXECUTE_TOOL` / `GOOGLESHEETS_*`) is DEAD under this agent's bearer token — a Composio sheet call hangs the session. Do NOT use it.
+- **Google Sheets via `gog` CLI (own-credential, bearer-safe - NOT Composio):** `gog sheets get <SPREADSHEET_ID> "<range>" --account adam@cleangreen.com -j` (read), `gog sheets batch-update --data-json '[{range,values}...]' <SPREADSHEET_ID> --input RAW --account adam@cleangreen.com -j` (write). The claude.ai Composio bridge (`COMPOSIO_MULTI_EXECUTE_TOOL` / `GOOGLESHEETS_*`) is DEAD under this agent's bearer token - a Composio sheet call hangs the session. Do NOT use it.
