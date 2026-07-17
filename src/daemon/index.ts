@@ -169,6 +169,25 @@ function sendCrashLoopAlertBestEffort(
     `Last error: ${errStr.slice(0, 500)}\n` +
     `Next alert in 30 min if the pattern continues.`;
   try {
+    // OPS-FIRST: route the crash-loop alert to the orchestrator via a FRESH CLI process (works while the
+    // daemon is looping, AS LONG AS bus/CLI are still up). process.execPath + dist/cli.js is the
+    // PATH-unaware-safe invocation (a PM2-spawned daemon may not have 'cortextos' on PATH) - same pattern
+    // as notifyAgents / fast-checker.
+    const cliPath = join(frameworkRoot, 'dist', 'cli.js');
+    const ops = spawnSync(process.execPath, [
+      cliPath, 'bus', 'notify-agent', 'the-orchestrator', `[DAEMON-CRASHLOOP] ${message}`,
+    ], { timeout: TELEGRAM_SEND_TIMEOUT_MS, stdio: 'pipe' });
+    if (ops.status === 0) {
+      console.error('[daemon] Crash-loop alert routed to ops (the-orchestrator)');
+      return true;
+    }
+    // LAST-RESORT operator-direct FALLBACK: a crash-looping daemon may have taken the bus/CLI/ops DOWN too,
+    // so the ops-route can vanish into dead ops. Fall back to the raw operator-direct send so a genuine
+    // whole-fleet-down alert is NEVER silenced. Fires ONLY on ops failure/timeout (a rare slow-but-
+    // succeeding ops-route could then also send here = a double-send, accepted as FAIL-SAFE: over-alerting
+    // on a fleet-death is the safe direction). NOT fired unconditionally (that would be operator-noise
+    // on every crash-loop).
+    console.error('[daemon] Crash-loop ops-route failed/timed-out -> last-resort operator-direct fallback');
     const r = spawnSync('curl', [
       '-s', '--max-time', '3',
       '-X', 'POST',
@@ -177,10 +196,10 @@ function sendCrashLoopAlertBestEffort(
       '--data-urlencode', `text=${message}`,
     ], { timeout: TELEGRAM_SEND_TIMEOUT_MS, stdio: 'pipe' });
     if (r.status === 0) {
-      console.error('[daemon] Crash-loop alert sent to operator chat');
+      console.error('[daemon] Crash-loop last-resort operator-direct sent');
       return true;
     }
-    console.error('[daemon] Crash-loop alert send failed (non-fatal)');
+    console.error('[daemon] Crash-loop alert failed on BOTH ops + operator-direct (non-fatal)');
     return false;
   } catch {
     return false;

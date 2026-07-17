@@ -378,14 +378,13 @@ async function main(): Promise<void> {
       lastTask,
       crashCount,
       restartAttempted,
-      recipients: ['chief', 'analyst'],
+      recipients: ['chief', 'analyst', 'the-orchestrator'],
     });
   }
 
-  const botToken = process.env.BOT_TOKEN;
-  const chatId = process.env.CHAT_ID;
-  if (!botToken || !chatId) return;
-
+  // No telegram-credential gate anymore: NO endType raw-sends to Adam (goal-3 out-of-process
+  // belt-completeness). Routing is per-bucket below (ops-route / suppress+log / suppress); the ops-route
+  // and the log-event do not need BOT_TOKEN/CHAT_ID.
   let message = '';
   switch (endType) {
     case 'planned-restart':
@@ -431,16 +430,36 @@ async function main(): Promise<void> {
       break;
   }
 
-  if (message) {
-    try {
-      const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
-      await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: message }),
-      });
-    } catch { /* ignore send failures */ }
+  // Per-endType routing (goal-3). The old raw fetch to Adam bypassed the in-process TelegramAPI belt (this
+  // hook runs in a SEPARATE process); NO endType raw-sends to Adam now.
+  //   crash / daemon-crashed        -> already routed to ops via notifyAgents(chief+analyst+the-orchestrator)
+  //                                    above; orch escalates a real/systemic death to Adam (transient=ops-only).
+  //   rate-limited                  -> DEMOTE to ops (notify-agent the-orchestrator): the ONLY demote — an
+  //                                    UNEXPECTED throughput signal, reliably routable (a rate-limited agent's
+  //                                    bus is UP, only inference-throttled).
+  //   session-refresh               -> SUPPRESS the notify + emit an INTERNAL log-event (high-freq --continue
+  //                                    routine, like compaction; the log disambiguates a long refresh from death).
+  //   planned-restart / daemon-stop -> SUPPRESS (intentional/scheduled = the operator already knows; daemon-stop
+  //                                    must NOT ops-route — the bus may be down mid-stop so it would silently
+  //                                    not-deliver = false-confidence, worse than an honest no-alert).
+  //   user-restart / user-disable / user-stop -> SUPPRESS (redundant success-confirmations of the operator's own
+  //                                    action; a FAILURE is a different endType -> crash/error -> ops, nothing hidden).
+  const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
+  const runCli = (args: string[]): Promise<void> => new Promise((resolve) => {
+    const done = (): void => resolve();
+    if (frameworkRoot) {
+      execFile(process.execPath, [join(frameworkRoot, 'dist', 'cli.js'), ...args], { timeout: 10_000 }, done);
+    } else {
+      execFile('cortextos', args, { timeout: 10_000 }, done);
+    }
+  });
+  if (endType === 'rate-limited' && message) {
+    await runCli(['bus', 'notify-agent', 'the-orchestrator', `[LIFECYCLE:rate-limited] ${message}`]);
+  } else if (endType === 'session-refresh') {
+    await runCli(['bus', 'log-event', 'action', 'context_session_refresh', 'info',
+      '--meta', JSON.stringify({ agent: agentName })]);
   }
+  // crash/daemon-crashed (notifyAgents above) + planned-restart/daemon-stop/user-* (suppress) -> no send here.
 }
 
 if (process.argv[1]?.endsWith('hook-crash-alert.js') || process.argv[1]?.endsWith('hook-crash-alert.ts')) {

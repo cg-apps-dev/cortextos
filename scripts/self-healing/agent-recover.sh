@@ -105,6 +105,10 @@ if [ "${#restarted[@]}" -gt 0 ] && [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; the
 Hung agents restarted: *${list}*
 (Process was alive but stdout idle ≥ ${IDLE_THRESHOLD_SEC}s while messages queued. Auto-recovered without daemon-wide restart.)"
 
+  # GOAL-3-ALLOWLIST-DORMANT: this raw sendMessage bypasses the in-process TelegramAPI belt. It is DORMANT
+  # (this self-healing script is in NO launchd plist / cron = not wired). If it is ever REACTIVATED, RE-TRIAGE
+  # this send per the out-of-process belt-completeness rules (route to ops via notify-agent, not a raw fetch
+  # to a user chat). Tracked by the enumeration-allowlist-guard (tests/unit/telegram-send-allowlist.test.ts).
   curl -sS --max-time 10 "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
     -H "Content-Type: application/json" \
     -d "$(printf '{"chat_id": %s, "text": %s, "parse_mode": "Markdown"}' "$CHAT_ID" "$(echo "$msg" | "$JQ_BIN" -Rs .)")" \
