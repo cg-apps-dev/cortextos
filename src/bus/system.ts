@@ -420,8 +420,13 @@ export function checkGoalStaleness(
         continue;
       }
 
-      // Parse ISO 8601 timestamp
-      const parsedDate = new Date(updatedLine);
+      // Parse ISO 8601 timestamp. The GOALS.md 'Updated' line carries a human suffix from generate-md
+      // (e.g. "2026-07-13T13:44:45Z (by <agent> (...))"), and may have an "Updated:" prefix; a strict
+      // `new Date(...)` chokes on EITHER -> parse_error -> EVERY agent false-flagged stale (the staleness
+      // tool becomes non-functional). Strip the optional prefix + take the leading ISO token (ISO 8601 has
+      // no internal whitespace) before parsing.
+      const isoToken = updatedLine.replace(/^Updated:\s*/i, '').trim().split(/\s+/)[0];
+      const parsedDate = new Date(isoToken);
       if (isNaN(parsedDate.getTime())) {
         agents.push({
           agent: agentName,
