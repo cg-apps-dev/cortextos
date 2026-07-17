@@ -38,6 +38,14 @@ export interface AgentGoalStatus {
   org: string;
   status: 'fresh' | 'stale' | 'missing' | 'no_timestamp' | 'parse_error';
   updated?: string;
+  // Clean ISO 8601 UTC (no '(by ...)' suffix) — the machine timestamp for consumers that need sub-day
+  // resolution (e.g. the-analyst's hour-level tier thresholds, which integer age_days cannot express).
+  // Present only when a timestamp parsed (fresh/stale); absent on the missing/no_timestamp/parse_error
+  // edge statuses (consumers route those via `status`).
+  updated_at?: string;
+  // The agent that last regenerated the goals, parsed from the '(by <agent> ...)' suffix (v2 self-vs-orch
+  // regen-anomaly signal). null if the suffix is absent.
+  updated_by?: string | null;
   age_days?: number;
   stale: boolean;
   reason?: string;
@@ -448,6 +456,10 @@ export function checkGoalStaleness(
         org: orgName,
         status: isStale ? 'stale' : 'fresh',
         updated: updatedLine,
+        // Canonical clean ISO (UTC, no millis, no suffix) from the parsed date — robust regardless of the
+        // GOALS.md token format; this is the machine timestamp consumers threshold on.
+        updated_at: parsedDate.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        updated_by: updatedLine.match(/\(by\s+([^\s)]+)/)?.[1] ?? null,
         age_days: ageDays,
         stale: isStale,
         reason: isStale
