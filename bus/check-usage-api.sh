@@ -309,10 +309,22 @@ if [[ "$CLAUDE_OK" == true ]]; then
   fi
 fi
 
-# ── Threshold checks + Telegram alerts ──────────────────────────────────────
+# ── Threshold checks + alerts (routed to OPS, never a user chat) ─────────────
 ALERT_SENT=false
 
-if [[ -n "$CHAT_ID" ]]; then
+# Operational usage/auth alert -> orchestrator (ops) BY CONSTRUCTION. This was
+# send-telegram.sh "$CHAT_ID" (the-analyst/Adam chat). The send-telegram CLI now
+# defaults messageClass=human (so agent replies reach Adam), which means that path
+# would BYPASS the send-layer belt and hit a human. Route to ops directly; the
+# orchestrator triages and escalates to Adam only on a human-decision. Alerting no
+# longer gates on CHAT_ID - ops routing is chat-independent (a CHAT_ID guard here
+# would be a footgun: clearing the-analyst's CHAT_ID would silence ops monitoring).
+ops_alert() {
+  cortextos bus notify-agent the-orchestrator "[USAGE-MONITOR] $1" >/dev/null 2>&1 || true
+  ALERT_SENT=true
+}
+
+if true; then
   # Claude alerting only when the Claude probe succeeded (TS owns Claude alerting anyway).
   # The Codex monitoring block further below runs REGARDLESS of the Claude outcome.
   if [[ "$CLAUDE_OK" == true ]]; then
@@ -379,7 +391,7 @@ PY
   if [[ -n "$ALERT_MSGS" ]]; then
     while IFS= read -r SEND_MSG; do
       [[ -z "$SEND_MSG" ]] && continue
-      [[ -f "$SCRIPT_DIR/send-telegram.sh" ]] && bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
+      ops_alert "$SEND_MSG"
       ALERT_SENT=true
       echo "$SEND_MSG" >&2
     done <<< "$ALERT_MSGS"
@@ -396,9 +408,7 @@ except ValueError as e:
 sys.exit(0 if v >= warn else 1)
 " "$FIVE_H" "$WARN_5H" 2>/dev/null; then
     SEND_MSG="Warning: Claude Max 5-hour window at ${FIVE_H}%. Resets: ${FIVE_H_RESET}."
-    if [[ -f "$SCRIPT_DIR/send-telegram.sh" ]]; then
-      bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
-    fi
+    ops_alert "$SEND_MSG"
     echo "$SEND_MSG" >&2
   fi
   fi  # end Claude-alerting guard (CLAUDE_OK); Codex monitoring below runs regardless of the Claude outcome
@@ -423,9 +433,7 @@ except ValueError as e:
 sys.exit(0 if expires < 24 else 1)
 " "$CODEX_EXPIRES" 2>/dev/null; then
     SEND_MSG="Warning: Codex OAuth token expires in ${CODEX_EXPIRES}h. Run Codex and re-authenticate."
-    if [[ -f "$SCRIPT_DIR/send-telegram.sh" ]]; then
-      bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
-    fi
+    ops_alert "$SEND_MSG"
     echo "$SEND_MSG" >&2
   fi
 
@@ -438,7 +446,7 @@ sys.exit(0 if expires < 24 else 1)
 
     if [[ "$CODEX_LIMIT" == "True" ]]; then
       SEND_MSG="CODE RED: Codex rate limit reached. Sessions blocked until window resets."
-      [[ -f "$SCRIPT_DIR/send-telegram.sh" ]] && bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
+      ops_alert "$SEND_MSG"
     elif python3 -c "import sys
 try:
     v = float(sys.argv[1])
@@ -449,7 +457,7 @@ except ValueError as e:
 sys.exit(0 if v >= warn else 1)
 " "$CODEX_7D" "$WARN_7DAY" 2>/dev/null; then
       SEND_MSG="Warning: Codex 7-day usage at ${CODEX_7D}%."
-      [[ -f "$SCRIPT_DIR/send-telegram.sh" ]] && bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
+      ops_alert "$SEND_MSG"
     elif python3 -c "import sys
 try:
     v = float(sys.argv[1])
@@ -460,7 +468,7 @@ except ValueError as e:
 sys.exit(0 if v >= warn else 1)
 " "$CODEX_5H" "$WARN_5H" 2>/dev/null; then
       SEND_MSG="Warning: Codex 5-hour window at ${CODEX_5H}%."
-      [[ -f "$SCRIPT_DIR/send-telegram.sh" ]] && bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$SEND_MSG" >/dev/null 2>&1 || true
+      ops_alert "$SEND_MSG"
     fi
   fi
 fi

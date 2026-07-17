@@ -154,7 +154,7 @@ function pingAgentChatId(
   const message = lines.join('\n');
 
   const api = new TelegramAPI(botToken);
-  return api.sendMessage(chatId, message, undefined, { parseMode: null })
+  return api.sendMessage(chatId, message, undefined, { parseMode: null, messageClass: 'human' })
     .then(() => undefined)
     .catch(() => undefined); // Telegram outage must not fail approval creation.
 }

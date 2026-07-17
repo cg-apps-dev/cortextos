@@ -372,9 +372,12 @@ if [[ -n "$ALERTS" ]]; then
     [[ -z "$MSG" ]] && continue
     echo "[$TS] ALERT: ${MSG//$'\n'/ }" >> "$LOG_FILE"
     echo "$MSG" >&2
-    if [[ -n "$CHAT_ID" && -f "$SCRIPT_DIR/send-telegram.sh" ]]; then
-      bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$MSG" >/dev/null 2>&1 || true
-    fi
+    # Operational dependency-health alert -> orchestrator (ops) BY CONSTRUCTION,
+    # NOT a direct human ping. The send-telegram CLI now defaults messageClass=human
+    # (so agent replies reach Adam), which means a send-telegram-to-CHAT_ID here would
+    # BYPASS the send-layer belt and hit Adam. Route to ops directly instead; the
+    # orchestrator triages and only escalates to Adam if a human decision is needed.
+    cortextos bus notify-agent the-orchestrator "[DEP-HEALTH] $MSG" >/dev/null 2>&1 || true
   done <<< "$ALERTS"
 fi
 

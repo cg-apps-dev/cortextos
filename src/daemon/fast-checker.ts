@@ -1030,7 +1030,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
         }]);
       }
 
-      await this.telegramApi.sendMessage(this.chatId, msg, { inline_keyboard: keyboard });
+      await this.telegramApi.sendMessage(this.chatId, msg, { inline_keyboard: keyboard }, { messageClass: 'human' });
       this.log(`Sent question ${questionIdx + 1}/${totalQ} to Telegram`);
     } catch (err) {
       this.log(`sendNextQuestion error: ${err}`);
@@ -1247,7 +1247,13 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     }
 
     if (authIncident !== null) {
-      if (authIncident.readCount >= FastChecker.AUTH_DEAD_DEBOUNCE_READS && (!livenessFresh || !this.hasAuthDeadRecovery(data))) {
+      // item 1b (2026-07-16): require ACTUAL SILENCE (!livenessFresh) as a HARD gate, not an OR-branch.
+      // The old `(!livenessFresh || !hasRecovery)` fired on a LIVE/fresh agent (livenessFresh=true) whose
+      // stdout merely CONTAINED the auth patterns without a recovery marker - today that false-positived on
+      // meta-ads ACTIVELY DISCUSSING the incident (auth-dead / AUTHORITY FAILURE / /login text in its
+      // output), not a real auth-death. A silent-DEATH detector must require actual silence: a fresh agent
+      // still producing output is by definition not silently dead, whatever patterns are in that output.
+      if (authIncident.readCount >= FastChecker.AUTH_DEAD_DEBOUNCE_READS && !livenessFresh && !this.hasAuthDeadRecovery(data)) {
         await this.maybeSendFleetHealthAlert({
           className: 'auth-dead',
           // Stable per-agent dedup key: the old key embedded the volatile TUI snippet, so the
@@ -1714,14 +1720,13 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
 
   private async sendFleetHealthTelegram(message: string): Promise<void> {
     const safeMessage = redactSecrets(message);
-    if (this.telegramApi) {
-      await this.telegramApi.sendMessage(FastChecker.ADAM_ALERT_CHAT_ID, safeMessage, undefined, { parseMode: null }).catch((err) => {
-        this.log(`Fleet health Telegram alert failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
-      return;
-    }
-    execFile('cortextos', ['bus', 'send-telegram', FastChecker.ADAM_ALERT_CHAT_ID, safeMessage], (err) => {
-      if (err) this.log(`Fleet health Telegram alert failed: ${err.message}`);
+    // OPS-ROUTE (2026-07-16 Adam-comms class-fix, item 1a): fleet-health / auth-dead / silent-death are
+    // OPERATIONAL alerts -> route to OPS (the orchestrator inbox), NEVER Adam's Telegram. The durable
+    // dashboard trail is already written by logFleetHealthEvent (called at every alert site); this
+    // delivers the alert to the ops agent for curation. The hardcoded ADAM_ALERT_CHAT_ID Telegram send
+    // was the fleet-health leg of the multi-source Adam-alert storm Adam escalated to stop.
+    execFile('cortextos', ['bus', 'notify-agent', 'the-orchestrator', `[FLEET-HEALTH] ${safeMessage}`], (err) => {
+      if (err) this.log(`Fleet health ops-route failed: ${err.message}`);
     });
   }
 
@@ -1755,7 +1760,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       const msg = `Context circuit breaker TRIPPED for ${this.agent.name}: 3 restarts in 15min. Watchdog paused 30min. Check logs/${this.agent.name}/restarts.log for details.`;
       this.log(msg);
       if (this.telegramApi && this.chatId) {
-        this.telegramApi.sendMessage(this.chatId, msg).catch(() => {});
+        this.telegramApi.sendMessage(this.chatId, msg, undefined, { messageClass: 'operational' }).catch(() => {}); // agent-health -> ops
       }
       return;
     }

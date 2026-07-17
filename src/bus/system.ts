@@ -532,7 +532,7 @@ export async function postActivity(
 
   try {
     const api = new TelegramAPI(botToken);
-    await api.sendMessage(chatId, message, replyMarkup);
+    await api.sendMessage(chatId, message, replyMarkup, { messageClass: 'human' });
     return true;
   } catch {
     return false;

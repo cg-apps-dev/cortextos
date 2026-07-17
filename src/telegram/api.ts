@@ -5,6 +5,15 @@
 
 import { existsSync, readFileSync } from 'fs';
 import { basename } from 'path';
+import { execFile } from 'child_process';
+
+// CHOKE-POINT (2026-07-16 Adam-comms class-fix, item 3): the send-layer backstop so operational/error
+// alerts cannot reach a user (Adam) chat regardless of source. CONTENT-specific operational patterns
+// only (NOT the [agent] prefix - every agent reply is `[name] ...`, so a prefix tell would block all
+// human comms). Bare error/failure are deliberately EXCLUDED (too common in human chat); rely on the
+// explicit operational tag for those + this belt for the obvious operational-specific strings.
+const OPERATIONAL_CONTENT = /AUTHORITY FAILURE|FLEET (?:HEALTH|AUTH)|auth-dead|silent[- ]death|^Severity:\s|Traceback \(most recent call last\)|retry[- ]storm|unhandled exception/im;
+export type TelegramMessageClass = 'operational' | 'human';
 
 /**
  * Result of TelegramAPI.validateCredentials. Tagged union so callers can
@@ -196,8 +205,30 @@ export class TelegramAPI {
     opts?: {
       parseMode?: 'HTML' | null;
       onParseFallback?: (reason: string) => void;
+      messageClass?: TelegramMessageClass;
     },
   ): Promise<any> {
+    // CHOKE-POINT: operational/error-class messages must not reach a user chat. Explicit tag is
+    // PRIMARY (human -> pass, operational -> ops-route); the content-belt catches UNTAGGED operational
+    // (err-toward-catch). A caught message is REDIRECTED to ops (never silently dropped) + every
+    // decision is LOGGED (redirect AND pass) so a mis-redirected human is a recoverable detour we tune.
+    const looksOperational = OPERATIONAL_CONTENT.test(text);
+    const operational =
+      opts?.messageClass === 'operational' ||
+      (opts?.messageClass !== 'human' && looksOperational);
+    if (operational) {
+      this.redirectOperationalToOps(String(chatId), text, opts?.messageClass === 'operational' ? 'tagged' : 'belt');
+      return { chokepoint: 'operational-redirected-to-ops' };
+    }
+    // DETECTION TRIPWIRE (not a block): an explicit human-tagged send that MATCHES the operational
+    // heuristic passes to the user (human tag is authoritative) but is LOG-WARNED - so a forgot-to-tag
+    // operational-command-send is caught in the audit immediately (tag it fast), never a silent leak.
+    if (opts?.messageClass === 'human' && looksOperational) {
+      this.logChokepoint('pass-to-user-OPERATIONAL-LOOKING', String(chatId), text, 'tag-check');
+    } else {
+      this.logChokepoint('pass-to-user', String(chatId), text);
+    }
+
     const plainText = opts?.parseMode === null;
     const html = this.markdownToHtml(text, plainText);
 
@@ -217,6 +248,22 @@ export class TelegramAPI {
       );
     }
     return lastResult;
+  }
+
+  private logChokepoint(decision: 'pass-to-user' | 'pass-to-user-OPERATIONAL-LOOKING' | 'redirect-to-ops', chatId: string, text: string, via?: string): void {
+    // Structured, greppable audit of EVERY routing decision (both directions) so we can tune the belt:
+    // a redirect of an actually-human message = a false-positive to fix (add the missed human tag);
+    // a pass of operational-looking content to a user chat = a belt-miss to close.
+    const preview = text.replace(/\s+/g, ' ').slice(0, 120);
+    process.stderr.write(`[telegram-chokepoint] ${decision}${via ? ' (' + via + ')' : ''} chat=${chatId} :: ${preview}\n`);
+  }
+
+  private redirectOperationalToOps(chatId: string, text: string, via: string): void {
+    // REDIRECT, never DROP: deliver the operational alert to the ops inbox (the-orchestrator) so it is
+    // curated (and relayed to Adam only if decision-relevant), not lost; the user chat never receives it.
+    this.logChokepoint('redirect-to-ops', chatId, text, via);
+    const opsMsg = `[ops-alert redirected from chat ${chatId}] ${text}`.slice(0, 3500);
+    execFile('cortextos', ['bus', 'notify-agent', 'the-orchestrator', opsMsg], () => {});
   }
 
   /**

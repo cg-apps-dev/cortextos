@@ -53,7 +53,7 @@ async function main(): Promise<void> {
   const api = new TelegramAPI(env.botToken);
 
   try {
-    await api.sendMessage(env.chatId, messageText, keyboard);
+    await api.sendMessage(env.chatId, messageText, keyboard, { messageClass: 'human' });
   } catch {
     // Non-blocking - exit even on send failure
   }

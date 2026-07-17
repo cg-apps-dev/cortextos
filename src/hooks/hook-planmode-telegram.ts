@@ -104,7 +104,7 @@ async function main(): Promise<void> {
   const api = new TelegramAPI(env.botToken);
 
   try {
-    await api.sendMessage(env.chatId, messageText, keyboard);
+    await api.sendMessage(env.chatId, messageText, keyboard, { messageClass: 'human' });
   } catch {
     // If send fails, auto-approve so agent isn't blocked
     outputDecision('allow');
@@ -133,6 +133,7 @@ async function main(): Promise<void> {
       await api.sendMessage(
         env.chatId,
         `Plan review TIMED OUT (auto-approved): ${env.agentName}`,
+        undefined, { messageClass: 'human' },
       );
     } catch {
       // Ignore notification failure

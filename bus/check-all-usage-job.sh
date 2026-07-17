@@ -39,19 +39,21 @@ log_event() {
 }
 
 # Push a curated alert, DEDUPED on the exact string (a persistent condition must
-# not churn - the volatile-dedup-key lesson). Operational -> orchestrator only;
-# monitoring-blind ($2 == "1") -> orchestrator AND a direct human ping (fail-safe).
+# not churn - the volatile-dedup-key lesson). Operational -> orchestrator ONLY.
+# The former monitoring-blind ($2 == "1") direct-human-ping is REMOVED per the
+# send-layer class-fix guardrail: NO monitoring-blind direct-Adam fallback from
+# inside the fleet (a send-telegram-to-CHAT_ID would also bypass the belt and hit
+# Adam). The total-fleet-death case (orchestrator itself unreachable) is deferred
+# to the OUT-OF-BAND external watchdog, not an in-fleet ping. $2 kept for call-site
+# compatibility; it no longer routes anywhere.
 push_deduped() {
-  msg="$1"; blind="$2"
+  msg="$1"; blind="$2"  # blind: reserved; no longer triggers a direct human ping
   last=""
   [[ -f "$STATE_FILE" ]] && last="$(cat "$STATE_FILE" 2>/dev/null)"
   [[ "$msg" == "$last" ]] && return 0
   mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
   printf '%s' "$msg" > "$STATE_FILE" 2>/dev/null || true
-  cortextos bus send-message the-orchestrator normal "$msg" >/dev/null 2>&1 || true
-  if [[ "$blind" == "1" && -n "$CHAT_ID" && -f "$SCRIPT_DIR/send-telegram.sh" ]]; then
-    bash "$SCRIPT_DIR/send-telegram.sh" "$CHAT_ID" "$msg" >/dev/null 2>&1 || true
-  fi
+  cortextos bus notify-agent the-orchestrator "$msg" >/dev/null 2>&1 || true
 }
 
 # Capture BOTH stdout (alert lines) and stderr (credential/CLI errors).

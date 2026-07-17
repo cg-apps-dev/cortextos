@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   const api = new TelegramAPI(env.botToken);
 
   try {
-    await api.sendMessage(env.chatId, message, keyboard);
+    await api.sendMessage(env.chatId, message, keyboard, { messageClass: 'human' });
   } catch {
     outputDecision('deny', 'Failed to send permission request to Telegram');
     return;
@@ -99,6 +99,7 @@ async function main(): Promise<void> {
       await api.sendMessage(
         env.chatId,
         `Permission request TIMED OUT (auto-denied): ${tool_name}`,
+        undefined, { messageClass: 'human' },
       );
     } catch {
       // Ignore notification failure

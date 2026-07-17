@@ -570,7 +570,7 @@ export class CodexAppServerPTY {
   private replyLocal(text: string): void {
     this._outputBuffer.push(text + '\n');
     if (this._telegramApi && this._chatId) {
-      this._telegramApi.sendMessage(this._chatId, text, undefined, { parseMode: null }).catch(() => {});
+      this._telegramApi.sendMessage(this._chatId, text, undefined, { parseMode: null, messageClass: 'human' }).catch(() => {});
     }
   }
 

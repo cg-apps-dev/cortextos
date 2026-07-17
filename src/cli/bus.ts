@@ -1139,7 +1139,8 @@ busCommand
   .option('--image <path>', 'Send a photo with caption')
   .option('--file <path>', 'Send a document/file with caption (any file type)')
   .option('--plain-text', 'Skip Telegram Markdown parsing entirely. Use this when the message contains unescaped _, *, backtick, or [ that would otherwise trip the Markdown parser. Without this flag, sendMessage still retries once with parse_mode disabled on a parse-entity error — so it is purely an opt-in to save the retry roundtrip.', false)
-  .action(async (chatId: string, message: string, opts: { image?: string; file?: string; plainText?: boolean }) => {
+  .option('--operational', 'Route as an OPERATIONAL alert to ops (the-orchestrator), NOT the user chat. Default: human (user-facing). Adam-comms class-fix: operational content is redirected away from the user chat.', false)
+  .action(async (chatId: string, message: string, opts: { image?: string; file?: string; plainText?: boolean; operational?: boolean }) => {
     // Codex agents emit literal '\n'/'\t' inside single-quoted bash where bash
     // does not expand escapes, so they arrive at argv as 2-char literals and
     // Telegram renders them as visible text. Normalize before send + log.
@@ -1190,6 +1191,7 @@ busCommand
       } else {
         const result = await api.sendMessage(chatId, outbound, undefined, {
           parseMode: opts.plainText ? null : 'HTML',
+          messageClass: opts.operational ? 'operational' : 'human',
         });
         sentMessageId = result?.result?.message_id ?? 0;
       }
@@ -3086,7 +3088,7 @@ busCommand
             if (now - lastTelegramSent >= TELEGRAM_COOLDOWN_MS) {
               lastTelegramSent = now;
               try {
-                await telegramApi.sendMessage(chatId, `[${env.agentName}] ${trimmed}`);
+                await telegramApi.sendMessage(chatId, `[${env.agentName}] ${trimmed}`, undefined, { messageClass: 'human' });
               } catch { /* Never fail the stream */ }
             }
           }
