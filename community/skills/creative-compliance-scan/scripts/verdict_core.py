@@ -234,6 +234,37 @@ def _find_all(text, pats):
             hits.append((label, m.group(0)))
     return hits
 
+# EXPLICIT source -> modality registry. EVERY verdict source name MUST be registered here.
+# Modality drives corroboration: a hard hit sourced ONLY from the generative, hallucination-prone VISION
+# modality is uncorroborated (-> UNCLEAR/human-review); a hit from any NON-vision modality (OCR reads
+# pixels / VO reads audio - non-generative, self-trusting) is corroboration (-> FAIL).
+# EXPLICIT > IMPLICIT: an earlier version inferred modality from the "vision" NAME-PREFIX, making source-
+# NAMING load-bearing - a non-vision source accidentally named "vision*" (e.g. "vision_ocr") would mis-tag
+# as vision and downgrade a real corroboration to UNCLEAR = fail-open-DIRECTION. This map closes that: an
+# unregistered source is UNKNOWN -> fail-closed (treated as non-vision -> the hit FAILs, never the softer
+# UNCLEAR) + a loud NAMED degradation + ops-alert (_creative_verdict_for). A new vision pass (e.g.
+# "vision3") requires a one-line registration here - explicit, never silently name-guessed. The
+# completeness test (test_source_modality_covers_live_sources) is the durable drift guard.
+# EDITOR WARNING (mc): declare the TRUE modality for each source. The completeness test checks only
+# that a source is PRESENT here, NOT that its value is correct - a non-vision source wrongly registered
+# as "vision" (or vice-versa) passes the test and silently mis-corroborates (a fail-open via another
+# door). The runtime cannot verify true modality; the human declares it. CODE-REVIEW every 1-line add
+# for the real modality: "vision" = generative native-vision LLM read; any non-"vision" value = a
+# non-generative self-trusting source (ocr reads pixels, vo reads audio) that COUNTS AS corroboration.
+_SOURCE_MODALITY = {
+    "vision":  "vision",
+    "vision2": "vision",
+    "ocr":     "ocr",
+    "vo":      "vo",
+}
+
+# SINGLE SOURCE OF TRUTH for the verdict source names the creative pipeline emits (the keys of the
+# `sources` dict in _creative_verdict_for is built from this). The completeness test asserts every name
+# here is registered in _SOURCE_MODALITY, so adding a source here without registering its modality FAILS
+# the test = the durable drift lock. (An unregistered source also fail-closes at runtime, but the test is
+# the pre-deploy guard so the belt never has to fire.)
+_VERDICT_SOURCE_NAMES = ("vision", "vision2", "ocr", "vo")
+
 def _single_vision_only(names):
     """A hard hit is uncorroborated (-> UNCLEAR, human review) IFF EVERY source it hit is the VISION
     modality (native-vision LLM read). Vision is GENERATIVE + hallucination-prone (an LLM describing an
@@ -241,13 +272,16 @@ def _single_vision_only(names):
     modality = NOT independent corroboration (IMG_697 "pre-rolls" landed in vision_text AND vision_text2,
     which the earlier name-count fix wrongly FAILed). Corroboration = >=1 NON-vision modality (OCR reads
     pixels / VO reads audio - non-generative, SELF-TRUSTING; a SINGLE ocr/vo hit -> FAIL, asymmetric per
-    mc rule #219/#220) or legible-confirm. MODALITY-TAGGED by the "vision" name-prefix, NOT a source-NAME
-    count/set: a future vision3 pass auto-maps to the vision modality with zero code-edit, so the bug
-    cannot recur on an added pass (both the name-count bug and the vision3-recurrence closed by
-    construction). Empty names -> fail-closed FAIL (all([]) is True, so the guard is explicit)."""
+    mc rule #219/#220) or legible-confirm. MODALITY is resolved via the EXPLICIT _SOURCE_MODALITY map,
+    NOT a name-prefix guess: a source registered as "vision" is vision-modality; an UNREGISTERED source is
+    unknown -> NOT provably vision -> this returns False so the hit takes the FAIL branch (fail-closed;
+    the caller also emits a loud NAMED degradation + ops-alert). A new vision pass must be registered
+    explicitly (one line in _SOURCE_MODALITY) - the removed name-prefix auto-map was the fail-open this
+    closes (a non-vision source named "vision*" no longer mis-tags). Empty names -> False (fail-closed;
+    the caller's FAIL branch)."""
     if not names:
         return False
-    return all(name.startswith("vision") for name in names)
+    return all(_SOURCE_MODALITY.get(name) == "vision" for name in names)
 
 def _creative_verdict_for(rec):
     product = rec.get("product","flower")
@@ -257,7 +291,7 @@ def _creative_verdict_for(rec):
     vo   = rec.get("vo_text","") or ""
     if "DOWNLOAD_FAIL" in vis or vis.strip().upper().startswith("SCAN ERROR"):
         return "SCAN ERROR", "1x1 inaccessible (404/expired) - needs re-share", [], []
-    sources = {"vision": vis, "vision2": vis2, "ocr": ocr, "vo": vo}
+    sources = dict(zip(_VERDICT_SOURCE_NAMES, (vis, vis2, ocr, vo)))
     corpus = "\n".join(sources.values())
     union_raw_l  = _flat(_raw_norm(corpus))
     union_leet_l = _flat(_leet_norm(corpus))
@@ -276,6 +310,21 @@ def _creative_verdict_for(rec):
     union_leet_l = _DECODE_CREATIVE_RE.sub(_blank, union_leet_l)
 
     fails=[]; unclears=[]; vision_adjudicate=[]
+
+    # HARDENING (drift guard, fail-closed + LOUD): an UNREGISTERED verdict source. `sources` keys are
+    # static, so this fires only if a source is added without registering it in _SOURCE_MODALITY (the
+    # completeness test catches that at dev-time; this is the runtime belt). The per-row NAMED degradation
+    # is appended to `fails` UNCONDITIONALLY -> every affected row stays loud in its verdict output AND the
+    # record FAILs (never a silent PASS on an unreliable modality tag); only the ops-PAGE is cross-process
+    # deduped (loud-per-row + deduped-page). Per-hit, _single_vision_only also fail-closes an unknown
+    # source (unknown -> not vision -> the hit takes the FAIL branch), so this is defense-in-depth.
+    _unregistered = [k for k in sources if k not in _SOURCE_MODALITY]
+    if _unregistered:
+        fails.append(
+            "unregistered verdict source(s): " + ", ".join(sorted(_unregistered))
+            + " - modality unknown, failing closed; register in _SOURCE_MODALITY"
+        )
+        _alert_source_config(_unregistered)
 
     masked_sources_raw = {k: _flat(_raw_norm(_DECODE_CREATIVE_RE.sub(_blank, v))) for k, v in sources.items()}
     masked_sources_leet = {k: _flat(_DECODE_CREATIVE_RE.sub(_blank, _leet_norm(v))) for k, v in sources.items()}
@@ -810,18 +859,17 @@ def _alert_recovery():
             pass
 
 
-def _alert_notify_once(authority):
-    """CROSS-PROCESS, per-failure-class dedup for the NOTIFY (mc b1 flood->one, b3 per-class-distinct).
-    Atomic first-claim via O_CREAT|O_EXCL on the stable state file; a stale (>TTL) claim re-fires (never
-    permanent-silence). Falls back to per-process dedup if the state dir is unusable (fail toward
-    alerting-once, never flooding). Returns True iff THIS process should send the notify."""
-    proc_key = (authority.authority_class, tuple(authority.reasons))
+def _notify_dedup(key_hex, proc_key, dedup_dir):
+    """CROSS-PROCESS, per-class dedup for a NOTIFY (mc b1 flood->one, b3 per-class-distinct). Atomic
+    first-claim via O_CREAT|O_EXCL on a stable state file in dedup_dir; a stale (>TTL) claim re-fires
+    (never permanent-silence). Falls back to per-process dedup if the state dir is unusable (fail toward
+    alerting-once, never flooding). Generic over the key + dir so distinct alert CLASSES (authority-failure
+    vs source-config) dedup independently in SEPARATE dirs. Returns True iff THIS process should notify."""
     proc_seen = proc_key in _ALERTED
     _ALERTED.add(proc_key)
     try:
-        d = _alert_dedup_dir()
-        os.makedirs(d, exist_ok=True)
-        kf = os.path.join(d, _alert_key(authority))
+        os.makedirs(dedup_dir, exist_ok=True)
+        kf = os.path.join(dedup_dir, key_hex)
     except Exception:
         return not proc_seen  # no stable dir -> per-process dedup (fail toward alert-once)
     now = time.time()
@@ -837,9 +885,19 @@ def _alert_notify_once(authority):
                 return True  # stale -> re-alert (persistent failure, not silent)
         except Exception:
             pass
-        return False  # another process already notified for this failure-class -> dedup
+        return False  # another process already notified for this class -> dedup
     except Exception:
         return not proc_seen
+
+
+def _alert_notify_once(authority):
+    """Authority-failure notify dedup (mc b1 flood->one, b3 per-class-distinct). Thin wrapper over the
+    generic _notify_dedup, keyed on the authority failure-class in the authority dedup dir."""
+    return _notify_dedup(
+        _alert_key(authority),
+        (authority.authority_class, tuple(authority.reasons)),
+        _alert_dedup_dir(),
+    )
 
 
 def _alert(authority):
@@ -865,6 +923,58 @@ def _alert(authority):
         pass
     # NOTIFY: cross-process deduped (flood->one), ops-only, test-quiet.
     if not _alert_notify_once(authority):
+        return
+    if _is_test_context():
+        return
+    for agent in _ALERT_OPS_TARGETS:
+        try:
+            subprocess.run(["cortextos", "bus", "notify-agent", agent, msg], timeout=15, check=False)
+        except Exception:
+            pass
+
+
+def _source_config_dedup_dir():
+    """SEPARATE cross-process dedup dir for source-config (unregistered-source) errors. Deliberately NOT
+    _alert_dedup_dir(): _alert_recovery() clears the authority dir on EVERY healthy classify (a healthy
+    classify IS the authority-recovery signal), but a healthy classify is NOT a source-config recovery
+    signal (it does not mean the source got registered). Sharing the dir would let recovery wipe the
+    source-config claim every call -> re-flood. This dir is never enumerated by _alert_recovery; a
+    registered source simply stops triggering (condition-ceases), and the >TTL re-alert covers a
+    persistent-unregistered source (never permanent-silence)."""
+    base = os.environ.get("CTX_ROOT") or os.path.join(os.path.expanduser("~"), ".cortextos")
+    return os.path.join(base, "verdict_core_source_config_dedup")
+
+
+def _source_config_key(names):
+    """Per-class dedup key for a source-config error. Source names are STABLE identifiers (not variable
+    tokens carrying tmp-paths/pids), so NO _normalize_reason redaction - the raw sorted-name set IS the
+    stable per-class signature (distinct name-sets dedup independently; b3)."""
+    raw = ("source-config-unregistered|" + "|".join(sorted(set(names)))).encode("utf-8", "replace")
+    return hashlib.sha256(raw).hexdigest()[:40]
+
+
+def _alert_source_config(names):
+    """LOUD ops-alert for an UNREGISTERED verdict source (a _SOURCE_MODALITY drift/config error). Inherits
+    _alert's FULL hygiene: ops-only (mc+orch, NO Adam-facing runner) + log-event-ALWAYS (audit never
+    silent) + test-quiet + CROSS-PROCESS DEDUP of the PAGE (an unregistered source is a many-rows-at-once
+    class -> without dedup every affected creative re-floods ops). DISTINCT from _alert: a source-CONFIG
+    error is NOT an authority-load failure; a mislabeled 'AUTHORITY FAILURE' would send a responder hunting
+    a non-existent brain outage. NOTE the PAGE is deduped here, but the per-row NAMED degradation is
+    appended UNCONDITIONALLY in _creative_verdict_for (loud-per-row + deduped-page, never silent-after-first)."""
+    names = sorted(set(names))
+    msg = ("VERDICT-CORE CONFIG ERROR: unregistered verdict source(s) " + ", ".join(names)
+           + " - modality unknown, failing closed. Register in _SOURCE_MODALITY (verdict_core.py).")
+    # LOG-EVENT ALWAYS (audit never silent) - per-process, before the notify-dedup.
+    try:
+        subprocess.run(
+            ["cortextos", "bus", "log-event", "error", "verdict_core_source_unregistered", "error",
+             "--meta", json.dumps({"unregistered_sources": names})],
+            timeout=15, check=False,
+        )
+    except Exception:
+        pass
+    # NOTIFY (the PAGE): cross-process deduped (flood->one), ops-only, test-quiet.
+    if not _notify_dedup(_source_config_key(names), ("source-config", tuple(names)), _source_config_dedup_dir()):
         return
     if _is_test_context():
         return

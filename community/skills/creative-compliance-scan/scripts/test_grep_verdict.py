@@ -157,10 +157,20 @@ def test_single_vision_only_modality():
     # uncorroborated -> UNCLEAR (True); a NON-vision modality (ocr/vo) present -> corroborated -> FAIL (False).
     assert g.single_vision_only(["vision"]) is True                      # single vision pass
     assert g.single_vision_only(["vision", "vision2"]) is True           # both passes = SAME modality (IMG_697)
-    # vision3-INJECTION: proves the CLASS-fix (prefix modality-tag), NOT a hardcoded {vision,vision2} set -
-    # a name-count/hardcoded impl would FAIL these and re-introduce the bug when a 3rd vision pass lands.
-    assert g.single_vision_only(["vision", "vision3"]) is True
-    assert g.single_vision_only(["vision2", "vision3"]) is True
+    # MODALITY-TAG HARDENING (task_1784157356946): modality resolves via the EXPLICIT _SOURCE_MODALITY
+    # map, NOT a "vision" name-prefix guess. An UNREGISTERED source (incl a prefix-match like vision3 or
+    # vision_ocr) is unknown -> fail-closed (False -> the hit FAILs, never the softer UNCLEAR). The old
+    # prefix auto-map WAS the latent fail-open (a non-vision source named vision* mis-tagged as vision).
+    assert g.single_vision_only(["vision", "vision3"]) is False           # vision3 UNREGISTERED -> fail-closed
+    assert g.single_vision_only(["vision_ocr"]) is False                  # prefix-match but unregistered -> FAIL
+    # A new vision pass works WHEN explicitly registered (the accepted contract: one line in _SOURCE_MODALITY):
+    _saved = dict(g.verdict_core._SOURCE_MODALITY)
+    try:
+        g.verdict_core._SOURCE_MODALITY["vision3"] = "vision"
+        assert g.single_vision_only(["vision", "vision3"]) is True        # registered vision3 -> UNCLEAR preserved
+        assert g.single_vision_only(["vision2", "vision3"]) is True
+    finally:
+        g.verdict_core._SOURCE_MODALITY.clear(); g.verdict_core._SOURCE_MODALITY.update(_saved)
     # Asymmetric teeth: a SINGLE non-vision (self-trusting) modality corroborates -> FAIL, never UNCLEAR.
     assert g.single_vision_only(["ocr"]) is False                        # OCR-only -> FAIL
     assert g.single_vision_only(["vo"]) is False                         # VO-only -> FAIL
