@@ -985,6 +985,60 @@ def _alert_source_config(names):
             pass
 
 
+def _internal_error_dedup_dir():
+    """SEPARATE dedup dir for classify()-belt internal-error pages. Same separation rationale as
+    _source_config_dedup_dir: _alert_recovery() clears the AUTHORITY dir on every healthy classify, and an
+    internal error is a many-rows flood class (a code bug hits every record), so a shared dir would re-flood.
+    Never enumerated by _alert_recovery; a fixed bug simply stops triggering; >TTL re-alert covers a
+    persistent one."""
+    base = os.environ.get("CTX_ROOT") or os.path.join(os.path.expanduser("~"), ".cortextos")
+    return os.path.join(base, "verdict_core_internal_error_dedup")
+
+
+def _internal_error_key(exc, surface):
+    """Per-class dedup key = exc-TYPE + surface + the constant catch-location. NO exc-message (raw OR
+    normalized): exc-messages are unbounded-variability (line-nos / reprs / values / paths / tracebacks) so a
+    normalizer cannot GUARANTEE catching every variable token -> a missed token = a distinct key = re-flood
+    (the exact failure this belt prevents). exc-type (stable class name) + surface (bounded copy|creative) +
+    the constant "classify" location are STABLE-BY-CONSTRUCTION -> guaranteed per-exc-type-per-surface dedup
+    (b3). You cannot miss a token you never put in the key; the full message lives in the log-event."""
+    raw = ("internal-error|classify|" + str(surface) + "|" + type(exc).__name__).encode("utf-8", "replace")
+    return hashlib.sha256(raw).hexdigest()[:40]
+
+
+def _alert_internal_error(exc, surface):
+    """LOUD ops-alert for an UNEXPECTED exception caught by the classify() outer fail-closed belt. Full _alert
+    hygiene: ops-only (mc+orch, NO Adam-facing) + log-event-ALWAYS (full message+type for debug, audit never
+    silent) + test-quiet + CROSS-PROCESS DEDUP of the PAGE (a code bug is a many-rows flood class) in its OWN
+    dir. Distinct from _alert (authority-load failure) and _alert_source_config (source-config drift): this is
+    an unexpected code-bug crash, and mislabeling it would send a responder down the wrong path."""
+    etype = type(exc).__name__
+    msg = (f"VERDICT-CORE INTERNAL ERROR ({etype}) on the {surface} surface - the classify() fail-closed belt "
+           "caught an unexpected exception; the record was failed-closed (UNCLEAR / must_not_pass), not "
+           "crashed. Investigate the bug (full detail in the log-event).")
+    # LOG-EVENT ALWAYS (full message + type for debug) - per-process, before the notify-dedup.
+    try:
+        subprocess.run(
+            ["cortextos", "bus", "log-event", "error", "verdict_core_internal_error", "error",
+             "--meta", json.dumps({"exc_type": etype, "surface": str(surface), "message": str(exc)[:500]})],
+            timeout=15, check=False,
+        )
+    except Exception:
+        pass
+    # NOTIFY (the PAGE): cross-process deduped per exc-type+surface, ops-only, test-quiet.
+    if not _notify_dedup(_internal_error_key(exc, surface),
+                         ("internal-error", etype, str(surface)),
+                         _internal_error_dedup_dir()):
+        return
+    if _is_test_context():
+        return
+    for agent in _ALERT_OPS_TARGETS:
+        try:
+            subprocess.run(["cortextos", "bus", "notify-agent", agent, msg], timeout=15, check=False)
+        except Exception:
+            pass
+
+
 def _is_test_context():
     return any(os.environ.get(name) for name in ("PYTEST_CURRENT_TEST", "CTX_TEST"))
 
@@ -1062,6 +1116,35 @@ def _component_loss_unclears(authority, surface):
 
 
 def classify(text_or_record, authority, surface="creative"):
+    # OUTER FAIL-CLOSED BELT (defense-in-depth). The verdict path (_classify_impl -> _copy_classify /
+    # _with_creative_authority -> _creative_verdict_for) must NEVER crash or propagate an unexpected
+    # exception to the front-ends (grep_verdict / copy-gate) - that unverified fail-closed-vs-crash is the
+    # exact property that forced option (B) in the modality-tag fix. ANY unexpected Exception -> fail-CLOSED:
+    #   verdict="UNCLEAR"          -> grep_verdict (creative) never-PASSes via the verdict STRING,
+    #   must_not_pass=True         -> copy-gate never-PASSes via its must_not_pass-first branch,
+    #   authority_class="internal_error" (distinct from component_loss AND ok) -> routes copy-gate to its
+    #                                 HARD-ERROR branch (GateAuthorityError), not the softer per-row-unclear.
+    # All three are load-bearing on DIFFERENT surfaces. LOUD: _alert_internal_error (ops-only, log-always,
+    # deduped per exc-type+surface). Catches Exception, NOT BaseException, so SystemExit/KeyboardInterrupt
+    # still propagate (never swallow a deliberate abort/shutdown).
+    # BELT INVARIANT: fail-closed inside the verdict tree is ALWAYS signaled via authority_class->verdict,
+    # NEVER via a raise (D4 audit: ZERO intentional raises in the tree). If a future intentional raise is
+    # ever added inside the tree, it MUST be a DISTINCT MARKER exception type that this belt re-raises as a
+    # documented, code-reviewed DESIGNATED pass-through - NOT swallowed into internal_error.
+    try:
+        return _classify_impl(text_or_record, authority, surface)
+    except Exception as exc:
+        _alert_internal_error(exc, surface)
+        return _Verdict(
+            verdict="UNCLEAR",
+            evidence=(f"verdict-core internal error ({type(exc).__name__}) - evaluation could not complete, "
+                      "failing closed; needs human review"),
+            authority_class="internal_error",
+            must_not_pass=True,
+        )
+
+
+def _classify_impl(text_or_record, authority, surface="creative"):
     authority_class = getattr(authority, "authority_class", "unknown")
     status = getattr(authority, "status", "failed")
     if status != "ok":
