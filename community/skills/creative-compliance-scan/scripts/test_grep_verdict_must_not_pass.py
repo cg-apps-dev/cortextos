@@ -80,6 +80,29 @@ def test_meta_reconcile_is_downgrade_only():
     print("  [PASS] meta_reconcile is downgrade-only (never emits PASS from a non-PASS input)")
 
 
+def test_log_helper_is_test_quiet_by_default():
+    # security's nicety: the REAL _log helper is test-quiet under CTX_TEST/PYTEST, so any test/probe that
+    # exercises the contradiction WITHOUT mocking the helper cannot leak a real error-event into the activity
+    # feed (the phantom-discipline). Verifies the gate short-circuits BEFORE any subprocess.run spawn.
+    import os
+    import subprocess as _sp
+    called = []
+    saved_env = os.environ.get("CTX_TEST")
+    saved_run = _sp.run
+    try:
+        os.environ["CTX_TEST"] = "1"
+        _sp.run = lambda *a, **k: called.append(a)  # the helper does a lazy `import subprocess` -> this module
+        g._log_must_not_pass_contradiction({"row": 1, "fileid": "x"})  # the REAL helper, unmocked
+        assert not called, "test-context must short-circuit before subprocess.run (test-quiet, no leaked event)"
+    finally:
+        _sp.run = saved_run
+        if saved_env is None:
+            os.environ.pop("CTX_TEST", None)
+        else:
+            os.environ["CTX_TEST"] = saved_env
+    print("  [PASS] _log helper is test-quiet under CTX_TEST (no real error-event leaks from an unmocked probe)")
+
+
 def test_degraded_parity_normal_records_unchanged():
     # Happy-corpus parity: a normal core verdict (no contradiction) flows through verdict_for UNCHANGED.
     for vin, mnp in (("PASS", False), ("FAIL", True), ("UNCLEAR", True)):

@@ -22,7 +22,12 @@ def _authority():
 
 def _log_must_not_pass_contradiction(rec):
     """Fire-and-forget log-event for a must_not_pass=True + verdict=PASS core-invariant violation caught on
-    the creative surface. NEVER raises (a scan must not break on an audit-log failure)."""
+    the creative surface. NEVER raises (a scan must not break on an audit-log failure). TEST-QUIET by
+    default (returns under CTX_TEST/PYTEST) so any test/probe that exercises the contradiction without
+    mocking this helper cannot leak a real error-event into the activity feed (the phantom-discipline);
+    prod behavior is unchanged (the log-event fires on a real contradiction)."""
+    if verdict_core._is_test_context():
+        return
     try:
         import subprocess
         subprocess.run(
