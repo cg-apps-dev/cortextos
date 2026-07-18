@@ -20,9 +20,42 @@ def _authority():
     return _AUTHORITY
 
 
+def _log_must_not_pass_contradiction(rec):
+    """Fire-and-forget log-event for a must_not_pass=True + verdict=PASS core-invariant violation caught on
+    the creative surface. NEVER raises (a scan must not break on an audit-log failure)."""
+    try:
+        import subprocess
+        subprocess.run(
+            ["cortextos", "bus", "log-event", "error", "verdict_core_must_not_pass_pass_contradiction",
+             "error", "--meta", json.dumps({"surface": "creative", "row": rec.get("row"),
+                                            "fileid": rec.get("fileid")})],
+            timeout=10, check=False,
+        )
+    except Exception:
+        pass
+
+
 def verdict_for(rec):
     verdict = verdict_core.classify(rec, _authority(), surface="creative")
-    return verdict.verdict, verdict.evidence, verdict.fails, verdict.unclears
+    v = verdict.verdict
+    unclears = verdict.unclears
+    # must_not_pass INVARIANT, symmetric with copy-gate's must_not_pass-FIRST branch (copy-gate.py L119):
+    # the creative surface must NEVER auto-PASS a must_not_pass=True verdict. This surface keys on the
+    # verdict STRING, so without this it would leak a must_not_pass verdict as PASS while copy-gate would
+    # never-PASS the same one. must_not_pass=True + v=="PASS" is a CORE-INVARIANT VIOLATION (the core always
+    # co-sets must_not_pass with UNCLEAR/FAIL and should never emit this) -> force never-PASS (UNCLEAR = the
+    # hold/human-review disposition, matching the classify-belt internal_error + authority-degraded
+    # precedent; NOT FAIL, which would over-assert an undetected violation) + surface it LOUDLY (a visible
+    # note + a log-event); a silent rewrite would HIDE a core bug. Latent-not-live defense-in-depth. General:
+    # keys on must_not_pass regardless of the verdict string or authority_class.
+    if getattr(verdict, "must_not_pass", False) and v == "PASS":
+        v = "UNCLEAR"
+        unclears = list(unclears) + [
+            "CORE-INVARIANT VIOLATION: must_not_pass=True with verdict=PASS on the creative surface - "
+            "forced UNCLEAR (never-PASS); the core should never emit this, investigate verdict_core."
+        ]
+        _log_must_not_pass_contradiction(rec)
+    return v, verdict.evidence, verdict.fails, unclears
 
 
 def meta_reconcile(v, fails, meta):
