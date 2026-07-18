@@ -1149,10 +1149,15 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       }
     } catch { return; }
 
-    // Check PTY output for hard API overflow errors (always act regardless of threshold config)
+    // Check PTY output for hard API overflow errors. Corroborate against the fresh
+    // context-fullness signal so a benign mention of the banner phrase cannot
+    // force-restart a healthy session. This still acts regardless of threshold config:
+    // pct and exceeds200k are written by the hook independent of ctx_handoff_threshold.
     const recentOutput = this.agent.getOutputBuffer()?.getRecent(8000) ?? '';
-    if (/extra usage.*?1[Mm] context|conversation too long.*?compaction/i.test(recentOutput)) {
-      this.log('Context overflow error detected in PTY output - force restarting');
+    const ctxCorroboratesOverflow = exceeds200k || (pct !== null && pct >= 85);
+    if (ctxCorroboratesOverflow &&
+        /extra usage.*?1[Mm] context|conversation too long.*?compaction/i.test(recentOutput)) {
+      this.log(`Context overflow error in PTY output corroborated (pct=${pct ?? 'n/a'}, exceeds200k=${exceeds200k}) - force restarting`);
       this.forceContextRestart('API overflow error in PTY output');
       return;
     }

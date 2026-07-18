@@ -419,6 +419,146 @@ describe('FastChecker', () => {
     });
   });
 
+  describe('context overflow PTY corroboration gate', () => {
+    function writeContextStatus(overrides: Record<string, unknown> = {}): void {
+      writeFileSync(join(paths.stateDir, 'context_status.json'), JSON.stringify({
+        used_percentage: 40,
+        exceeds_200k_tokens: false,
+        session_id: 'session-overflow-test',
+        written_at: new Date().toISOString(),
+        ...overrides,
+      }));
+    }
+
+    async function runContextCheck(checker: FastChecker): Promise<void> {
+      await (checker as any).checkContextStatus();
+    }
+
+    function createCheckerForOverflowTest(opts: {
+      recentOutput: string;
+      pct?: number | null;
+      exceeds200k?: boolean;
+      handoffThreshold?: number;
+    }): { checker: FastChecker; restartSpy: ReturnType<typeof vi.spyOn> } {
+      const agent = createMockAgent('ctx-overflow-agent');
+      agent.getOutputBuffer = vi.fn().mockReturnValue({
+        getRecent: vi.fn().mockReturnValue(opts.recentOutput),
+      });
+      agent.getConfig = vi.fn().mockReturnValue({
+        model: 'fable-5',
+        ctx_handoff_threshold: opts.handoffThreshold,
+        org: 'clean-green-marketing',
+        timezone: 'America/Los_Angeles',
+      });
+      const checker = new FastChecker(agent, paths, '/tmp/framework');
+      const restartSpy = vi.spyOn(checker as any, 'forceContextRestart').mockImplementation(() => {});
+      writeContextStatus({
+        used_percentage: opts.pct === undefined ? 40 : opts.pct,
+        exceeds_200k_tokens: opts.exceeds200k ?? false,
+      });
+      return { checker, restartSpy };
+    }
+
+    it('force-restarts for regex overflow corroborated by exceeds200k', async () => {
+      const { checker, restartSpy } = createCheckerForOverflowTest({
+        recentOutput: 'extra usage must fit inside the 1M context window',
+        pct: null,
+        exceeds200k: true,
+      });
+
+      await runContextCheck(checker);
+
+      expect(restartSpy).toHaveBeenCalledWith('API overflow error in PTY output');
+    });
+
+    it('force-restarts for regex overflow corroborated by pct 100', async () => {
+      const { checker, restartSpy } = createCheckerForOverflowTest({
+        recentOutput: 'conversation too long and compaction failed',
+        pct: 100,
+      });
+
+      await runContextCheck(checker);
+
+      expect(restartSpy).toHaveBeenCalledWith('API overflow error in PTY output');
+    });
+
+    it('does not restart for benign overflow-string mention at low pct', async () => {
+      const { checker, restartSpy } = createCheckerForOverflowTest({
+        recentOutput: 'spec says: extra usage ... 1M context can appear in docs',
+        pct: 40,
+        exceeds200k: false,
+      });
+
+      await runContextCheck(checker);
+
+      expect(restartSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not restart for benign overflow-string mention when pct is null', async () => {
+      const { checker, restartSpy } = createCheckerForOverflowTest({
+        recentOutput: 'quoted banner: extra usage with a 1m context phrase',
+        pct: null,
+        exceeds200k: false,
+      });
+
+      await runContextCheck(checker);
+
+      expect(restartSpy).not.toHaveBeenCalled();
+    });
+
+    it('pins the pct corroboration boundary at 85', async () => {
+      const atBoundary = createCheckerForOverflowTest({
+        recentOutput: 'extra usage is over the 1M context limit',
+        pct: 85,
+      });
+      await runContextCheck(atBoundary.checker);
+      expect(atBoundary.restartSpy).toHaveBeenCalledWith('API overflow error in PTY output');
+
+      const belowBoundary = createCheckerForOverflowTest({
+        recentOutput: 'extra usage is over the 1M context limit',
+        pct: 84.9,
+      });
+      await runContextCheck(belowBoundary.checker);
+      expect(belowBoundary.restartSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not restart for a post-compaction banner when current pct is low', async () => {
+      const { checker, restartSpy } = createCheckerForOverflowTest({
+        recentOutput: 'conversation too long, attempting compaction after prior turn',
+        pct: 20,
+        exceeds200k: false,
+      });
+
+      await runContextCheck(checker);
+
+      expect(restartSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not restart from high pct alone without an overflow string', async () => {
+      const { checker, restartSpy } = createCheckerForOverflowTest({
+        recentOutput: 'normal output without the overflow banner',
+        pct: 95,
+        handoffThreshold: undefined,
+      });
+
+      await runContextCheck(checker);
+
+      expect(restartSpy).not.toHaveBeenCalled();
+    });
+
+    it('still restarts corroborated overflow when ctx handoff threshold is unset', async () => {
+      const { checker, restartSpy } = createCheckerForOverflowTest({
+        recentOutput: 'conversation too long for automatic compaction',
+        pct: 100,
+        handoffThreshold: undefined,
+      });
+
+      await runContextCheck(checker);
+
+      expect(restartSpy).toHaveBeenCalledWith('API overflow error in PTY output');
+    });
+  });
+
   describe('fleet health silent-death monitor', () => {
     beforeEach(() => {
       vi.useFakeTimers();
