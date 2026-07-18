@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 vi.mock('child_process', () => ({ execFile: vi.fn() }));
+import { execFile } from 'child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -563,6 +564,7 @@ describe('FastChecker', () => {
     beforeEach(() => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2026-07-12T21:30:00.000Z'));
+      vi.mocked(execFile).mockReset();
     });
 
     afterEach(() => {
@@ -625,6 +627,46 @@ describe('FastChecker', () => {
       }));
     }
 
+    function fleetHealthNotifyMessages(): string[] {
+      return vi.mocked(execFile).mock.calls.flatMap(call => {
+        const [cmd, args] = call;
+        if (cmd !== 'cortextos' || !Array.isArray(args)) return [];
+        const argv = args.map(String);
+        if (argv[0] !== 'bus' || argv[1] !== 'notify-agent' || argv[2] !== 'the-orchestrator') {
+          return [];
+        }
+        return argv[3]?.startsWith('[FLEET-HEALTH]') ? [argv[3]] : [];
+      });
+    }
+
+    function expectFleetHealthNotify(count = 1): string {
+      const messages = fleetHealthNotifyMessages();
+      expect(messages).toHaveLength(count);
+      expect(messages[0]).toContain('[FLEET-HEALTH]');
+      return messages[0];
+    }
+
+    function expectNoFleetHealthNotify(): void {
+      expect(fleetHealthNotifyMessages()).toHaveLength(0);
+    }
+
+    function readFleetHealthEvents(agentName: string): string {
+      const eventsAgentDir = join(paths.analyticsDir, 'events', agentName);
+      if (!existsSync(eventsAgentDir)) return '';
+      return readdirSync(eventsAgentDir)
+        .filter(f => f.endsWith('.jsonl'))
+        .map(f => readFileSync(join(eventsAgentDir, f), 'utf-8'))
+        .join('');
+    }
+
+    function expectFleetHealthEvent(agentName: string, className: string, severity = 'error'): string {
+      const logged = readFleetHealthEvents(agentName);
+      expect(logged).toContain('fleet_health_silent_death_alert');
+      expect(logged).toContain(`"severity":"${severity}"`);
+      expect(logged).toContain(`"class":"${className}"`);
+      return logged;
+    }
+
     it('alerts network-wedge for running agent with stale context and ConnectionRefused stdout', async () => {
       const agent = createMockAgent('wedge-agent');
       const api = createMockTelegramApi();
@@ -635,11 +677,12 @@ describe('FastChecker', () => {
 
       await runPollCycle(checker);
 
-      expect(api.sendMessage).toHaveBeenCalledTimes(1);
-      const [chatId, text] = api.sendMessage.mock.calls[0];
-      expect(chatId).toBe('6991789266');
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
       expect(text).toContain('Class: network-wedge');
       expect(text).toContain('ConnectionRefused');
+      const logged = expectFleetHealthEvent('wedge-agent', 'network-wedge');
+      expect(logged).toContain('"stale_ms":');
     });
 
     it('classifies login and 401 markers as auth-dead without leaking tokens', async () => {
@@ -653,18 +696,21 @@ describe('FastChecker', () => {
 
       await runPollCycle(checker);
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
       await runPollCycle(checker);
 
-      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
       expect(text).toContain('Class: auth-dead');
       expect(text).not.toContain('sk-ant-oat01-');
       expect(text).toContain('[REDACTED_TOKEN]');
+      expectFleetHealthEvent('auth-agent', 'auth-dead');
     });
 
     it('does not alert auth-dead when same-session token progress proves recovery after a 401', async () => {
       const api = createMockTelegramApi();
       const checker = new FastChecker(createMockAgent('recovered-auth-agent'), paths, '/tmp/framework', { telegramApi: api });
-      writeContextStatus('2026-07-12T21:29:00.000Z', {
+      writeContextStatus('2026-07-12T21:00:00.000Z', {
         session_id: 'session-a',
         total_input_tokens: 100,
         total_output_tokens: 10,
@@ -673,8 +719,9 @@ describe('FastChecker', () => {
 
       await runPollCycle(checker);
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
 
-      writeContextStatus('2026-07-12T21:29:30.000Z', {
+      writeContextStatus('2026-07-12T21:00:30.000Z', {
         session_id: 'session-a',
         total_input_tokens: 135,
         total_output_tokens: 22,
@@ -683,12 +730,13 @@ describe('FastChecker', () => {
       await runPollCycle(checker);
 
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
     });
 
     it('alerts auth-dead when a persistent 401 marker scrolls out without token progress', async () => {
       const api = createMockTelegramApi();
       const checker = new FastChecker(createMockAgent('scrollout-auth-agent'), paths, '/tmp/framework', { telegramApi: api });
-      writeContextStatus('2026-07-12T21:29:00.000Z', {
+      writeContextStatus('2026-07-12T21:00:00.000Z', {
         session_id: 'session-a',
         total_input_tokens: 100,
         total_output_tokens: 10,
@@ -697,8 +745,9 @@ describe('FastChecker', () => {
 
       await runPollCycle(checker);
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
 
-      writeContextStatus('2026-07-12T21:29:30.000Z', {
+      writeContextStatus('2026-07-12T21:00:30.000Z', {
         session_id: 'session-a',
         total_input_tokens: 100,
         total_output_tokens: 10,
@@ -706,16 +755,17 @@ describe('FastChecker', () => {
       writeStdout(Array.from({ length: 140 }, (_, idx) => `normal line ${idx}`).join('\n'));
       await runPollCycle(checker);
 
-      expect(api.sendMessage).toHaveBeenCalledTimes(1);
-      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
       expect(text).toContain('Class: auth-dead');
       expect(text).toContain('Invalid API key before verbose output');
+      expectFleetHealthEvent('scrollout-auth-agent', 'auth-dead');
     });
 
     it('does not treat restart boot output as recovery from an auth-dead incident', async () => {
       const api = createMockTelegramApi();
       const checker = new FastChecker(createMockAgent('crash-loop-auth-agent'), paths, '/tmp/framework', { telegramApi: api });
-      writeContextStatus('2026-07-12T21:29:00.000Z', {
+      writeContextStatus('2026-07-12T21:00:00.000Z', {
         session_id: 'session-a',
         total_input_tokens: 100,
         total_output_tokens: 10,
@@ -724,8 +774,9 @@ describe('FastChecker', () => {
 
       await runPollCycle(checker);
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
 
-      writeContextStatus('2026-07-12T21:29:30.000Z', {
+      writeContextStatus('2026-07-12T21:00:30.000Z', {
         session_id: 'session-b',
         total_input_tokens: 4,
         total_output_tokens: 0,
@@ -734,16 +785,17 @@ describe('FastChecker', () => {
       writeStdout(`${bootLines}\n401 Invalid API key after restart\n`);
       await runPollCycle(checker);
 
-      expect(api.sendMessage).toHaveBeenCalledTimes(1);
-      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
       expect(text).toContain('Class: auth-dead');
       expect(text).toContain('Invalid API key after restart');
+      expectFleetHealthEvent('crash-loop-auth-agent', 'auth-dead');
     });
 
     it('does not treat a restart context reset as auth-dead recovery', async () => {
       const api = createMockTelegramApi();
       const checker = new FastChecker(createMockAgent('restart-reset-auth-agent'), paths, '/tmp/framework', { telegramApi: api });
-      writeContextStatus('2026-07-12T21:29:00.000Z', {
+      writeContextStatus('2026-07-12T21:00:00.000Z', {
         session_id: 'session-a',
         total_input_tokens: 650,
         total_output_tokens: 50,
@@ -752,8 +804,9 @@ describe('FastChecker', () => {
 
       await runPollCycle(checker);
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
 
-      writeContextStatus('2026-07-12T21:29:30.000Z', {
+      writeContextStatus('2026-07-12T21:00:30.000Z', {
         session_id: 'session-b',
         total_input_tokens: 3,
         total_output_tokens: 0,
@@ -762,16 +815,17 @@ describe('FastChecker', () => {
       writeStdout(`${bootLines}\n401 Invalid API key after restart bump\n`);
       await runPollCycle(checker);
 
-      expect(api.sendMessage).toHaveBeenCalledTimes(1);
-      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
       expect(text).toContain('Class: auth-dead');
       expect(text).toContain('Invalid API key after restart bump');
+      expectFleetHealthEvent('restart-reset-auth-agent', 'auth-dead');
     });
 
     it('does not treat a same-session token reset as auth-dead recovery', async () => {
       const api = createMockTelegramApi();
       const checker = new FastChecker(createMockAgent('same-session-reset-auth-agent'), paths, '/tmp/framework', { telegramApi: api });
-      writeContextStatus('2026-07-12T21:29:00.000Z', {
+      writeContextStatus('2026-07-12T21:00:00.000Z', {
         session_id: 'session-a',
         total_input_tokens: 650,
         total_output_tokens: 50,
@@ -780,8 +834,9 @@ describe('FastChecker', () => {
 
       await runPollCycle(checker);
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
 
-      writeContextStatus('2026-07-12T21:29:30.000Z', {
+      writeContextStatus('2026-07-12T21:00:30.000Z', {
         session_id: 'session-a',
         total_input_tokens: 5,
         total_output_tokens: 0,
@@ -789,16 +844,17 @@ describe('FastChecker', () => {
       writeStdout('401 Invalid API key after same-session token reset\n');
       await runPollCycle(checker);
 
-      expect(api.sendMessage).toHaveBeenCalledTimes(1);
-      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
       expect(text).toContain('Class: auth-dead');
       expect(text).toContain('Invalid API key after same-session token reset');
+      expectFleetHealthEvent('same-session-reset-auth-agent', 'auth-dead');
     });
 
     it('does not treat retry and spinner output as recovery from an auth-dead incident', async () => {
       const api = createMockTelegramApi();
       const checker = new FastChecker(createMockAgent('retry-loop-auth-agent'), paths, '/tmp/framework', { telegramApi: api });
-      writeContextStatus('2026-07-12T21:29:00.000Z', {
+      writeContextStatus('2026-07-12T21:00:00.000Z', {
         session_id: 'session-a',
         total_input_tokens: 100,
         total_output_tokens: 10,
@@ -807,8 +863,9 @@ describe('FastChecker', () => {
 
       await runPollCycle(checker);
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
 
-      writeContextStatus('2026-07-12T21:29:30.000Z', {
+      writeContextStatus('2026-07-12T21:00:30.000Z', {
         session_id: 'session-a',
         total_input_tokens: 100,
         total_output_tokens: 10,
@@ -816,10 +873,11 @@ describe('FastChecker', () => {
       writeStdout('Thinking...\nRetrying request after backoff\nstill waiting\n401 Invalid API key after retry\n');
       await runPollCycle(checker);
 
-      expect(api.sendMessage).toHaveBeenCalledTimes(1);
-      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
       expect(text).toContain('Class: auth-dead');
       expect(text).toContain('Invalid API key after retry');
+      expectFleetHealthEvent('retry-loop-auth-agent', 'auth-dead');
     });
 
     it('does not accumulate auth-dead debounce for stopped agents with stale 401 stdout', async () => {
@@ -834,22 +892,24 @@ describe('FastChecker', () => {
       await runPollCycle(checker);
 
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
     });
 
-    it('still alerts auth-dead for crashed agents with fresh 401 stdout', async () => {
+    it('still alerts auth-dead for crashed agents with stale 401 stdout', async () => {
       const api = createMockTelegramApi();
       const checker = new FastChecker(createMockAgentWithStatus('crashed-auth-agent', 'crashed'), paths, '/tmp/framework', { telegramApi: api });
-      writeContextStatus('2026-07-12T21:29:00.000Z');
+      writeContextStatus('2026-07-12T21:00:00.000Z');
       writeStdout('401 Invalid API key caused session exit\n');
 
       await runPollCycle(checker);
       expect(api.sendMessage).not.toHaveBeenCalled();
       await runPollCycle(checker);
 
-      expect(api.sendMessage).toHaveBeenCalledTimes(1);
-      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
       expect(text).toContain('Class: auth-dead');
       expect(text).toContain('re-deploy setup-token path');
+      expectFleetHealthEvent('crashed-auth-agent', 'auth-dead');
     });
 
     it('classifies 429 tier caps as tier-throttled, not auth-dead', async () => {
@@ -861,10 +921,12 @@ describe('FastChecker', () => {
 
       await runPollCycle(checker);
 
-      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
       expect(text).toContain('Class: tier-throttled');
       expect(text).toContain('Do not treat this as account-dead');
       expect(text).not.toContain('Class: auth-dead');
+      expectFleetHealthEvent('tier-agent', 'tier-throttled');
     });
 
     it('treats lone tier 429 with fresh liveness as informational LOG-ONLY, never Telegram (Adam-spam fix)', async () => {
@@ -892,15 +954,12 @@ describe('FastChecker', () => {
 
       // Informational tier-throttle is LOG-ONLY now: no Telegram at all, even across churned refreshes.
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
 
       // ...but a dashboard event trace IS still written (log-only, not silent), deduped on the snippet.
-      const eventsAgentDir = join(paths.analyticsDir, 'events', 'fresh-tier-agent');
-      expect(existsSync(eventsAgentDir)).toBe(true);
-      const logged = readdirSync(eventsAgentDir)
-        .filter(f => f.endsWith('.jsonl'))
-        .map(f => readFileSync(join(eventsAgentDir, f), 'utf-8'))
-        .join('');
+      const logged = readFleetHealthEvents('fresh-tier-agent');
       expect(logged).toContain('fleet_health_silent_death_alert');
+      expect(logged).toContain('"severity":"info"');
       expect(logged).toContain('informational');
       // Deduped on snippet without generatedAt: exactly ONE trace across the three churned cycles.
       expect(logged.split('informational').length - 1).toBe(1);
@@ -922,11 +981,13 @@ describe('FastChecker', () => {
 
       await runPollCycle(checker);
 
-      expect(api.sendMessage).toHaveBeenCalledTimes(1);
-      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
       expect(text).toContain('FLEET TIER THROTTLE ALERT');
       expect(text).toContain('Severity: error');
       expect(text).toContain('account-wide cap');
+      const logged = expectFleetHealthEvent('capped-tier-agent', 'tier-throttled');
+      expect(logged).toContain('account-wide-cap');
     });
 
     it('routes usage-miscope LOG-ONLY, never Telegram - even across churned snapshots (Adam-spam fix)', async () => {
@@ -953,13 +1014,9 @@ describe('FastChecker', () => {
 
       // Operational usage-vs-cost attribution divergence is LOG-ONLY now: zero Telegram across churned snapshots.
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
       // ...but a dashboard event trace IS written (log-only), deduped per-agent = exactly one across the 3 cycles.
-      const eventsAgentDir = join(paths.analyticsDir, 'events', 'mis-scope-agent');
-      expect(existsSync(eventsAgentDir)).toBe(true);
-      const logged = readdirSync(eventsAgentDir)
-        .filter(f => f.endsWith('.jsonl'))
-        .map(f => readFileSync(join(eventsAgentDir, f), 'utf-8'))
-        .join('');
+      const logged = readFleetHealthEvents('mis-scope-agent');
       expect(logged).toContain('usage-miscope');
       expect(logged.split('usage-miscope').length - 1).toBe(1);
     });
@@ -986,6 +1043,8 @@ describe('FastChecker', () => {
       // point here is usage-miscope itself never reaches Adam's Telegram.)
       const usageTelegrams = api.sendMessage.mock.calls.filter(c => String(c[1]).includes('usage-miscope'));
       expect(usageTelegrams.length).toBe(0);
+      const usageOpsAlerts = fleetHealthNotifyMessages().filter(message => message.includes('usage-miscope'));
+      expect(usageOpsAlerts).toHaveLength(0);
     });
 
     it('does not alert for healthy fresh context with no marker', async () => {
@@ -998,6 +1057,7 @@ describe('FastChecker', () => {
       await runPollCycle(checker);
 
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
     });
 
     it('does not alert when written_at is fresh even if heartbeat string would be stale', async () => {
@@ -1010,6 +1070,7 @@ describe('FastChecker', () => {
       await runPollCycle(checker);
 
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
     });
 
     it('does not alert on stale written_at and stdout marker without a cron-fire signal', async () => {
@@ -1021,6 +1082,7 @@ describe('FastChecker', () => {
       await runPollCycle(checker);
 
       expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
     });
 
     it('alerts no-cron inbox-driven agents when an inbox delivery follows stale written_at', async () => {
@@ -1032,10 +1094,11 @@ describe('FastChecker', () => {
 
       await runPollCycle(checker);
 
-      expect(api.sendMessage).toHaveBeenCalledTimes(1);
-      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
       expect(text).toContain('Class: network-wedge');
       expect(text).toContain('ConnectionRefused');
+      expectFleetHealthEvent('inbox-driven-agent', 'network-wedge');
     });
 
     it('dedupes sustained wedge alerts to one alert per onset', async () => {
@@ -1048,7 +1111,9 @@ describe('FastChecker', () => {
       await runPollCycle(checker);
       await runPollCycle(checker);
 
-      expect(api.sendMessage).toHaveBeenCalledTimes(1);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      expectFleetHealthNotify();
+      expectFleetHealthEvent('dedupe-agent', 'network-wedge');
     });
 
     it('alerts unknown-silent only after the two-cron frozen threshold', async () => {
@@ -1060,8 +1125,10 @@ describe('FastChecker', () => {
 
       await runPollCycle(checker);
 
-      const text = String(api.sendMessage.mock.calls[0][1]);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
       expect(text).toContain('Class: unknown-silent');
+      expectFleetHealthEvent('unknown-agent', 'unknown-silent');
     });
   });
 
