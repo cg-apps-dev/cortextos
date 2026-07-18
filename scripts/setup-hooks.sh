@@ -27,6 +27,18 @@ install_hook() {
     return
   fi
 
+  # Non-clobbering: never overwrite an existing hook the operator installed
+  # (e.g. our own leak-guard pre-push). -L also catches a broken symlink that
+  # -e would follow-and-miss then clobber.
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    if cmp -s "$src" "$dest"; then
+      echo "  Already installed: .git/hooks/$name"
+    else
+      echo "  Skipped: .git/hooks/$name already exists (leaving your hook in place)"
+    fi
+    return
+  fi
+
   cp "$src" "$dest"
   chmod +x "$dest"
   echo "  Installed: .git/hooks/$name"

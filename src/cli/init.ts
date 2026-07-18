@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { execSync } from 'child_process';
 import { existsSync, mkdirSync, writeFileSync, copyFileSync, readFileSync, readdirSync, chmodSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -210,6 +211,20 @@ export const initCommand = new Command('init')
         if (regenerated > 0) {
           console.log(`  Regenerated SYSTEM.md for ${regenerated} agent(s)`);
         }
+      }
+    }
+
+    // Best-effort: install the tracked git pre-push leak-guard hook so this clone
+    // gets the security gate without a manual step. Non-fatal; only when the project
+    // is a git repo AND ships the installer; setup-hooks.sh is non-clobbering.
+    if (process.platform !== 'win32' &&
+        existsSync(join(projectRoot, '.git')) &&
+        existsSync(join(projectRoot, 'scripts', 'setup-hooks.sh'))) {
+      try {
+        execSync('bash scripts/setup-hooks.sh', { cwd: projectRoot, stdio: 'ignore' });
+        console.log('  Installed git pre-push hook (leak-guard)');
+      } catch {
+        console.log('  Skipped git pre-push hook install (run: bash scripts/setup-hooks.sh)');
       }
     }
 
