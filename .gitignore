@@ -61,6 +61,9 @@ docs/
 *PHASE*-REPORT.md
 docs/phase-reports/
 
+# Leaked internal ops report - never re-track (upstream 086ba1d defense-in-depth)
+WINDOWS_INSTALL_REPORT.md
+
 # Internal developer/planning notes (not for public repo)
 KNOWN-ISSUES.md
 WINDOWS-IMPLEMENTATION-PLAN.md
