@@ -55,6 +55,8 @@ DEFAULT_EMBEDDING_DIMENSIONS = 768
 DEFAULT_SIMILARITY_THRESHOLD = 0.0  # return everything by default, let caller filter
 DEFAULT_MAX_TOKENS = 0  # 0 = unlimited
 DEFAULT_PREVIEW_CHARS = 300
+DEFAULT_EMBED_TIMEOUT_MS = 20000
+DEFAULT_EMBED_BACKOFFS = (1, 3, 5)
 
 # Pricing (per 1M tokens)
 EMBEDDING_PRICE_PER_M = 0.20
@@ -72,6 +74,10 @@ USAGE_FILE = MMRAG_DIR / "usage.json"
 # Usage Tracker
 # ---------------------------------------------------------------------------
 _tracker = None  # module-level, set by cmd_ingest/cmd_query
+
+
+class EmbedUnavailableError(RuntimeError):
+    """Raised when the embedder is degraded after bounded retry."""
 
 
 class UsageTracker:
@@ -247,16 +253,88 @@ def _retry_generate_content(client, *, model, contents, backoffs=(5, 15, 45)):
     raise last_err if last_err else RuntimeError("retry loop completed without response or error")
 
 
+def _is_transient_api_error(err):
+    return (
+        getattr(err, "code", None) in TRANSIENT_HTTP_CODES
+        or getattr(err, "status", None) in TRANSIENT_STATUS_NAMES
+    )
+
+
+def _is_timeout_error(err):
+    if isinstance(err, TimeoutError):
+        return True
+    name = type(err).__name__.lower()
+    module = type(err).__module__.lower()
+    return "timeout" in name or module.startswith("httpx") and "timeout" in name
+
+
+def _embed_timeout_ms(config):
+    raw = os.environ.get("MMRAG_EMBED_TIMEOUT_MS", config.get("embedding_timeout_ms", DEFAULT_EMBED_TIMEOUT_MS))
+    try:
+        timeout = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_EMBED_TIMEOUT_MS
+    if timeout <= 0:
+        return DEFAULT_EMBED_TIMEOUT_MS
+    return timeout
+
+
+def _embed_backoffs(config):
+    raw = config.get("embedding_retry_backoffs", DEFAULT_EMBED_BACKOFFS)
+    try:
+        backoffs = tuple(float(v) for v in raw)
+    except (TypeError, ValueError):
+        return DEFAULT_EMBED_BACKOFFS
+    if not backoffs:
+        return DEFAULT_EMBED_BACKOFFS
+    return backoffs
+
+
+def _retry_embed_content(client, *, model, contents, config, backoffs=DEFAULT_EMBED_BACKOFFS):
+    """Call embed_content with bounded retry on transient API and timeout failures."""
+    from google.genai import errors as _genai_errors
+    last_err = None
+    for attempt, backoff in enumerate(backoffs, start=1):
+        try:
+            return client.models.embed_content(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+        except _genai_errors.APIError as e:
+            last_err = e
+            if not _is_transient_api_error(e):
+                raise
+            if attempt < len(backoffs):
+                print(f"    Transient embed error (HTTP {e.code} {e.status or ''}); retrying in {backoff}s (attempt {attempt}/{len(backoffs)})")
+                time.sleep(backoff)
+            else:
+                print(f"    Exhausted embed retries on transient error: HTTP {e.code} {e.status or ''}")
+        except Exception as e:
+            if not _is_timeout_error(e):
+                raise
+            last_err = e
+            if attempt < len(backoffs):
+                print(f"    Embed timeout; retrying in {backoff}s (attempt {attempt}/{len(backoffs)})")
+                time.sleep(backoff)
+            else:
+                print("    Exhausted embed retries on timeout")
+    raise EmbedUnavailableError(f"embed unavailable after {len(backoffs)} attempts: {last_err}") from last_err
+
+
 def embed_content(client, config, content, task_type="RETRIEVAL_DOCUMENT"):
     """Embed content using Gemini Embedding 2. Content can be text string or list of Parts."""
     from google.genai import types
-    result = client.models.embed_content(
+    result = _retry_embed_content(
+        client,
         model=config.get("embedding_model", "gemini-embedding-2-preview"),
         contents=content,
         config=types.EmbedContentConfig(
             output_dimensionality=config.get("embedding_dimensions", DEFAULT_EMBEDDING_DIMENSIONS),
             task_type=task_type,
+            http_options=types.HttpOptions(timeout=_embed_timeout_ms(config)),
         ),
+        backoffs=_embed_backoffs(config),
     )
     if _tracker:
         _tracker.track_embedding(content)
@@ -1082,6 +1160,7 @@ def cmd_ingest(args):
 
     total = 0
     skipped = 0
+    skipped_degraded = 0
     errors = 0
 
     try:
@@ -1099,6 +1178,9 @@ def cmd_ingest(args):
                             print(f"    Added {count} chunk(s)")
                         elif count == 0:
                             skipped += 1
+                    except EmbedUnavailableError as e:
+                        print(f"    WARNING: embedder degraded; skipped file: {e}")
+                        skipped_degraded += 1
                     except Exception as e:
                         print(f"    ERROR: {e}")
                         errors += 1
@@ -1109,6 +1191,9 @@ def cmd_ingest(args):
                     total += count
                     if count > 0:
                         print(f"  Added {count} chunk(s)")
+                except EmbedUnavailableError as e:
+                    print(f"  WARNING: embedder degraded; skipped file: {e}")
+                    skipped_degraded += 1
                 except Exception as e:
                     print(f"  ERROR: {e}")
                     errors += 1
@@ -1120,6 +1205,8 @@ def cmd_ingest(args):
     print(f"\nDone! Ingested {total} new chunk(s) into '{collection_name}'")
     if skipped:
         print(f"  Skipped: {skipped} (already existed or empty)")
+    if skipped_degraded:
+        print(f"  Skipped degraded: {skipped_degraded} (embedder unavailable)")
     if errors:
         print(f"  Errors: {errors}")
     print(_tracker.summary_line())
