@@ -211,7 +211,7 @@ def _load_factory(dotted_path):
 def get_genai_client(api_key):
     """Construct a Gemini client.
 
-    Default returns google.genai.Client(api_key=api_key) — byte-identical to
+    Default returns google.genai.Client(api_key=api_key) - byte-identical to
     the prior behavior. To inject a fake client (e.g. for testing the retry
     loop in ingest_pdf), set the env-var MMRAG_GEMINI_CLIENT_FACTORY to a
     dotted import path of a callable taking (api_key) and returning an object
@@ -264,8 +264,7 @@ def _is_timeout_error(err):
     if isinstance(err, TimeoutError):
         return True
     name = type(err).__name__.lower()
-    module = type(err).__module__.lower()
-    return "timeout" in name or module.startswith("httpx") and "timeout" in name
+    return "timeout" in name
 
 
 def _embed_timeout_ms(config):
@@ -571,6 +570,125 @@ def file_id(path, chunk_idx=None):
         return f"{h}_chunk{chunk_idx}"
     return h
 
+
+def content_chunk_id(path, chunk_text):
+    """Generate a stable per-file, per-content chunk ID."""
+    h = hashlib.md5(chunk_text.encode("utf-8")).hexdigest()[:12]
+    stem = Path(path).stem or Path(path).name
+    return f"{stem}:{h}"
+
+
+def _collection_get_by_source(collection, source):
+    """Fetch existing collection rows for a source path, with a compatibility fallback."""
+    try:
+        data = collection.get(where={"source": source}, include=["metadatas", "documents", "embeddings"])
+    except TypeError:
+        try:
+            data = collection.get(include=["metadatas", "documents", "embeddings"])
+        except TypeError:
+            data = collection.get()
+        ids = []
+        metadatas = []
+        documents = []
+        embeddings = []
+        raw_documents = data.get("documents")
+        if raw_documents is None:
+            raw_documents = []
+        raw_embeddings = data.get("embeddings")
+        if raw_embeddings is None:
+            raw_embeddings = []
+        for idx, (doc_id, meta) in enumerate(zip(data.get("ids", []), data.get("metadatas", []))):
+            if meta and meta.get("source") == source:
+                ids.append(doc_id)
+                metadatas.append(meta)
+                if idx < len(raw_documents):
+                    documents.append(raw_documents[idx])
+                if idx < len(raw_embeddings):
+                    embeddings.append(raw_embeddings[idx])
+        return {"ids": ids, "metadatas": metadatas, "documents": documents, "embeddings": embeddings}
+    return data or {"ids": [], "metadatas": [], "documents": [], "embeddings": []}
+
+
+def _metadata_for_chunk(file_path, source, chunk, original_index, total_chunks, type_name, metadata_extra, stored_index):
+    meta = {
+        "source": source,
+        "type": type_name,
+        "chunk_index": original_index,
+        "total_chunks": total_chunks,
+        "filename": file_path.name,
+        "file_ext": file_path.suffix.lower(),
+        "content_hash": hashlib.md5(chunk.encode("utf-8")).hexdigest(),
+        "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    if metadata_extra:
+        meta.update(metadata_extra(original_index, chunk, stored_index))
+    return meta
+
+
+def ingest_content_chunks(client, config, collection, file_path, chunks, type_name, metadata_extra=None):
+    """Ingest text-like chunks by content hash and delete stale chunks for the source."""
+    file_path = Path(file_path)
+    source = str(file_path.resolve())
+    records = []
+    desired_ids = set()
+    for original_index, chunk in enumerate(chunks):
+        if not chunk.strip():
+            continue
+        doc_id = content_chunk_id(file_path, chunk)
+        if doc_id in desired_ids:
+            continue
+        desired_ids.add(doc_id)
+        records.append((original_index, chunk, doc_id))
+
+    existing_data = _collection_get_by_source(collection, source)
+    existing_ids = set(existing_data.get("ids") or [])
+    stale_ids = sorted(existing_ids - desired_ids)
+    legacy_by_document = {}
+    existing_documents = existing_data.get("documents")
+    if existing_documents is None:
+        existing_documents = []
+    existing_embeddings = existing_data.get("embeddings")
+    if existing_embeddings is None:
+        existing_embeddings = []
+    for idx, document in enumerate(existing_documents):
+        if document in legacy_by_document:
+            continue
+        if idx < len(existing_embeddings):
+            legacy_by_document[document] = existing_embeddings[idx]
+
+    count = 0
+    total_chunks = len(records)
+    for i, (original_index, chunk, doc_id) in enumerate(records):
+        if not args_force and doc_id in existing_ids:
+            continue
+
+        meta = _metadata_for_chunk(
+            file_path,
+            source,
+            chunk,
+            original_index,
+            total_chunks,
+            type_name,
+            metadata_extra,
+            i,
+        )
+        embedding = None if args_force else legacy_by_document.get(chunk)
+        if embedding is None:
+            embedding = embed_content(client, config, chunk)
+            count += 1
+        collection.upsert(
+            ids=[doc_id],
+            embeddings=[embedding],
+            documents=[chunk],
+            metadatas=[meta],
+        )
+
+    if stale_ids:
+        collection.delete(ids=stale_ids)
+        print(f"  Deleted {len(stale_ids)} stale chunk(s)")
+
+    return count
+
 # ---------------------------------------------------------------------------
 # Ingest logic
 # ---------------------------------------------------------------------------
@@ -596,30 +714,7 @@ def ingest_text_file(client, config, collection, file_path):
         overlap=config.get("text_chunk_overlap", DEFAULT_TEXT_CHUNK_OVERLAP),
     )
 
-    count = 0
-    for i, chunk in enumerate(chunks):
-        doc_id = file_id(file_path, i)
-        if already_exists(collection, doc_id):
-            continue
-
-        embedding = embed_content(client, config, chunk)
-        collection.upsert(
-            ids=[doc_id],
-            embeddings=[embedding],
-            documents=[chunk],
-            metadatas=[{
-                "source": str(file_path.resolve()),
-                "type": "text",
-                "chunk_index": i,
-                "total_chunks": len(chunks),
-                "filename": file_path.name,
-                "file_ext": file_path.suffix.lower(),
-                "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            }],
-        )
-        count += 1
-
-    return count
+    return ingest_content_chunks(client, config, collection, file_path, chunks, "text")
 
 
 def ingest_image(client, config, collection, file_path):
@@ -919,32 +1014,17 @@ def ingest_pdf(client, config, collection, file_path):
             overlap=config.get("text_chunk_overlap", DEFAULT_TEXT_CHUNK_OVERLAP),
         )
 
-    count = 0
-    for i, page_content in enumerate(pages):
-        if not page_content.strip():
-            continue
-        doc_id = file_id(file_path, i)
-        if already_exists(collection, doc_id):
-            continue
-
-        embedding = embed_content(client, config, page_content)
-        collection.upsert(
-            ids=[doc_id],
-            embeddings=[embedding],
-            documents=[page_content],
-            metadatas=[{
-                "source": str(file_path.resolve()),
-                "type": "pdf_page",
-                "chunk_index": i,
-                "total_chunks": len(pages),
-                "page_number": i + 1,
-                "filename": file_path.name,
-                "file_ext": ".pdf",
-                "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            }],
-        )
-        count += 1
-    return count
+    return ingest_content_chunks(
+        client,
+        config,
+        collection,
+        file_path,
+        pages,
+        "pdf_page",
+        metadata_extra=lambda original_index, _chunk, _stored_index: {
+            "page_number": original_index + 1,
+        },
+    )
 
 
 def extract_docx_text(file_path):
@@ -1059,30 +1139,20 @@ def ingest_office_doc(client, config, collection, file_path):
             overlap=config.get("text_chunk_overlap", DEFAULT_TEXT_CHUNK_OVERLAP),
         )
 
-    count = 0
-    for i, section in enumerate(sections):
-        if not section.strip():
-            continue
-        doc_id = file_id(file_path, i)
-        if already_exists(collection, doc_id):
-            continue
-
-        embedding = embed_content(client, config, section)
-        meta = {
-            "source": str(file_path.resolve()),
-            "type": type_name,
-            "chunk_index": i,
-            "total_chunks": len(sections),
-            "filename": file_path.name,
-            "file_ext": ext,
-            "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }
+    def extra(original_index, _chunk, _stored_index):
         if type_name == "slides":
-            meta["slide_number"] = i + 1
+            return {"slide_number": original_index + 1}
+        return {}
 
-        collection.upsert(ids=[doc_id], embeddings=[embedding], documents=[section], metadatas=[meta])
-        count += 1
-    return count
+    return ingest_content_chunks(
+        client,
+        config,
+        collection,
+        file_path,
+        sections,
+        type_name,
+        metadata_extra=extra,
+    )
 
 
 # Global flag for --force re-ingestion

@@ -137,7 +137,7 @@ Keep your memory collection searchable and current:
 # Re-ingest memory, then VERIFY it actually indexed. A silent failure here
 # (e.g. a bad flag, or no GEMINI_API_KEY) means your memory never reaches the KB.
 RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
-  --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private --force 2>&1)
+  --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private 2>&1)
 echo "$RESULT"
 if echo "$RESULT" | grep -qE "Errors: [1-9]"; then echo "WARNING: Step 9 KB ingest ERROR (likely Gemini free-tier 429 daily embed-quota, 1000/day/project — blocks KB writes fleet-wide until daily reset/plan upgrade); flag the orchestrator."
 elif echo "$RESULT" | grep -qE "Ingested [0-9]+|Added [0-9]+ chunk"; then echo "Step 9: KB ingest OK"

@@ -301,7 +301,7 @@ The knowledge base is a semantic vector store (ChromaDB, Gemini Embedding 2). Th
 ```bash
 # Run on every heartbeat
 cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
-  --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private --force
+  --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private
 ```
 
 **When to query — before starting any task:**
