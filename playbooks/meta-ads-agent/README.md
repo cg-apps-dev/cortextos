@@ -19,3 +19,4 @@ Plain-English SOPs for the Meta ads upload-to-launch pipeline, one per process. 
 | 06 | [06-launch-tracking.md](06-launch-tracking.md) | AdManage activity log -> launch stamps; rejection alerts | launchd launch-tracker-watch (15 min) + daily 8am PT safety-net sweep | Autonomous |
 | 07 | [07-upkeep-analysis.md](07-upkeep-analysis.md) | Coverage report + stuck-row and hygiene flags | On demand / periodic | Autonomous |
 | 08 | [08-compliance-scan.md](08-compliance-scan.md) | Creative + copy compliance sweep -> col-B verdict stamps | Auto after every intake; on-demand sweeps | Autonomous (stamps only; Adam gates posting) |
+| 09 | [09-draft-adset-assembly.md](09-draft-adset-assembly.md) | Curated ad groupings -> Draft Ad Sets tabs (Adam-template clone: chips, blocks, fills); Adam picks LP/Ad Type + posts | On Adam's request | Human-gated (Adam fills chips + posts) |
