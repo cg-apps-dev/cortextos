@@ -408,9 +408,24 @@ def describe_media(client, config, file_path, media_type="video"):
 # ---------------------------------------------------------------------------
 # ChromaDB
 # ---------------------------------------------------------------------------
-def get_chroma_collection(collection_name="default"):
+def _chroma_client():
     import chromadb
-    client = chromadb.PersistentClient(path=str(CHROMADB_DIR))
+
+    host = os.environ.get("CHROMA_SERVER_HOST")
+    port = os.environ.get("CHROMA_SERVER_PORT")
+    if host and port:
+        try:
+            client = chromadb.HttpClient(host=host, port=int(port))
+            client.heartbeat()
+            return client
+        except Exception as e:
+            print(f"  WARNING: chroma server {host}:{port} unreachable ({e}); falling back to embedded")
+
+    return chromadb.PersistentClient(path=str(CHROMADB_DIR))
+
+
+def get_chroma_collection(collection_name="default"):
+    client = _chroma_client()
     return client.get_or_create_collection(
         name=collection_name,
         metadata={"hnsw:space": "cosine"},
@@ -418,8 +433,8 @@ def get_chroma_collection(collection_name="default"):
 
 
 def get_chroma_client():
-    import chromadb
-    return chromadb.PersistentClient(path=str(CHROMADB_DIR))
+    return _chroma_client()
+
 
 # ---------------------------------------------------------------------------
 # Text chunking
