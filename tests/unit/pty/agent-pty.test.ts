@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 
 // node-pty is native; stub it so constructing AgentPTY never touches it.
 vi.mock('node-pty', () => ({ spawn: vi.fn() }));
@@ -88,5 +88,118 @@ describe('AgentPTY isolated Claude config guard', () => {
     vi.mocked(fs.rmSync).mockClear();
     enforceIsolatedClaudeCredentialEnv({}, 'alice');
     expect(fs.rmSync).not.toHaveBeenCalled();
+  });
+});
+
+type MockPty = {
+  pid: number;
+  write: ReturnType<typeof vi.fn>;
+  onData: ReturnType<typeof vi.fn>;
+  onExit: ReturnType<typeof vi.fn>;
+  kill: ReturnType<typeof vi.fn>;
+  resize: ReturnType<typeof vi.fn>;
+};
+
+function makeMockPty(): MockPty {
+  return {
+    pid: 123,
+    write: vi.fn(),
+    onData: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+    onExit: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+    kill: vi.fn(),
+    resize: vi.fn(),
+  };
+}
+
+function makePromptPollingAgent(options: {
+  recent: () => string;
+  bootstrapped?: () => boolean;
+}): { agent: InstanceType<typeof AgentPTY>; mockPty: MockPty } {
+  const agent = new AgentPTY(mockEnv, {});
+  const mockPty = makeMockPty();
+  (agent as unknown as { spawnFn: unknown }).spawnFn = vi.fn().mockReturnValue(mockPty);
+  (agent as unknown as { outputBuffer: unknown }).outputBuffer = {
+    push: vi.fn(),
+    getRecent: options.recent,
+    isBootstrapped: options.bootstrapped || (() => false),
+  };
+  return { agent, mockPty };
+}
+
+describe('AgentPTY Claude Code first-run prompt auto-accept', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('selects Yes on the Bypass Permissions screen with Down-arrow then Enter', async () => {
+    vi.useFakeTimers();
+    const { agent, mockPty } = makePromptPollingAgent({
+      recent: () => 'Bypass Permissions mode\n1. No, exit\n2. Yes, I accept',
+    });
+
+    await agent.spawn('fresh', 'PROMPT');
+    await vi.advanceTimersByTimeAsync(1200);
+    expect(mockPty.write).toHaveBeenCalledTimes(1);
+    expect(mockPty.write).toHaveBeenNthCalledWith(1, '\x1b[B');
+
+    await vi.advanceTimersByTimeAsync(350);
+    expect(mockPty.write).toHaveBeenCalledTimes(2);
+    expect(mockPty.write).toHaveBeenNthCalledWith(2, '\r');
+    expect(mockPty.write.mock.calls).not.toEqual([['\r']]);
+  });
+
+  it('accepts the trust-folder screen with a bare Enter', async () => {
+    vi.useFakeTimers();
+    const { agent, mockPty } = makePromptPollingAgent({
+      recent: () => 'Do you trust this folder?',
+    });
+
+    await agent.spawn('fresh', 'PROMPT');
+    await vi.advanceTimersByTimeAsync(1200);
+
+    expect(mockPty.write).toHaveBeenCalledTimes(1);
+    expect(mockPty.write).toHaveBeenCalledWith('\r');
+  });
+
+  it('does not write a stray keystroke for normal output', async () => {
+    vi.useFakeTimers();
+    const { agent, mockPty } = makePromptPollingAgent({
+      recent: () => 'Starting Claude Code...',
+    });
+
+    await agent.spawn('fresh', 'PROMPT');
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(mockPty.write).not.toHaveBeenCalled();
+  });
+
+  it('handles the bypass screen only once while it persists across polls', async () => {
+    vi.useFakeTimers();
+    const { agent, mockPty } = makePromptPollingAgent({
+      recent: () => 'Bypass Permissions mode\n1. No, exit\n2. Yes, I accept',
+    });
+
+    await agent.spawn('fresh', 'PROMPT');
+    await vi.advanceTimersByTimeAsync(1200);
+    await vi.advanceTimersByTimeAsync(350);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(mockPty.write.mock.calls).toEqual([['\x1b[B'], ['\r']]);
+  });
+
+  it('stops polling after the session is bootstrapped', async () => {
+    vi.useFakeTimers();
+    let recent = 'Claude ready';
+    const { agent, mockPty } = makePromptPollingAgent({
+      recent: () => recent,
+      bootstrapped: () => true,
+    });
+
+    await agent.spawn('fresh', 'PROMPT');
+    await vi.advanceTimersByTimeAsync(1200);
+    recent = 'Bypass Permissions mode\n1. No, exit\n2. Yes, I accept';
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(mockPty.write).not.toHaveBeenCalled();
   });
 });
