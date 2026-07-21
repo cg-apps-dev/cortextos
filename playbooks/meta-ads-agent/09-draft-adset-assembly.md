@@ -29,9 +29,9 @@ Constants: spreadsheet `1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME` ("META - A
 3. **Demographic coherence**: each grouping skews YOUNGER or OLDER (intake vision cols; NO-ACTOR rows are wildcards) - never mixed. Segment-specific beats everyone-at-once for Meta purchase-sequencing.
 4. **Funnel spread** ~7 TOF / 4 MOF / 3 BOF per 14-image block; diversity across hooks, angles, actors, design families.
 5. **Zero overlap** between groupings that share an avatar.
-6. **Compliance col-B is copied verbatim, never filtered on** - the col-B verdict is a launch flag for Adam, not a selection gate.
+6. **Compliance col-B is copied verbatim, never filtered on** - the col-B verdict (stamped by [08-compliance-scan](08-compliance-scan.md)) is a launch flag for Adam, not a selection gate.
 7. **Header-resolve every column by name, every run.** Letters below are dated snapshots.
-8. **This playbook never launches anything.** Output = curated blocks on the draft tabs; Adam fills chips and posts.
+8. **This playbook never launches anything.** Output = curated blocks on the draft tabs; Adam fills chips and posts. Same draft-only, human-gated boundary as [04-launch-draft](04-launch-draft.md) and [05-adset-batch](05-adset-batch.md) - this playbook only prepares the grouping, it never creates the AdManage draft itself.
 
 ## Adam's locked template decisions (2026-07-20)
 
