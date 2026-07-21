@@ -86,6 +86,6 @@ cortextos switch-agent-account --all-from <source-account> <target-account>   # 
 
 ## Related
 
-- [standing-rules.md](standing-rules.md) - migration-drops-a-side-path class (step 5), fingerprint-method class (the bare-value standard), fresh+ok+impossible-value class (the dead-scan rules in step 4)
+- [standing-rules.md](standing-rules.md) - migration-drops-a-side-path class (step 5), fingerprint-method class (the bare-value standard), fresh+ok+impossible-value class (the dead-scan rules in step 4); the 2026-07-10/11 fleet auth cascade's 3 root-cause classes (shared-claude-home cascade, truncated-token, tier-scoped-429-misread) - the incident this SOP's per-agent isolation and exact-108 checks exist to prevent recurring
 - [zero-model-monitors.md](zero-model-monitors.md) - the usage/monitor layer that watches the accounts
 - [README.md](README.md) - fleet playbook index
