@@ -1,9 +1,10 @@
 import { Command } from 'commander';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir, platform } from 'os';
 import { execSync, spawn, spawnSync } from 'child_process';
 import { IPCClient } from '../daemon/ipc-server.js';
+import { validateAgentName } from '../utils/validate.js';
 
 const IS_WINDOWS = platform() === 'win32';
 const SAFE_CMD = /^[@a-z0-9._/-]+$/i;
@@ -15,17 +16,75 @@ function commandExists(cmd: string): boolean {
   return result.status === 0;
 }
 
+function findKnownAgentOrg(projectRoot: string, agent: string, preferredOrg?: string): string | undefined {
+  if (preferredOrg && existsSync(join(projectRoot, 'orgs', preferredOrg, 'agents', agent))) {
+    return preferredOrg;
+  }
+
+  const orgsDir = join(projectRoot, 'orgs');
+  if (existsSync(orgsDir)) {
+    try {
+      for (const orgName of readdirSync(orgsDir)) {
+        if (existsSync(join(orgsDir, orgName, 'agents', agent))) {
+          return orgName;
+        }
+      }
+    } catch {
+      // Fall through to root-level legacy agents check.
+    }
+  }
+
+  if (existsSync(join(projectRoot, 'agents', agent))) {
+    return preferredOrg;
+  }
+
+  return undefined;
+}
+
+export function validateStartAgentTarget(
+  projectRoot: string,
+  agent: string,
+  preferredOrg?: string,
+): string | undefined {
+  validateAgentName(agent);
+  const knownOrg = findKnownAgentOrg(projectRoot, agent, preferredOrg);
+  if (knownOrg !== undefined || existsSync(join(projectRoot, 'agents', agent))) {
+    return knownOrg;
+  }
+  throw new Error(`Unknown agent '${agent}'. Expected an existing agent directory at orgs/<org>/agents/${agent} or agents/${agent}.`);
+}
+
 export const startCommand = new Command('start')
   .argument('[agent]', 'Specific agent to start (starts all if omitted)')
   .option('--instance <id>', 'Instance ID', 'default')
   .option('--foreground', 'Run daemon in foreground (no PM2, for debugging)')
   .description('Start the cortextOS daemon and agents')
   .action(async (agent: string | undefined, options: { instance: string; foreground?: boolean }) => {
+    const projectRoot = process.cwd();
+    const ctxRoot = join(homedir(), '.cortextos', options.instance);
+    const enabledPath = join(ctxRoot, 'config', 'enabled-agents.json');
+    let enabledAgents: Record<string, any> = {};
+    try {
+      if (existsSync(enabledPath)) {
+        enabledAgents = JSON.parse(readFileSync(enabledPath, 'utf-8'));
+      }
+    } catch { /* ignore */ }
+
+    const existingOrg = Object.values(enabledAgents as Record<string, any>).find((e: any) => e.org)?.org;
+    let knownOrg: string | undefined;
+    if (agent) {
+      try {
+        knownOrg = validateStartAgentTarget(projectRoot, agent, existingOrg);
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    }
+
     const ipc = new IPCClient(options.instance);
     const daemonRunning = await ipc.isDaemonRunning();
 
     if (!daemonRunning) {
-      const projectRoot = process.cwd();
       const daemonScript = join(projectRoot, 'dist', 'daemon.js');
 
       if (!existsSync(daemonScript)) {
@@ -33,18 +92,10 @@ export const startCommand = new Command('start')
         process.exit(1);
       }
 
-      const ctxRoot = join(homedir(), '.cortextos', options.instance);
-
       // Try reading org from enabled-agents.json
       let org = '';
-      const enabledPath = join(ctxRoot, 'config', 'enabled-agents.json');
-      if (existsSync(enabledPath)) {
-        try {
-          const agents = JSON.parse(readFileSync(enabledPath, 'utf-8'));
-          const first = Object.values(agents as Record<string, any>)[0] as any;
-          if (first?.org) org = first.org;
-        } catch { /* ignore */ }
-      }
+      const first = Object.values(enabledAgents as Record<string, any>)[0] as any;
+      if (first?.org) org = first.org;
 
       const daemonEnv = {
         ...process.env,
@@ -164,22 +215,12 @@ export const startCommand = new Command('start')
     // Daemon already running
     if (agent) {
       // Auto-register in enabled-agents.json if not already present
-      const ctxRoot = join(homedir(), '.cortextos', options.instance);
-      const enabledPath = join(ctxRoot, 'config', 'enabled-agents.json');
-      let enabledAgents: Record<string, any> = {};
-      try {
-        if (existsSync(enabledPath)) {
-          enabledAgents = JSON.parse(readFileSync(enabledPath, 'utf-8'));
-        }
-      } catch { /* ignore */ }
-
       if (!enabledAgents[agent]) {
         // Try to detect org from existing entries or project structure
-        const existingOrg = Object.values(enabledAgents as Record<string, any>).find((e: any) => e.org)?.org;
         enabledAgents[agent] = {
           enabled: true,
           status: 'configured',
-          ...(existingOrg ? { org: existingOrg } : {}),
+          ...((knownOrg || existingOrg) ? { org: knownOrg || existingOrg } : {}),
         };
         mkdirSync(join(ctxRoot, 'config'), { recursive: true });
         writeFileSync(enabledPath, JSON.stringify(enabledAgents, null, 2) + '\n', 'utf-8');
