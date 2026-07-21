@@ -41,6 +41,18 @@ Example (proven live on CG-AGY-1):
 python integrations/meta-adsread/meta_adsread.py --account CG-AGY-1 --endpoint campaigns --fields name,status
 ```
 
+## Resolving act_ids + proving coverage (per fresh BM token)
+
+When a BM token lands but some `act_id`s are unknown (or to prove the token reads the
+full granted set), query `/me/adaccounts` ON the token itself - it enumerates exactly
+the accounts that token can access, with `account_id` + `name`:
+```
+GET https://graph.facebook.com/v25.0/me/adaccounts?fields=account_id,name&access_token=<vault token>
+```
+This is more reliable than the FB Assets Tracker (which lags) and doubles as a COVERAGE
+proof (no blind spots). Always redact the token from any output. Example: the `alirezacg`
+token enumerated AliCG1 + AliCG2 + AliCG3 in one call, resolving two unknown act_ids.
+
 ## API version
 
 `GRAPH_API_VERSION` is pinned (single bump point) to the current GA Graph/Marketing API
@@ -54,7 +66,9 @@ in one place when Meta releases a new GA and the old one nears deprecation.
 | CG-AGY-1 | act_3143544815853824 | 1502991767957367 (CG Host) | cghost | LANDED - in index, live-verified (steady token, no rotation - Adam's call) |
 | JCG1 | act_1520076759702669 | 1525068304367805 (CG Business / Jonas) | jcg | LANDED - live-verified |
 | JCG2 | act_2239846920175881 | 1525068304367805 (CG Business / Jonas) | jcg | LANDED - live-verified (SAME token as JCG1 - shared-app proof) |
-| AliCG1 | act_2180010646097084 | 2358286301637483 (Ali Reza CG) | tbd | pending (+ AliCG2 same BM) |
+| AliCG1 | act_2180010646097084 | 2358286301637483 (Ali Reza CG) | alirezacg | LANDED - live-verified (3 campaigns) |
+| AliCG2 | act_3641597392655827 | 2358286301637483 (Ali Reza CG) | alirezacg | LANDED - live-verified (1 campaign; act_id resolved via /me/adaccounts) |
+| AliCG3 | act_1016871730924954 | 2358286301637483 (Ali Reza CG) | alirezacg | LANDED - readable, 0 campaigns (empty acct; discovered via /me/adaccounts) |
 | E-0930 | act_1010516044876635 | 998703455883601 (HT-G2) | tbd | pending (siblings E-0842/E-0828 read via ak_) |
 | E-0558 | act_1268263495454014 | 1660120598450008 (HT-G2) | tbd | pending (siblings read via ak_) |
 
