@@ -51,8 +51,9 @@ in one place when Meta releases a new GA and the old one nears deprecation.
 
 | E-code | act_id | portfolio | bm_slug | token |
 |---|---|---|---|---|
-| CG-AGY-1 | act_3143544815853824 | 1502991767957367 (CG Host) | cghost | LANDED - in index, live-verified |
-| JCG1 | act_1520076759702669 | 1525068304367805 (CG Business / Jonas) | tbd | pending (+ JCG2 act_2239846920175881 same BM) |
+| CG-AGY-1 | act_3143544815853824 | 1502991767957367 (CG Host) | cghost | LANDED - in index, live-verified (token rotates post mmb-stamp) |
+| JCG1 | act_1520076759702669 | 1525068304367805 (CG Business / Jonas) | jcg | LANDED - live-verified |
+| JCG2 | act_2239846920175881 | 1525068304367805 (CG Business / Jonas) | jcg | LANDED - live-verified (SAME token as JCG1 - shared-app proof) |
 | AliCG1 | act_2180010646097084 | 2358286301637483 (Ali Reza CG) | tbd | pending (+ AliCG2 same BM) |
 | E-0930 | act_1010516044876635 | 998703455883601 (HT-G2) | tbd | pending (siblings E-0842/E-0828 read via ak_) |
 | E-0558 | act_1268263495454014 | 1660120598450008 (HT-G2) | tbd | pending (siblings read via ak_) |
