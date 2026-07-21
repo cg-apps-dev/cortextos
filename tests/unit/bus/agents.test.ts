@@ -116,6 +116,97 @@ describe('Agent Discovery', () => {
       expect(agents[0].running).toBe(true); // Recent heartbeat means running
     });
 
+    it('uses daemon live set for running when heartbeat is stale', () => {
+      const configDir = join(ctxRoot, 'config');
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(
+        join(configDir, 'enabled-agents.json'),
+        JSON.stringify({ worker: { org: 'testorg', enabled: true } }),
+      );
+
+      const staleHeartbeat = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const hbDir = join(ctxRoot, 'state', 'worker');
+      mkdirSync(hbDir, { recursive: true });
+      writeFileSync(
+        join(hbDir, 'heartbeat.json'),
+        JSON.stringify({
+          agent: 'worker',
+          timestamp: staleHeartbeat,
+          status: 'idle',
+        }),
+      );
+
+      const agents = listAgents(ctxRoot, undefined, new Set(['worker']));
+      expect(agents.length).toBe(1);
+      expect(agents[0].last_heartbeat).toBe(staleHeartbeat);
+      expect(agents[0].running).toBe(true);
+    });
+
+    it('uses daemon live set to mark absent agents stopped even with fresh heartbeat', () => {
+      const configDir = join(ctxRoot, 'config');
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(
+        join(configDir, 'enabled-agents.json'),
+        JSON.stringify({ worker: { org: 'testorg', enabled: true } }),
+      );
+
+      const hbDir = join(ctxRoot, 'state', 'worker');
+      mkdirSync(hbDir, { recursive: true });
+      writeFileSync(
+        join(hbDir, 'heartbeat.json'),
+        JSON.stringify({
+          agent: 'worker',
+          timestamp: new Date().toISOString(),
+          status: 'idle',
+        }),
+      );
+
+      const agents = listAgents(ctxRoot, undefined, new Set());
+      expect(agents.length).toBe(1);
+      expect(agents[0].running).toBe(false);
+    });
+
+    it('falls back to heartbeat freshness when no daemon live set is provided', () => {
+      const configDir = join(ctxRoot, 'config');
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(
+        join(configDir, 'enabled-agents.json'),
+        JSON.stringify({ worker: { org: 'testorg', enabled: true } }),
+      );
+
+      const hbDir = join(ctxRoot, 'state', 'worker');
+      mkdirSync(hbDir, { recursive: true });
+      writeFileSync(
+        join(hbDir, 'heartbeat.json'),
+        JSON.stringify({
+          agent: 'worker',
+          timestamp: new Date().toISOString(),
+          status: 'idle',
+        }),
+      );
+
+      const agents = listAgents(ctxRoot);
+      expect(agents.length).toBe(1);
+      expect(Object.keys(agents[0]).sort()).toEqual([
+        'current_task',
+        'display_name',
+        'enabled',
+        'last_heartbeat',
+        'mode',
+        'name',
+        'org',
+        'role',
+        'running',
+      ]);
+      expect(agents[0]).toEqual(expect.objectContaining({
+        name: 'worker',
+        org: 'testorg',
+        enabled: true,
+        running: true,
+        last_heartbeat: expect.any(String),
+      }));
+    });
+
     it('filters by org when specified', () => {
       const configDir = join(ctxRoot, 'config');
       mkdirSync(configDir, { recursive: true });

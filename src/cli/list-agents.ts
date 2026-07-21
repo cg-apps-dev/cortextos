@@ -2,16 +2,41 @@ import { Command } from 'commander';
 import { homedir } from 'os';
 import { join } from 'path';
 import { listAgents } from '../bus/agents.js';
+import { IPCClient } from '../daemon/ipc-server.js';
+
+const LIST_AGENTS_IPC_TIMEOUT_MS = 750;
+
+type ListAgentsIpcClient = Pick<IPCClient, 'send'>;
+
+export async function getLiveAgentSetFromDaemon(
+  instanceId: string,
+  ipcClient: ListAgentsIpcClient = new IPCClient(instanceId),
+  timeoutMs = LIST_AGENTS_IPC_TIMEOUT_MS,
+): Promise<ReadonlySet<string> | undefined> {
+  try {
+    const response = await ipcClient.send(
+      { type: 'list-agents', source: 'cortextos list-agents' },
+      timeoutMs,
+    );
+    if (!response.success || !Array.isArray(response.data)) {
+      return undefined;
+    }
+    return new Set(response.data.filter((name): name is string => typeof name === 'string'));
+  } catch {
+    return undefined;
+  }
+}
 
 export const listAgentsCommand = new Command('list-agents')
   .description('List all agents in the system')
   .option('--org <org>', 'Filter by organization')
   .option('--format <format>', 'Output format: json or text', 'text')
   .option('--instance <id>', 'Instance ID')
-  .action((options: { org?: string; format: string; instance?: string }) => {
+  .action(async (options: { org?: string; format: string; instance?: string }) => {
     const instanceId = options.instance || process.env.CTX_INSTANCE_ID || 'default';
     const ctxRoot = join(homedir(), '.cortextos', instanceId);
-    const agents = listAgents(ctxRoot, options.org);
+    const liveAgents = await getLiveAgentSetFromDaemon(instanceId);
+    const agents = listAgents(ctxRoot, options.org, liveAgents);
 
     if (options.format === 'json') {
       console.log(JSON.stringify(agents, null, 2));

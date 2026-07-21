@@ -19,7 +19,11 @@ import { sendMessage } from './message.js';
  * Now both sources are always merged, with the file providing the explicit
  * enabled flag and the directory scan providing the canonical existence check.
  */
-export function listAgents(ctxRoot: string, org?: string): AgentInfo[] {
+export function listAgents(
+  ctxRoot: string,
+  org?: string,
+  liveAgents?: ReadonlySet<string>,
+): AgentInfo[] {
   const agents: AgentInfo[] = [];
   const seen = new Set<string>();
 
@@ -90,7 +94,7 @@ export function listAgents(ctxRoot: string, org?: string): AgentInfo[] {
         const explicitEntry = enabledAgents[agentName];
         const isEnabled = explicitEntry ? explicitEntry.enabled !== false : true;
 
-        agents.push(buildAgentInfo(agentName, orgName, isEnabled, ctxRoot));
+        agents.push(buildAgentInfo(agentName, orgName, isEnabled, ctxRoot, liveAgents));
       }
     }
   }
@@ -104,7 +108,7 @@ export function listAgents(ctxRoot: string, org?: string): AgentInfo[] {
     const agentOrg = cfg.org || '';
     if (org && agentOrg !== org) continue;
     seen.add(name);
-    agents.push(buildAgentInfo(name, agentOrg, cfg.enabled !== false, ctxRoot));
+    agents.push(buildAgentInfo(name, agentOrg, cfg.enabled !== false, ctxRoot, liveAgents));
   }
 
   return agents;
@@ -118,6 +122,7 @@ function buildAgentInfo(
   org: string,
   enabled: boolean,
   ctxRoot: string,
+  liveAgents?: ReadonlySet<string>,
 ): AgentInfo {
   // Read heartbeat from state dir (bash uses state/{agent}/heartbeat.json)
   let lastHeartbeat: string | null = null;
@@ -132,14 +137,17 @@ function buildAgentInfo(
       lastHeartbeat = hb.last_heartbeat || hb.timestamp || null;
       currentTask = hb.current_task || null;
       mode = hb.mode || null;
-      // Running = heartbeat written within last 10 minutes
-      if (lastHeartbeat) {
+      if (!liveAgents && lastHeartbeat) {
         const age = Date.now() - new Date(lastHeartbeat).getTime();
         running = age < 10 * 60 * 1000;
       }
     } catch {
       // Skip corrupt
     }
+  }
+
+  if (liveAgents) {
+    running = liveAgents.has(name);
   }
 
   // Get display name and role from IDENTITY.md

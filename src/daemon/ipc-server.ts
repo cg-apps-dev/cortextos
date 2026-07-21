@@ -881,7 +881,7 @@ export class IPCClient {
   /**
    * Send a command to the daemon and get the response.
    */
-  async send(request: IPCRequest): Promise<IPCResponse> {
+  async send(request: IPCRequest, timeoutMs = 5000): Promise<IPCResponse> {
     const { createConnection } = require('net');
 
     return new Promise((resolve, reject) => {
@@ -913,8 +913,7 @@ export class IPCClient {
         }
       });
 
-      // Timeout after 5 seconds
-      socket.setTimeout(5000, () => {
+      socket.setTimeout(timeoutMs, () => {
         socket.destroy();
         reject(new Error('IPC request timed out'));
       });
