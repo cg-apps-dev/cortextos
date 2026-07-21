@@ -69,7 +69,7 @@ in one place when Meta releases a new GA and the old one nears deprecation.
 | AliCG1 | act_2180010646097084 | 2358286301637483 (Ali Reza CG) | alirezacg | LANDED - live-verified (3 campaigns) |
 | AliCG2 | act_3641597392655827 | 2358286301637483 (Ali Reza CG) | alirezacg | LANDED - live-verified (1 campaign; act_id resolved via /me/adaccounts) |
 | AliCG3 | act_1016871730924954 | 2358286301637483 (Ali Reza CG) | alirezacg | LANDED - readable, 0 campaigns (empty acct; discovered via /me/adaccounts) |
-| E-0930 | act_1010516044876635 | 998703455883601 (HT-G2) | tbd | PENDING - own BM token (NOT in Exiscale; the last blind acct) |
+| E-0930 | act_1010516044876635 | 998703455883601 (HT-G2) | n/a | INTENTIONALLY-EXCLUDED - restricted + retired by Adam 2026-07-21 (stopped using weeks ago). NOT a coverage gap; do NOT re-flag as missing in /me/adaccounts reconciliation. No token, no access needed. |
 | E-0558 | act_1268263495454014 | Exi-BMN-162 (Exiscale) | exiscale | LANDED - live-verified 4 camp/224 ads; lives in Exiscale BM, not HT-G2 (README guess corrected) |
 
 ### Exiscale BM (Exi-BMN-162) - 10 accounts, one shared-app SU token (`exiscale.adsread.token`)
