@@ -26,7 +26,7 @@ A col-B verdict is a claim about the COPY surface only. The on-creative baked te
 
 ## The sequence
 
-1. **Intake to the tracker sheet** (each creative lands as a row: copy in the copy columns, asset linked - done by meta-ads).
+1. **Intake to the tracker sheet** (each creative lands as a row: copy in the copy columns, asset linked - done by meta-ads). **As of 2026-07-21, "the tracker sheet" is not always the main one** - actor-specific cards route to their own standalone spreadsheet at intake ([meta-ads-agent's actor-sheet routing](../meta-ads-agent/01-clickup-intake.md#hard-rules)). A dispatch names the row range/ID set AND which spreadsheet it lives on; never assume the main sheet ID when a dispatch is silent on it - confirm with the dispatcher.
 2. **Scan two layers x the relevant surfaces**: deterministic grep against copy AND on-image/on-screen text (OCR + vision), plus the semantic/visual read; whisper the VO for video.
 3. **Stamp the verdict in col B** (this agent is the SOLE writer of the "Meta Compliance Agent" column, worst-of across surfaces): `PASS` / `FAIL: <M-code> (<offending text>) -> <fix>` (pipe-separated for multiple) / `HOLD: <M-code> (<condition>) -> <fix>`. Empty = not yet scanned. DONE-WHEN: every dispatched row re-reads with a non-empty verdict computed worst-of across ALL surfaces the ad ships (copy + on-creative text + VO audio for video) against the CURRENT asset file-id.
 4. **Route**: only PASS rows are cleared; FAIL/HOLD/UNCLEAR/empty are all blocked from drafts. FAIL/UNCLEAR route back for a re-edit or an owner decision.

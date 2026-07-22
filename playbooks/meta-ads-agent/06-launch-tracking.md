@@ -31,6 +31,7 @@ Derived from: [brain: agents/meta-ads-agent/ad-launch-tracker-agent/SKILL.md](ht
 3. **"Launched" comes from AdManage's activity log**, never inferred from a sheet cell.
 4. **Ad rejection alert rule (Adam, 2026-07-03, HARDCODED)**: any ad found DISAPPROVED - sandbox or prospecting - is stamped on the sheet AND pinged to Adam immediately, every sweep.
 5. **Direct-launch scan gate**: ads Adam launched directly (bypassing the sheet pipeline) get flagged for a creative/VO compliance scan - a copy-PASS stamp is not creative clearance.
+6. **Match back to the row's own spreadsheet, not always the main sheet** (Adam, 2026-07-21): an ad name matches a row on whichever spreadsheet [01's actor-sheet routing](01-clickup-intake.md#hard-rules) sent it to at intake (main sheet or an actor-specific one) - check the row's origin sheet before concluding "unmatched."
 
 ## The sequence
 

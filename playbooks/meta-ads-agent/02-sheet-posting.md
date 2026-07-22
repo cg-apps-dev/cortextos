@@ -10,7 +10,7 @@ tags: [playbook, meta-ads, google-sheets, intake]
 
 # 02 - Posting to the Upload Sheet
 
-How rows physically land on the META Ad Upload Sheet (`1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME`, four product tabs). The intake runner is the SOLE writer on this sheet; every write follows these conventions. Split from ClickUp intake per Adam (2026-07-05) so the sheet-write rules are independently editable.
+How rows physically land on the upload sheet. The MAIN sheet is "Meta Ads Upload" (`1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME`, renamed from "META - Ad Upload Sheet" 2026-07-21; four product tabs) - but as of 2026-07-21 it is not the only target: actor-specific cards route to their own standalone sheet instead (`IMAGES` + `VIDEOS` tabs only, no product suffix), resolved upstream in [01's actor-sheet routing](01-clickup-intake.md#hard-rules) hard rule 8. These write conventions apply to whichever spreadsheet the row lands on. The intake runner is the SOLE writer on any of these sheets; every write follows these conventions. Split from ClickUp intake per Adam (2026-07-05) so the sheet-write rules are independently editable.
 
 Derived from: [brain: agents/meta-ads-agent/skills/clickup-intake/SKILL.md](https://github.com/CLEAN-APPS-DEV/clean-green-marketing-brain/blob/main/agents/meta-ads-agent/skills/clickup-intake/SKILL.md) STEPs 4-6b + the intake engine (deterministic, dry-run-first, atomic writes). FLAG: the engine (engine.py) is local-only in the agent's untracked directory - no tracked copy exists to link; reference is by name.
 

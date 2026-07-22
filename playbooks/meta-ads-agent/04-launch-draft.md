@@ -25,6 +25,7 @@ Derived from: [brain: agents/meta-ads-agent/skills/launch/SKILL.md](https://gith
 4. **Never invent targeting.** Account + ad set come from the operator or a confirmed rule; no rule and no instruction = stop and ask.
 5. **Verbatim join keys.** Ad name exactly as the sheet computes it (launch tracking, [06](06-launch-tracking.md), matches on it); media URL exactly as AdManage's Drive resolver returns it.
 6. **No duplicate launches** (fleet rule): a row already launched to an account (date column stamped) is never drafted to that account again; every ad `link` uses the `https://www.` prefix.
+7. **Target spreadsheet is per-card, not always the main sheet** (Adam, 2026-07-21): a row's spreadsheet is whatever [01's actor-sheet routing](01-clickup-intake.md#hard-rules) resolved it to at intake (main sheet or an actor-specific one) - carry that forward, never assume the main sheet ID.
 
 ## The sequence
 

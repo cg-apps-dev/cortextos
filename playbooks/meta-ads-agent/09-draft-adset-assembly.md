@@ -11,9 +11,11 @@ tags: [playbook, meta-ads, draft-ad-sets, curation, dropdowns, chips, template-c
 
 # 09 - Draft Ad Set Assembly (Adam-template, repeatable)
 
-Assembles curated groups of existing ads from the source tabs (VIDEOS/IMAGES Flower) into the **Draft Ad Sets** tabs of the META Ad Upload Sheet, one block per target ad account, so Adam can review, pick LP/Ad Type via dropdown chips, and post each block as a new ad set in AdManage. Built 2026-07-19/20 with Adam; the live "Draft Ad Sets - IMAGES (Flower)" tab holds his hand-finished template cells - **the live tab IS the template. Every future build clones from it; nothing is ever rebuilt from scratch.**
+Assembles curated groups of existing ads from the source tabs (VIDEOS/IMAGES Flower) into the **Draft Ad Sets** tabs of the Meta Ads Upload sheet, one block per target ad account, so Adam can review, pick LP/Ad Type via dropdown chips, and post each block as a new ad set in AdManage. Built 2026-07-19/20 with Adam; the live "Draft Ad Sets - IMAGES (Flower)" tab holds his hand-finished template cells - **the live tab IS the template. Every future build clones from it; nothing is ever rebuilt from scratch.**
 
-Constants: spreadsheet `1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME` ("META - Ad Upload Sheet"). Sheet I/O via `gog` (`-a adam@cleangreen.com`); this agent is bearer (no Composio).
+Constants: spreadsheet `1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME` ("Meta Ads Upload", renamed from "META - Ad Upload Sheet" 2026-07-21). Sheet I/O via `gog` (`-a adam@cleangreen.com`); this agent is bearer (no Composio).
+
+**MAIN-sheet only (2026-07-21).** Since the 2026-07-21 actor-sheet rollout ([01's routing rule](01-clickup-intake.md#hard-rules), hard rule 8), the actor-specific spreadsheets are cloned with `IMAGES` + `VIDEOS` tabs only - no `Draft Ad Sets` tabs exist there. This playbook applies to the MAIN sheet's own Flower groupings only, until/unless Adam asks for the same template built on an actor sheet.
 
 ## Inputs (per run)
 

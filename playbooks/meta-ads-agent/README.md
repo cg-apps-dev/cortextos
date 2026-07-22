@@ -9,6 +9,8 @@ date: 2026-07-05
 
 Plain-English SOPs for the Meta ads upload-to-launch pipeline, one per process. Each distills the matching SKILL.md (linked inside) - the skill stays the technical spec agents execute; the playbook is the readable how-and-why. File numbers are browse order; the `pipeline_stage` frontmatter maps each back to the conductor stage table in [brain: agents/meta-ads-agent/README.md](https://github.com/CLEAN-APPS-DEV/clean-green-marketing-brain/blob/main/agents/meta-ads-agent/README.md).
 
+**More than one spreadsheet, since 2026-07-21.** The MAIN sheet ("Meta Ads Upload", renamed from "META - Ad Upload Sheet") is the default target, but dedicated on-camera actors now each get their own standalone upload spreadsheet - [01's actor-sheet routing](01-clickup-intake.md#hard-rules) decides which one a card lands on. Current roster + spreadsheet IDs are read LIVE from [meta-ads-agent skills/clickup-intake/SKILL.md STEP 0](../../agents/meta-ads-agent/skills/clickup-intake/SKILL.md) - it will grow, so this index deliberately does not copy the list.
+
 | # | Playbook | Process | Cadence / trigger | Autonomy |
 |---|---|---|---|---|
 | 01 | [01-clickup-intake.md](01-clickup-intake.md) | Ready-to-Post ClickUp cards: pull, classify, flag, card lifecycle | launchd ready-check watcher (15 min) + daily 6am PT sweep | Autonomous |

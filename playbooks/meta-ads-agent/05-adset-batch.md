@@ -29,6 +29,7 @@ Meta's delivery optimizes creative-vs-audience inside the ad set: a broad ad set
 4. **Three distinct compliance gates per bundle**: per-ad copy compliance, the Meta-POLICY pre-flight, and the M-19f cannabis-coding AGGREGATE gate (a bundle can fail collectively on coded signals even when each ad passes alone).
 5. **Selection is recorded structurally**: the `Ad Set Group` column stamps which bundle each row joined (anti-clobber - set-once).
 6. **Duplication rule** (fleet): new ad sets duplicate from the most recent PROSPECTING ad set, named Pack N+1 + DSCA + hp + lp + date.
+7. **Target spreadsheet is per-card, not always the main sheet** (Adam, 2026-07-21): same as [04](04-launch-draft.md) hard rule 7 - a bundle's candidate rows come from whichever spreadsheet [01's actor-sheet routing](01-clickup-intake.md#hard-rules) resolved them to; never assume the main sheet ID.
 
 ## The sequence
 
