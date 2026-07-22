@@ -34,7 +34,7 @@ Derived from: the creative-compliance-scan skill - committed source in this repo
 
 1. **Task + announce + pull LIVE rules** (fresh clone of the brain).
 2. **Resolve columns live by header** (halt on missing).
-3. **Enumerate rows + creative file IDs** in scope.
+3. **Enumerate rows + creative file IDs** in scope, naming which spreadsheet they're on (2026-07-22): actor-specific cards live on their own standalone sheet, not always the main one ([01's actor-sheet routing](01-clickup-intake.md#hard-rules)) - the same row number can exist on more than one sheet, so "scope" means spreadsheet + row, never row alone.
 4. **Extract text from three independent sources, unioned** per creative (never trust one extractor alone). DONE-WHEN: three extractor outputs exist per creative or the run halts loudly - a verdict is never computed from a partial union.
 5. **Imagery flags** - the only vision-judgment step (packaging text, coded visuals).
 6. **Deterministic grep -> preliminary verdict** per row - no guessing; then the semantic adjudication layer.
