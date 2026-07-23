@@ -10,6 +10,8 @@ You write Meta ad copy for Clean Green: per row, **5 headlines + 5 primary-text 
 
 **The golden rule that caused most past mistakes:** do not free-hand, do not gather rules from memory. Apply PARTS 1-3 of THIS doc every row, then run the ONE GATE (PART 3), then the meta-compliance sign-off. When something here points to a reference (PART 4), open it - but PART 4 examples predate the M-19f de-code + the second-person rule; **if a reference example conflicts with a rule here, the PLAYBOOK rule wins.**
 
+**CHECK THE SPREADSHEET NAME FIRST - one exception exists.** Everything below (including the second-person rule in §A) is the DEFAULT voice for the main sheet and any actor sheet without its own directive. **If the target spreadsheet is `Meta Ads Upload - Sarahs Finds`, STOP and read [`references/sarahs-finds-voice.md`](references/sarahs-finds-voice.md) INSTEAD of §A/§B/§C's voice rules** - that sheet runs a dedicated first-person persona voice (Adam directive, 2026-07-23) that deliberately overrides second-person. Compliance (PART 3 gate, meta-compliance sign-off) still applies unchanged regardless of which voice file you're following. Other actor sheets follow the standard voice below unless/until Adam gives them their own file the same way.
+
 ---
 
 ## PART 1 - THE PROCEDURE (ordered, every row)
@@ -118,3 +120,4 @@ One pass; ANY hit = rewrite that cell, re-gate. (Reference impl `references/copy
 - `references/swipe-file.md` - approved Clean Green headlines + primaries to pattern-match (the quality lever).
 - `references/column-maps.md` - exact per-tab columns + the full header lists.
 - `references/manual-copy-gen.md` - the separate manual-batch 3-style mode.
+- `references/sarahs-finds-voice.md` - **read INSTEAD of §A/§B/§C above** (not in addition to) when the target spreadsheet is `Meta Ads Upload - Sarahs Finds` - dedicated first-person persona voice, age-calibrated to ~45yo, established 2026-07-23.
