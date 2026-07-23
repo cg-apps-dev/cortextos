@@ -36,14 +36,17 @@ function listSkillDirs(root: string): string[] {
     .sort();
 }
 
-// The codex template INTENTIONALLY omits the `codex` skill: that skill is
-// "invoke Codex as a peer" (a Claude-Code agent getting a second opinion from
-// Codex), which is self-referential and useless on a codex-based agent. This is
-// a by-design divergence, not a missing skill. Every OTHER claude skill must
-// still ship in the codex template — this allowlist is the ONLY permitted gap,
-// so a different dropped skill (e.g. `memory`, the original bug this test was
-// written for) still fails.
-const INTENTIONAL_CODEX_OMISSIONS = ['codex'];
+// The codex template INTENTIONALLY omits two claude skills — both are
+// by-design divergences, not missing skills:
+//   - `codex`: "invoke Codex as a peer" (a Claude-Code agent getting a second
+//     opinion from Codex), self-referential and useless on a codex-based agent.
+//   - `agent-auth`: entirely Claude-auth-specific (login/keychain, setup-token/
+//     bearer `sk-ant-oat01`, `CLAUDE_CODE_OAUTH_TOKEN`, the connector-bridge
+//     pin). A codex agent runs Codex's own OAuth model, so none of it applies.
+// Every OTHER claude skill must still ship in the codex template — this
+// allowlist is the ONLY permitted gap, so a different dropped skill (e.g.
+// `memory`, the original bug this test was written for) still fails.
+const INTENTIONAL_CODEX_OMISSIONS = ['agent-auth', 'codex'];
 
 describe('agent template skill-tree parity', () => {
   it('codex template ships every claude skill except the intentional codex-peer omission', () => {
