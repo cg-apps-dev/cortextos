@@ -72,6 +72,16 @@ Same columns as every other row: `Headline` + `Headline Var. 1-4` (5 total, nati
 - ❌ `"Officially hooked, don't @ me"` → ✅ `"Officially hooked at this point"` (no platform-native slang)
 - ❌ A garbled/ungrammatical line like `"I used to think stuff like this online product wasn't for me"` → always re-read your own draft for sense before writing it to the sheet, regardless of voice.
 
+## 10. HARD RULE - no underage/pre-legal-age nostalgia anchors (M-15b, meta-compliance-agent ruling 2026-07-23)
+
+**Never anchor a nostalgia beat to an underage or pre-legal-age life-stage.** This bit us live: "Takes me back to my high school days lol" shipped in row 2's primary before this rule existed - meta-compliance-agent ruled it a genuine Meta Drugs-policy + youth-appeal (M-15) violation, not a style nitpick, because the nostalgia device only works by coding "I used this before I could legally buy it." A second proposed line ("reminds me of my college days") was also ruled a violation for the same reason - college (18-22) still straddles/implies pre-21 use.
+
+- **Banned anchors:** high school, teen/teenage years, back in school, college (when used to imply pre-21 use), when I was young/a kid, childhood, growing up.
+- **Compliant substitutes (same nostalgic warmth, no life-stage-anchor risk):** adult-legal life-stages ("my first apartment", "my twenties", "early adulthood") OR fully age-neutral phrasing ("takes me back", "the good old days", "old-school quality", "simpler times", "brings back some good memories").
+- **The device survives, the anchor doesn't.** A nostalgia beat is still a good tool in this voice (§4's "hook" beat can lean on it) - just re-anchor it adult-legal or age-neutral before it goes anywhere near the sheet.
+- ❌ `"Takes me back to my high school days lol"` → ✅ `"Brings back some good memories, not gonna lie"` (row 2, live fix, meta-compliance-agent-confirmed clean)
+- ❌ `"Reminds me of my college days"` → never written, caught pre-write by flagging intent-behind-the-line rather than just the literal wording.
+
 ## 10. When this playbook applies
 
 Trigger: any time you are about to write or rewrite a Headline/Primary/Ad Description cell on the `Meta Ads Upload - Sarahs Finds` spreadsheet specifically. Do NOT apply this voice to the main sheet or any other actor sheet unless Adam explicitly extends it there. If a future actor sheet gets its own persona-voice directive from Adam, give it its own file here (e.g. `gary-sullivan-voice.md`) rather than folding a second persona into this one - each persona's age/register may differ.
