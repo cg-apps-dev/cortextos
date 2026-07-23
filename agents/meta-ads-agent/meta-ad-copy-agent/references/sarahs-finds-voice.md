@@ -40,6 +40,19 @@ Every Sarah's Finds primary text tends to follow a **skeptic-to-satisfied confes
 3. The turn - genuine, understated satisfaction, not a hard sell ("honestly? better than I expected", "yeah, this is legit")
 4. A soft, native-feeling close - not a hard brand CTA. No offer code, no "Limited Time Only," no TRY20 required (unlike the standard playbook). Just what Sarah would actually say to point people to the link: "Click the link to check it out 👇", "Link's below if you're curious", "Check it out below."
 
+### 4b. Objection-mirroring mode (optional device, same technique built for Jennifer Stone's Skeptic avatar - Adam directive, 2026-07-23)
+
+If a row targets a skeptical/first-time-buyer avatar, Sarah's voice can borrow the same **objection-mirroring** technique documented in full in `jennifer-stone-voice.md` §4b: write the copy as if Sarah is voicing the exact objection a skeptical prospect is already thinking - not addressing the doubt, BEING the doubt out loud, in first person - rather than the standard skeptic-to-satisfied arc in §4 above.
+
+1. **First line of both the headline AND the primary is the hook, using "Oh my gosh"** (never "Oh my god" - Adam's word choice, 2026-07-23) followed immediately by the objection itself.
+2. **Confirmed compliant objection types (rotate across the headline/primary variation set):**
+   - **Delivery-doubt:** "Oh my gosh, I can't believe you can actually get this delivered"
+   - **Authenticity-doubt:** "Oh my gosh, I can't believe this is actually real stuff"
+   - **BANNED objection type - potency/strength (M-4):** never phrase an objection (or anything else) as "I can't believe this is actually strong stuff" or similar. "Strong"/"potent"/"hits" language is a hard-banned M-4 potency/effect claim even said self-referentially as a doubt being overcome - Adam proposed this for Jennifer's sheet 2026-07-23 and confirmed dropping it once flagged. If a third objection type is wanted, anchor it to quality/craft doubt instead ("can't believe the quality is actually this good" / "can't believe this is actually legit").
+3. A beat naming the skepticism/doubt explicitly, then the turn (genuine surprise it was real), then a close inviting the reader into the same skepticism ("Click the link below if you don't believe me either").
+
+This mode is still bound by §3's age-appropriate-language test (big reaction energy is fine, Gen-Z slang still is not) and does not replace §4's default arc - use whichever fits the row's target avatar; default to §4 unless Adam specifies a skeptic-avatar row.
+
 ## 5. Format
 
 Same visual formatting contract as the standard playbook: a blank line (`\n\n`) between every paragraph/beat, short lines, no dense single-block text. Emoji use is light and natural (👇 as a link-pointer, occasional 😂) - not the standard playbook's ✅/⭐/🎁-only whitelist, since this isn't a structured proof-stack ad, but keep it to what Sarah would actually use, not decorative overload.
@@ -82,6 +95,6 @@ Same columns as every other row: `Headline` + `Headline Var. 1-4` (5 total, nati
 - ❌ `"Takes me back to my high school days lol"` → ✅ `"Brings back some good memories, not gonna lie"` (row 2, live fix, meta-compliance-agent-confirmed clean)
 - ❌ `"Reminds me of my college days"` → never written, caught pre-write by flagging intent-behind-the-line rather than just the literal wording.
 
-## 10. When this playbook applies
+## 11. When this playbook applies
 
 Trigger: any time you are about to write or rewrite a Headline/Primary/Ad Description cell on the `Meta Ads Upload - Sarahs Finds` spreadsheet specifically. Do NOT apply this voice to the main sheet or any other actor sheet unless Adam explicitly extends it there. If a future actor sheet gets its own persona-voice directive from Adam, give it its own file here (e.g. `gary-sullivan-voice.md`) rather than folding a second persona into this one - each persona's age/register may differ.

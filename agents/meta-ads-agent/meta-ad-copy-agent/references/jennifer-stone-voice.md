@@ -23,16 +23,31 @@ Same as Sarah's Finds - speaks as Jennifer, in first person, not wrapped as a qu
 
 ~40 allows slightly more contemporary phrasing than Sarah's ~45 baseline, but the same core test applies: **would a 40-year-old actually say this?** Same banned list as Sarah's Finds (ngl/tbh/fr fr/no cap/don't @ me/etc - see `sarahs-finds-voice.md` §3 for the full list, it applies here unchanged). "lol", "omg", casual contractions are fine.
 
-## 4. The narrative arc - DIFFERENT from Sarah's
+## 4. The narrative arc - TWO MODES, pick by Customer Avatar
 
-**Do not reuse Sarah's skeptic-to-believer confession arc.** Jennifer's shape is **"this just fits my day"**, not "I doubted it, then it surprised me":
+Jennifer has **two narrative modes**, selected by which avatar the row targets. Check the row's Customer Avatar cell before writing.
 
+### 4a. DEFAULT mode (no avatar set, or a non-Skeptic avatar) - "this just fits my day"
+Warm-and-grounded, not excitable. Use this shape:
 1. A moment mid-motion (a walk, sitting in the car, a patio break)
 2. A beat naming how busy/full her day already is
-3. The turn - not shock or surprise, just quiet appreciation that it fit in without friction ("it just... fit", "didn't have to adjust anything")
-4. A soft native close pointing to the link - same as Sarah's Finds, no hard offer-code CTA required.
+3. The turn - quiet appreciation that it fit in without friction ("it just... fit", "didn't have to adjust anything") - NOT shock or surprise
+4. A soft native close pointing to the link.
+Fewer exclamation points, less "OMG", more understated confidence than 4b below.
 
-Where Sarah's voice runs warm-and-excitable, Jennifer's runs **warm-and-grounded** - fewer exclamation points, less "OMG", more understated confidence.
+### 4b. SKEPTIC FLOWER AVATAR mode (Customer Avatar = `FCA=The Skeptic 1st Time Online Buyer`) - objection-mirroring, shock-and-awe (Adam directive, 2026-07-23)
+When the row is written for the Skeptic avatar specifically, switch to a **doubt-to-shock, objection-mirroring arc** instead of 4a's calm mode. The core technique: **write the copy as if Jennifer is voicing the exact objection a skeptical prospect is already thinking** - not selling to the doubt, BEING the doubt, out loud, in first person, so it reads like her own reaction rather than an ad addressing an objection.
+
+1. **The FIRST LINE of both the headline AND the primary must be a strong, attention-grabbing hook using "Oh my gosh"** (not "Oh my god" - Adam's word choice, 2026-07-23) followed immediately by the objection itself. This is the curiosity-gap opener - it must land immediately, not build up to it.
+2. **Pick ONE real prospect objection and voice it directly as the hook.** Confirmed compliant objection types (rotate across headlines/variations for the 5-headline/5-primary set):
+   - **Delivery-doubt:** "Oh my gosh, I can't believe you can actually get this delivered" (doubts it can legally/practically ship to her)
+   - **Authenticity-doubt:** "Oh my gosh, I can't believe this is actually real stuff" (doubts it's genuine/not a knockoff)
+   - **BANNED objection type:** potency/strength ("I can't believe this is actually strong stuff") - Adam proposed this 2026-07-23, flagged and confirmed dropped: "strong" is an M-4 potency/effect claim (implies physiological strength), a hard-banned category even said self-referentially with no comparison. Do not use "strong"/"potent"/"hits" language as an objection type, ever, in this voice or the standard one. If a third objection type is wanted later, anchor it to quality/craft doubt instead ("can't believe the quality is actually this good" / "can't believe this is actually legit") - same objection-relief structure, no potency claim.
+3. A beat naming the skepticism/doubt explicitly ("I doubted it", "I was SO skeptical", "figured it had to be some kind of gimmick/knockoff") - own the doubt, don't undersell it.
+4. The turn - genuine shock that it was real ("it showed up right on my doorstep, and it's honestly the real thing"). This is where the product gets alluded to compliantly (§5) - "the real thing" / "the good stuff" / "the real deal" / "legit" as the payoff of the doubt.
+5. A close that invites the reader into the same skepticism ("Click the link below if you don't believe me either").
+
+This mode runs warmer/bigger than 4a - "oh my gosh", exclamation-adjacent energy, more reaction-coded than Jennifer's default register, because the Skeptic avatar's whole hook IS the shock of being proven wrong. Still first-person, still ~40-appropriate (§3 still applies - big reaction energy is fine, Gen-Z slang still is not), still must NOT sound like an ad (Adam's explicit requirement) - it reads as Jennifer's own reaction, not copy addressing a reader's objection.
 
 ## 5. Product-clear framing (Adam directive, 2026-07-23)
 
@@ -56,19 +71,20 @@ Read the actual photo before writing - sidewalk vs car vs patio each carry a dif
 
 Same columns as every other row: `Headline` + `Headline Var. 1-4`, `Primary` (+ variations once Adam asks for them, same as Sarah's Finds rollout order), `Ad Description`.
 
-## 10. Worked examples (approved 2026-07-23, Adam sign-off)
+## 10. Worked examples
 
-**Row 2 (sidewalk):**
-- Headline: "Caught Mid-Walk With This One"
-- Primary: "Caught mid-walk around the block here, and honestly I wasn't planning to talk about this\n\nBetween everything else going on, I didn't think I had room for anything new\n\nBut this premium little pick showed up right on my doorstep, and it just... fit. Takes me back in a good way.\n\nClick the link below if you want to see what I mean 👇"
+**CURRENT LIVE COPY (2026-07-23, Skeptic Flower avatar mode §4b, objection-mirroring, "oh my gosh" wording) - rows 2-4, headline + primary shown, each row also carries 4 primary variations rotating between the delivery-doubt and authenticity-doubt objection types:**
 
-**Row 3 (car):**
-- Headline: "Grabbed This Before Getting Out Of The Car"
-- Primary: "Sitting in my car for a second before my next stop, and figured I'd finally show you this\n\nIt's become one of those things that just travels with me now\n\nHonestly, takes me back in the best way - just a better version of it.\n\nClick the link below if you're curious 👇"
+Row 2 (sidewalk, delivery-doubt lead) - Headline: "Oh My Gosh, I Can't Believe You Can Get This Delivered" | Primary: "Oh my gosh, I can't believe you can actually get this delivered now\n\nI'll be honest, I didn't think that was even possible\n\nBut it showed up right on my doorstep, and it's the real thing\n\nClick the link below if you don't believe me either 👇"
 
-**Row 4 (patio):**
-- Headline: "Patio Break, Pouch In Hand"
-- Primary: "Taking a few minutes on the patio, and this has become part of how I unwind out here\n\nDidn't expect to like it as much as I do, honestly\n\nReminds me of my twenties in a good way, just... better now.\n\nClick the link below to see what I mean 👇"
+Row 3 (car, delivery-doubt lead) - Headline: "Oh My Gosh, This Actually Showed Up" | Primary: "Oh my gosh, I still can't believe this actually gets delivered\n\nI was convinced it wasn't going to happen\n\nBut here I am, sitting in my car with it, and it's exactly what it says it is\n\nClick the link below if you're skeptical too 👇"
+
+Row 4 (patio, authenticity-doubt lead) - Headline: "Oh My Gosh, I Can't Believe This Is Real" | Primary: "Oh my gosh, I genuinely didn't think this would be the real thing\n\nSitting out here on the patio like... wow, I was wrong to doubt it\n\nIt showed up right at my door, no catch, just the good stuff\n\nClick the link below to see what I mean 👇" (an earlier draft of this row used "how I unwind out here" - meta-compliance-agent flagged as M-4 effect-framing, reworded to "quietly become part of the routine out here" - **never use "unwind"/"relax"/similar relaxation-effect verbs even in Jennifer's voice, same M-4 rule as everywhere else**.)
+
+**Iteration history on this row set (2026-07-23, kept for context on how the voice evolved same-day):** §4a "this fits my day" calm mode → §4b v1 "oh my god" skeptic shock-and-awe (Adam sign-off, meta-compliance-agent PASS) → §4b v2 (current) swapped to "oh my gosh" + explicit objection-mirroring per Adam's refinement, replacing generic shock-and-awe with named prospect objections (delivery-doubt / authenticity-doubt). A third objection type (potency/"strong stuff") was proposed and rejected for M-4 risk - see §4b point 2.
+
+**RETIRED - §4a default-mode example (superseded on the sheet 2026-07-23, kept here as the §4a reference in case a non-Skeptic avatar row is written later):**
+Row 2 (sidewalk), default mode: Headline "Caught Mid-Walk With This One" | Primary "Caught mid-walk around the block here, and honestly I wasn't planning to talk about this\n\nBetween everything else going on, I didn't think I had room for anything new\n\nBut this premium little pick showed up right on my doorstep, and it just... fit. Takes me back in a good way.\n\nClick the link below if you want to see what I mean 👇"
 
 ## 11. When this playbook applies
 
