@@ -203,7 +203,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     pty.write('/goal');
     pty.write('\r');
     await Promise.resolve();
-    expect(sendMessage).toHaveBeenCalledWith('7940429114', '[goal] none set', undefined, { parseMode: null });
+    expect(sendMessage).toHaveBeenCalledWith('7940429114', '[goal] none set', undefined, { parseMode: null, messageClass: 'human' });
   });
 
   it('mirrors /goal set reply to Telegram when handle is bound', async () => {
@@ -214,7 +214,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     pty.write('/goal Ship native slash routing');
     pty.write('\r');
     await Promise.resolve();
-    expect(sendMessage).toHaveBeenCalledWith('7940429114', '[goal] active: Ship native slash routing', undefined, { parseMode: null });
+    expect(sendMessage).toHaveBeenCalledWith('7940429114', '[goal] active: Ship native slash routing', undefined, { parseMode: null, messageClass: 'human' });
   });
 
   it('mirrors /goal clear reply to Telegram when handle is bound', async () => {
@@ -225,7 +225,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     pty.write('/goal clear');
     pty.write('\r');
     await Promise.resolve();
-    expect(sendMessage).toHaveBeenCalledWith('7940429114', '[goal] cleared', undefined, { parseMode: null });
+    expect(sendMessage).toHaveBeenCalledWith('7940429114', '[goal] cleared', undefined, { parseMode: null, messageClass: 'human' });
   });
 
   it('mirrors unknown $skill error to Telegram when handle is bound', async () => {
@@ -241,7 +241,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
       '7940429114',
       '[skill] unknown "nonexistent_skill". No enabled matches found.',
       undefined,
-      { parseMode: null },
+      { parseMode: null, messageClass: 'human' },
     );
   });
 
@@ -377,7 +377,7 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
       '7940429114',
       '[skill] unknown "notaskill". No enabled matches found.',
       undefined,
-      { parseMode: null },
+      { parseMode: null, messageClass: 'human' },
     );
     expect(requestMock).not.toHaveBeenCalledWith('turn/start', expect.anything());
   });

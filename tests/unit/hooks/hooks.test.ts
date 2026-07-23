@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, symlinkSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, symlinkSync, realpathSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -139,8 +139,11 @@ describe('Hook Utilities', () => {
     it('refuses a write that escapes via a symlink inside .claude (#18, codex)', () => {
       const base = mkdtempSync(join(tmpdir(), 'hookperm-'));
       try {
-        const realAgentDir = join(base, 'agent');
-        mkdirSync(join(realAgentDir, '.claude'), { recursive: true });
+        mkdirSync(join(base, 'agent', '.claude'), { recursive: true });
+        // Canonicalize (macOS tmpdir is /var -> /private/var) so the absolute file_paths
+        // built below match isClaudeDirOperation's canonicalized agentDir; otherwise
+        // lexical containment mismatches and the assert would pass for the wrong reason.
+        const realAgentDir = realpathSync(join(base, 'agent'));
         const outside = join(base, 'outside');
         mkdirSync(outside, { recursive: true });
         // .claude/escape is a symlink that leaves the .claude tree.
@@ -160,8 +163,10 @@ describe('Hook Utilities', () => {
     it('refuses a symlinked .claude root that redirects the gate (codex)', () => {
       const base = mkdtempSync(join(tmpdir(), 'hookperm-'));
       try {
-        const realAgentDir = join(base, 'agent');
-        mkdirSync(realAgentDir, { recursive: true });
+        mkdirSync(join(base, 'agent'), { recursive: true });
+        // Canonicalize (macOS tmpdir is /var -> /private/var) so the absolute file_path
+        // below matches isClaudeDirOperation's canonicalized agentDir.
+        const realAgentDir = realpathSync(join(base, 'agent'));
         const outside = join(base, 'outside');
         mkdirSync(outside, { recursive: true });
         // .claude itself is a symlink pointing out of the agent tree.
@@ -176,8 +181,11 @@ describe('Hook Utilities', () => {
     it('refuses a write through a DANGLING symlink inside .claude (codex blocker)', () => {
       const base = mkdtempSync(join(tmpdir(), 'hookperm-'));
       try {
-        const realAgentDir = join(base, 'agent');
-        mkdirSync(join(realAgentDir, '.claude'), { recursive: true });
+        mkdirSync(join(base, 'agent', '.claude'), { recursive: true });
+        // Canonicalize (macOS tmpdir is /var -> /private/var) so the absolute file_paths
+        // built below match isClaudeDirOperation's canonicalized agentDir; otherwise
+        // lexical containment mismatches and the assert would pass for the wrong reason.
+        const realAgentDir = realpathSync(join(base, 'agent'));
         // .claude/dangle points at a non-existent target — realpath can't resolve
         // it, so a lexical check would wrongly treat the path as contained.
         symlinkSync(join(base, 'does-not-exist'), join(realAgentDir, '.claude', 'dangle'));
