@@ -202,6 +202,8 @@ Ratified 2026-07-16 PT (authored by meta-ads-agent; carried by the-sop-keeper). 
 
 **Preserve (do not over-correct into silence).** Loud-to-OPS stays loud: a real fail-closed/authority failure must remain visible to a human fix-owner. Only the TARGET (ops, not user) and the VOLUME (one, not N) change - never suppress a real failure into silence. In particular the dedup must never LATCH: it clears on recovery and re-alerts on a genuine recurrence or a distinct new failure-class (amplifier-2 b2/b3). Collapsing a flood is the goal; swallowing a new signal is the failure mode to avoid.
 
+**Why (origin).** 2026-07-16 PT: 10 concurrent copywriter subagents each hit a `verdict_core` AUTHORITY FAILURE on a `/tmp/brain` that the macOS `/tmp` reaper had wiped. `verdict_core._alert`'s dedup was per-process (in-memory `_ALERTED`), so all 10 fired; `_alert` notify-agented the Adam-FACING meta-ads runner, forwarding the flood to Adam. The gate was CORRECT (fail-closed - no bad ad passed); the failures were the SURFACING (raw-to-user) and the VOLUME (per-process dedup). The recipient-fix alone still floods ops 10x; recipient + cross-process dedup = complete. This rule generalizes it so the class cannot recur via any subagent path, not just this gate.
+
 ## Standing rule: incident-close checklist (stand down your own instructions)
 
 Ratified 2026-07-24 PT (authored by security-agent, 2 additions by the-orchestrator; carried by the-sop-keeper).
@@ -221,4 +223,23 @@ Ratified 2026-07-24 PT (authored by security-agent, 2 additions by the-orchestra
 
 **Relationship to the bearer-killer sweep's per-site rule.** Same underlying invariant, different trigger: the sweep's rule says a fix must sit at the instruction site, not above or below it (this file, error-class registry). This rule adds WHEN to apply it - at incident close, proactively, before anyone reads the stale instruction and acts on it - rather than waiting for the next sweep to catch it as a trap.
 
-**Why (origin).** 2026-07-16 PT: 10 concurrent copywriter subagents each hit a `verdict_core` AUTHORITY FAILURE on a `/tmp/brain` that the macOS `/tmp` reaper had wiped. `verdict_core._alert`'s dedup was per-process (in-memory `_ALERTED`), so all 10 fired; `_alert` notify-agented the Adam-FACING meta-ads runner, forwarding the flood to Adam. The gate was CORRECT (fail-closed - no bad ad passed); the failures were the SURFACING (raw-to-user) and the VOLUME (per-process dedup). The recipient-fix alone still floods ops 10x; recipient + cross-process dedup = complete. This rule generalizes it so the class cannot recur via any subagent path, not just this gate.
+## Standing rule: a repeated recommendation is not a tracked one
+
+Ratified 2026-07-24 PT (authored by cro-agent, self-caught; 2 amendments by the-orchestrator; carried by the-sop-keeper). Applies fleet-wide, INCLUDING the-orchestrator's own briefing queue to Adam - not a specialist-reporting rule.
+
+**Why (origin).** cro-agent carried the same "Direct 23% / 0.57% pool needs diagnosis" recommendation across THREE consecutive weekly reports (2026-07-08, 07-15, 07-22) without ever running the diagnosis. Three appearances made it look like a known issue under active management. When it finally ran (07-24), the recommendation was WRONG - the pool was subscription recurring billing with no sessions, not a low-converting-traffic problem. So repetition had conferred false legitimacy on a guess that was never checked. Already added to cro-agent's own GUARDRAILS.md.
+
+**The rule splits into two cases, because they need different handling.**
+
+- **CARRIED DECISION** - a genuinely inert item awaiting a human ruling (Adam has not yet decided). Fine to carry as-is. But it needs a FORCING FUNCTION once it has been carried 3+ times unchanged: either a stated default action if no ruling arrives, or drop it with a stated reason. It does not get to ride indefinitely just because "it's still pending."
+- **CARRIED DIAGNOSIS** - a CLAIM about the world with a shelf life, not a piece of tracked state. It must NOT ride unexamined even ONCE past the report that first raised it. Every carry either re-verifies the claim that cycle, or states EXPLICITLY in the report that it is unverified and may be mis-framed. Never let a diagnosis-shaped claim repeat silently as if repetition were itself evidence.
+
+**The operative test on every carry, regardless of which case:** has this been RE-VERIFIED, or only RE-COPIED? cro's Direct-pool line was never a queue entry waiting on someone else's decision - it was a claim about what was broken in the business, re-published three times unexamined, and it turned out to be aimed at a non-problem. Repetition manufactures the appearance of tracking while the underlying claim stays unverified; only re-verification is real tracking.
+
+## Standing rule: a directive is not complete until the executable artifact changes
+
+Ratified 2026-07-24 PT (authored by cro-agent; carried by the-sop-keeper). Same underlying invariant as the incident-close checklist and the bearer-killer sweep's per-site remediation rule - a fix belongs at the instruction site, not in a message about the site - but a THIRD distinct trigger: this one fires on issuing or receiving a DIRECTIVE that changes behavior, not at an incident's close and not at a scheduled sweep.
+
+**Why (origin).** The-orchestrator quarantined a contaminated metric by sending a message. cro-agent then found its own weekly-report cron was SKILL-DELEGATING, and both the delegated skill AND its locked pull-definition still instructed pulling that exact contaminated metric - so the following Wednesday's cron would have silently regenerated the quarantined number from its own unaltered instructions, with both the orchestrator and cro believing the issue was already handled. A verbal or messaged directive is intent; the instruction site is what actually RUNS.
+
+**The rule.** After issuing or receiving any directive that changes behavior, ask explicitly: WHAT ARTIFACT STILL SAYS THE OLD THING? Check every executable surface a directive can hide behind - the skill, the pull-definition or query, the cron prompt, any canonical reference, GOALS.md - and fix it AT THE SITE, the same standard as the incident-close checklist's step 1 and the bearer-killer sweep's remediation rule. A directive acknowledged in conversation but not landed in the artifact that runs is not complete; it is a message about a fix, not the fix.
