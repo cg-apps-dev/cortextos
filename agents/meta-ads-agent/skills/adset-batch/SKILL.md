@@ -1,11 +1,13 @@
 ---
 type: skill
-agent: meta-ads-agent
+agent: meta-media-buyer-agent
 skill: adset-batch
 status: active
 date: 2026-06-04
 tags: [meta-ads, admanage, adset, batch, draft, playbook, human-gated, pipeline-stage-3]
 ---
+
+> **Owner: meta-media-buyer-agent** (the-orchestrator ruling, 2026-06-04 role split - confirmed 2026-07-24). This file sits under `agents/meta-ads-agent/skills/` for historical/pipeline-location reasons; the frontmatter previously read `agent: meta-ads-agent`, which was stale. mmb is the actual owner AND executor (its live-read Stage-3B batching skill) - meta-ads-agent defers.
 
 # Stage 3B - Ad-Set Batch PLAYBOOK (group ~10 ads → one ad set → AdManage draft · DRAFT ONLY · human-gated)
 

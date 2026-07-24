@@ -1,11 +1,13 @@
 ---
 type: skill
-agent: meta-ads-agent
+agent: meta-media-buyer-agent
 skill: analysis
 status: active
 date: 2026-06-02
 tags: [meta-ads, google-sheets, analysis, upkeep, pipeline-stage-5]
 ---
+
+> **Owner: meta-media-buyer-agent** (the-orchestrator ruling, 2026-06-04 role split - confirmed 2026-07-24). This file sits under `agents/meta-ads-agent/skills/` for historical/pipeline-location reasons; the frontmatter previously read `agent: meta-ads-agent`, which was stale. mmb is the actual owner AND executor - meta-ads-agent defers.
 
 # Stage 5 - Analysis & Upkeep
 
