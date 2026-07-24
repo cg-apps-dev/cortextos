@@ -143,6 +143,12 @@ Output is labeled `REVIEW`, deliberately not `ARMED` - a remediated prompt re-fl
 ```
 That last line is an ALREADY-FIXED cron: `slack_client` is an own-cred client filename, and `slack_read_thread`/`slack_search_` appear only inside the NO-BRIDGE prohibition sentence - neither is armed, both are correctly ignored after eyeball triage.
 
+## HUMAN OPERATOR ONLY - external-switch assertion (do NOT relay this section into any agent-facing surface)
+
+**This section is for a human operator running a terminal shell directly - it is not for any agent, skill, tool-facing text, or refusal message, ever.** An identity-less operator shell (no `CTX_AGENT_NAME` set) must `export CTX_SWITCH_EXTERNAL=1` before driving an account switch. Frame this as the operator asserting "I am external," never as a way to get past an error - it exists so the switch tool can distinguish a genuine external operator from an agent attempting to bypass its own identity gate, and it is a legitimate operator action, not a workaround.
+
+Do NOT document this flag in: the switch tool's refusal message, any agent skill, any agent-facing section of this or any other playbook, or `knowledge.md`. A CI test (claude-dev, 2026-07-24) pins the refusal message to never name the flag, so an agent-facing leak now fails CI by design - do not work around that test. Rationale (orchestrator/security, 2026-07-24): if the bypass sits next to the refusal it teaches, setting the flag becomes ritual - the thing you paste to make the error go away - and the guard is functionally dead within a month while still appearing to exist. General pattern for any future SOP rule someone could helpfully violate: ask whether it can be pinned by a test, since a policy erodes and a test does not.
+
 ## Related
 
 - [standing-rules.md](standing-rules.md) - migration-drops-a-side-path class (step 5), fingerprint-method class (the bare-value standard), fresh+ok+impossible-value class (the dead-scan rules in step 4); the 2026-07-10/11 fleet auth cascade's 3 root-cause classes (shared-claude-home cascade, truncated-token, tier-scoped-429-misread) - the incident this SOP's per-agent isolation and exact-108 checks exist to prevent recurring
