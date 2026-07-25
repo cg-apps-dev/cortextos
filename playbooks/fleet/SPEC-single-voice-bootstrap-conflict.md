@@ -175,6 +175,21 @@ Consequences for this pass, all of which cut against the obvious plan:
   > answer was in the task queue the whole time and nobody read it.** That is the night's own defect
   > in its most expensive form: not a wrong measurement, but a *correct* one already sitting in a
   > queue nobody treats as a source.
+  >
+  > **But ask it PER-PATH, not per-category — the backup covers exactly one top-level tree.**
+  > `git ls-files` in the backup repo returns **`orgs/` and nothing else.** So the same question gives
+  > opposite answers depending on the path, and both were checked:
+  >
+  > | Path | In backup? | Verdict |
+  > |---|---|---|
+  > | `orgs/**` incl. every `MEMORY.md` | **yes, tracked** | durable, ~24h RPO |
+  > | `~/cortextos-deliverables/**` | **no** — not under `orgs/`, not its own repo, not in the framework repo | **gap is real** |
+  >
+  > So the provenance tool — the fleet's only post-build check — genuinely had **no** durable copy, and
+  > the KB ingest of it was load-bearing rather than belt-and-braces. **The alarm was inflated for
+  > memory and correct for the tool**, and nothing but checking each path separately distinguishes
+  > them. A category-level answer ("is agent state backed up?") is wrong for one of these two no matter
+  > which way you answer it.
 
   vitalis published (a) as the test and later retracted it: it passes (a) and **fails (b)**. Anyone
   who applied the one-sided test concluded they were safe when they were not.
