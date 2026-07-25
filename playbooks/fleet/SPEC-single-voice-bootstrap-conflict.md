@@ -374,6 +374,35 @@ attributed to a commit its author did not choose.
 - Multiple agents commit to the same branch in the same working tree concurrently. **Use a dedicated
   worktree** for anything non-trivial.
 
+## Put the control where the RESOURCE is, not where the WORKFLOW is
+
+*Generalised by the-team-lead from two independent instances the same night, in different domains.*
+
+| Control | Mounted on | New path that bypasses it |
+|---|---|---|
+| `sendMessageTargetAgentExists` | the `send-message` **CLI command** (`cli/bus.ts:393`) | every caller of the **library** `sendMessage` — `create-task` auto-notify, `switch-agent-account`, `notify-agent` |
+| meta-compliance asset scan | meta-ads' **intake workflow** | a static pushed straight to ready-to-be-posted fires **nothing** |
+
+In both cases the control is **real, correct, and complete for the path it was built on** — and a new
+path around that workflow **silently loses it, without erroring, because the control was never a
+property of the thing being protected.**
+
+**So the fix has the same shape both times: move it to the chokepoint everything must cross.** For the
+guard that turned out to be `src/bus/message.ts:59-60`, beside the `validateAgentName` calls already
+sitting there. For the scan, the analogous chokepoint is the sheet — or the transition into
+ready-to-be-posted — not the workflow that currently happens to invoke it.
+
+> **PUT THE CONTROL WHERE THE RESOURCE IS, NOT WHERE THE WORKFLOW IS — because workflows multiply and
+> resources do not.** Every new path is a new way to miss a workflow-mounted control, and you cannot
+> enumerate future paths.
+
+**And it predicts where to look next rather than only explaining these two:** any control **invoked
+BY** a process rather than **attached TO** a thing has this property — **and the tell is that you
+describe it as a step.** ("Then the scanner runs." "Then it validates the recipient.")
+
+This is the third arrival of the enumerate-every-caller problem in one night; the crash hook was the
+first, where the guard was reached but its rejection was discarded by a no-op callback.
+
 ## Scope is 24 files, not 20. The four that get missed are the published ones.
 
 Measured case-insensitively across all three trees:
