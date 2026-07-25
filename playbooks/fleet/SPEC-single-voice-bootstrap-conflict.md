@@ -190,15 +190,26 @@ Consequences for this pass, all of which cut against the obvious plan:
   `memory/2026-07-25.md` returned **zero** hits for the orchestrator while **older siblings in the
   same directory** came back at 0.699–0.715 (same agent, same folder, same filename pattern,
   different date — so not a wording artifact); claude-dev found the identical result in its own tree;
-  the-analyst found **78 minutes** of its densest work uningested — heartbeat ingest 17:27:51Z,
+  the-analyst found **58 minutes** of its densest work uningested — heartbeat cron fired 17:47:51Z,
   manual re-ingest 18:45:58Z — *while telling four agents that a write is not a save*. Manual ingest
   fixed all three.
 
-  *(That figure first reached this file as "two and a half hours." the-analyst corrected it against
-  the two timestamps: it had been reasoning from a felt sense of elapsed time and believed it was
-  ~20:20 when it was 18:48. **Duration claims need two timestamps, not a sense of how long it felt** —
-  and the same wrong-clock class produced the orchestrator's "past midnight" deferral earlier the same
-  evening, at 11am. The finding survives and shrinks; the fix is unchanged.)*
+  *(This figure was wrong twice. It reached the file first as "two and a half hours" — felt, never
+  measured — then as "78 minutes," which came with arithmetic and looked measured but wasn't: the
+  check hardcoded epoch `1785000471` under a hand-written comment reading `17:47:51Z`, and that
+  constant is **17:27**. **The label and the value disagreed by twenty minutes and the label was
+  read** — committed inside the correction of a felt-time error, using a value that was quoted
+  verbatim in the cron message already in context. **A duration needs two timestamps read at the time
+  or quoted from the artifact — never one read value and one remembered constant.**)*
+
+  **And do not go looking for a broken clock.** Every time signal was accurate — the continuation
+  notice said 19:14:51.981Z and `date` returned 19:15:23Z a moment later; the cron message carried
+  17:47:51.750Z correctly. **What is missing is not accuracy but PERSISTENCE: there is no ambient
+  clock, so after an hour of work the last time signal is far up-context and an agent either polls or
+  estimates.** Both instances here — this one, and the orchestrator deferring an item as "past
+  midnight" at 11am — are **absence-of-signal, not wrong-signal, and those have opposite remedies.**
+  Wrong-signal means fix the reporter; absence means poll before quoting a time or a duration.
+  Filing them as a bad clock would send the next person at the wrong component.
 
   → **`cortextos bus kb-ingest "$(pwd)/memory/<date>.md" --org <org> --agent <exact-name> --scope private`**
 
@@ -288,9 +299,29 @@ installed base.** That absence of a recall path is the property that made the de
 `community/` too.
 
 **It is the one surface that is only ever read by someone who is not here** — neither a live agent
-anyone inhabits nor a template anyone edits daily. It is also, usefully, the **one place where this
-fix has both leverage and a reviewable diff**: `community/` is tracked, so unlike the 16 live files it
-gets a real commit and a real review.
+anyone inhabits nor a template anyone edits daily.
+
+**Exactly 4 of the 5 tracked `community/` files carry it.** The fifth,
+`community/agents/agentic-crm-assistant/AGENTS.md`, is a **different lineage — not a fourth rendering
+hiding from the grep.** Verified against every clause: `never leave the user`, `must reply`,
+`user is waiting`, `acknowledge immediately`, `still there` — **all zero.** It never inherited the
+paragraph. **So the pass should see 5 tracked files, make 4 edits, and not hunt a fifth.** (Worth
+checking rather than assuming, because "absent" was wrong twice on this exact string.)
+
+### The intuition is inverted: the published quarter is the ONLY quarter with a reviewable diff
+
+`community/` and `templates/` are tracked. **The 16 live files under `orgs/` get no commit and no
+history.** So **the largest share of the work is the least verifiable, and the smallest share is the
+only part anyone can review afterwards** — and `community/` is simultaneously the part most likely to
+be skipped as "not a real agent."
+
+**The two halves therefore need different acceptance evidence:**
+- `templates/` + `community/` (8 files) → **the diff.**
+- the 16 live files → **there is no diff.** The only available evidence is a re-run of the
+  case-insensitive grep against the intended file list.
+
+That is what makes the acceptance test below **mandatory rather than tidy: for three quarters of the
+files it is the only evidence that exists.**
 
 ### Acceptance test — and a zero is the WRONG criterion
 
