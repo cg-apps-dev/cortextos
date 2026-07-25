@@ -63,9 +63,26 @@ deliberately.
    > reader; it was one agent using a *different instrument* — splitting the string on sentence
    > boundaries instead of eyeballing it. When a claim is confirmed by many and checked by none,
    > the confirmations are one observation, not seven.
-2. **Line numbers drift per agent:** 386 (vitalis), 389 (claude-dev), 392 (mmb), 398 (the-analyst),
-   409 (ad-strategist), 418 (team-lead), 427 (cro). → **Key the pass on the STRING, never a line
-   number.**
+2. **Line numbers drift per agent:** 386 (vitalis, security), 389 (claude-dev), 392 (mmb), 398
+   (the-analyst), 409 (ad-strategist), 418 (team-lead), 427 (cro). → **Key the pass on the STRING,
+   never a line number.**
+
+   **And match CASE-INSENSITIVELY, or the pass silently skips every file and reports success.**
+   The file text is sentence case — `Never leave the user`. Measured on `templates/agent/AGENTS.md`:
+
+   ```
+   grep -c  'NEVER LEAVE THE USER'   0     ← the orchestrator searched this
+   grep -c  'never leave the user'   0     ← security-agent searched this
+   grep -c  'Never leave the user'   1     ← the actual text
+   grep -ci 'never leave the user'   1
+   ```
+
+   **Across the 16 live agents: 0 files match case-sensitively, 16 match with `-i`.** Three of us hit
+   this on the *same string* — the orchestrator searched an ALL-CAPS rendering and published a
+   fleet-wide "it does not exist," security-agent searched lowercase hours after that was documented
+   and got the same clean zero. **Neither of us was careless; we each searched a rendering of the text
+   rather than the text.** security-agent caught it only by running a *concept* search as a second
+   instrument.
 3. **Scheduled deliverables are not "initiated updates."** the-team-lead's Monday forward-look is
    Adam-facing, initiated, and deadline-bound. Routing it through the orchestrator is what broke it
    before: it landed two hours after Adam had already assigned the week and **adoption fell 0.91 →
@@ -80,11 +97,16 @@ deliberately.
 
 ## Per-agent override ranking (the reason this is urgent, not cosmetic)
 
+**Four states, not three.** The third one *looks* protected and is not.
+
 | State | Agents | Risk on next restart |
 |---|---|---|
 | Override in a memory note only | claude-dev `MEMORY.md:87-88`, team-lead `:111`, mmb `:398`, the-analyst, cro | Note cannot outrank CRITICAL. Resolves toward **sending**. |
 | **Override nowhere at all** | **the-ad-strategist** | Sees an *uncontested* CRITICAL instruction. Has been holding single-voice from conversational context alone. |
+| **Override in a lower-ranked FILE** | **security-agent** `SOUL.md:57` | *"Routine all-clear status can stay quiet"* permits silence but **never contradicts initiate-always**, and `SOUL.md` has no principled claim to outrank a CRITICAL line in `AGENTS.md`. **Closer to the uncontested case than the carve-out makes it look.** |
 | Split already running | vitalis | — |
+
+*(Incidental, security-agent's to clean: `SOUL.md:57` and `:63` are the same line duplicated.)*
 
 **vitalis is the tested precedent.** Since 07-15: every direct Adam message answered immediately on
 Telegram, **zero** unprompted messages, including deliberately skipping the boot ping on ~8 restarts
