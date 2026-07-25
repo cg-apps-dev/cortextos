@@ -445,13 +445,15 @@ the defect is in what the paragraph still **instructs** after stating it, and th
 reads. Their repair — deleting seven words rather than rewriting — follows: *a rewrite is what
 dropped it, and a second rewrite is how you drop the next one.*
 
-**And the ranking says something the pairs do not.** Four of the ten land on `zero-model-monitors.md`
+**And the ranking says something the pairs do not.** Four pairs land on `zero-model-monitors.md`
 and its contract (§2, §3, §10) — **the fleet's monitoring layer is the least-instrumented file in the
 corpus**, and it is the file whose job is instrumenting everything else. Its pass signal is silence,
 its fail signal is an unchecked send, and its authoritative check is a config read. That is not three
 findings, it is one: **nothing in that layer can distinguish working from absent.**
 
-**Seven mechanical, three prose.** Per the-orchestrator's instruction, ranked accordingly — and the
+**The split is in the assertion block above — deliberately not restated here, because a restated
+number is a second site by definition, and this exact sentence was the third stale copy of it.**
+Ranked mechanical-first per the-orchestrator's instruction — and the
 reason is the night's own scoreboard: roughly twenty prose lessons produced, four of them violated by
 their own author within the session, against one mechanical control (`no build`) with a perfect
 eleven-hour record. **A rule that requires someone to notice something has a worse record tonight
@@ -459,4 +461,4 @@ than a rule that does not.**
 
 **Corpus caveat, stated because a bounded claim in the result line beats one beneath it:**
 `shell-expansion-safety.md` and its addendum were swept last and are under-represented above — §10
-is the only pair drawn from them. **Treat ten as a floor, not a census.**
+is the only pair drawn from them. **Treat this list as a floor, not a census.**
