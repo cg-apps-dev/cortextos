@@ -1928,6 +1928,19 @@ busCommand
     const paths = resolvePaths(env.agentName, env.instanceId, env.org);
     const ctxRoot = require('path').join(require('os').homedir(), '.cortextos', env.instanceId);
 
+    try {
+      validateAgentName(targetAgent);
+    } catch (err) {
+      console.error(String(err));
+      process.exit(1);
+    }
+
+    const projectRoot = env.projectRoot || env.frameworkRoot || process.cwd();
+    if (!sendMessageTargetAgentExists(projectRoot, targetAgent)) {
+      console.error(`Invalid target agent '${targetAgent}'. Agent not found in project; signal was not queued.`);
+      process.exit(1);
+    }
+
     // Write urgent signal file that fast-checker checks on every poll
     const signalDir = join(ctxRoot, 'state', targetAgent);
     mkdirSync(signalDir, { recursive: true });

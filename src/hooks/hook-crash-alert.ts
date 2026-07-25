@@ -153,6 +153,42 @@ export function notifyAgents(opts: {
   }
 }
 
+export function buildCrashLogEventArgs(opts: {
+  agentName: string;
+  endType: string;
+  reason: string;
+  lastTask: string;
+  crashCount: number;
+  restartAttempted: boolean;
+}): string[] {
+  return ['bus', 'log-event', 'error', 'agent_crash', 'error', '--meta', JSON.stringify({
+    agent: opts.agentName,
+    end_type: opts.endType,
+    reason: opts.reason || 'none',
+    last_status: opts.lastTask || 'unknown',
+    crashes_today: opts.crashCount,
+    restart_attempted: opts.restartAttempted,
+  })];
+}
+
+export function readLatestCrashReason(logDir: string, endType: string, fallback: string): string {
+  if (endType !== 'crash') return fallback;
+
+  try {
+    const restartsLog = readFileSync(join(logDir, 'restarts.log'), 'utf-8');
+    const lines = restartsLog.trim().split(/\r?\n/).reverse();
+    const line = lines.find((entry) =>
+      /\] (CRASH|HALTED|CRASH_LOOP|IMAGE_POISON_RECOVERY): /.test(entry),
+    );
+    if (!line) return fallback;
+    const match = line.match(/\] ([A-Z_]+): (.+)$/);
+    if (!match) return fallback;
+    return `${match[1]} ${match[2]}`;
+  } catch {
+    return fallback;
+  }
+}
+
 /**
  * Return true if an identical (agent, type) alert was already sent within
  * the dedup window. Side effect: records this attempt when it is the first.
@@ -306,6 +342,7 @@ async function main(): Promise<void> {
       reason = 'anthropic rate limit detected in stdout.log';
     }
   }
+  reason = readLatestCrashReason(logDir, endType, reason);
 
   // Track crash count (real crashes only).
   const today = new Date().toISOString().split('T')[0];
@@ -361,6 +398,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
+  const runCli = (args: string[]): Promise<void> => new Promise((resolve) => {
+    const done = (): void => resolve();
+    if (frameworkRoot) {
+      execFile(process.execPath, [join(frameworkRoot, 'dist', 'cli.js'), ...args], { timeout: 10_000 }, done);
+    } else {
+      execFile('cortextos', args, { timeout: 10_000 }, done);
+    }
+  });
+
   // Real-crash agent alerts: notify chief + analyst on crash and daemon-crashed
   // so silent failures get visibility on the bus, not just on Telegram. Gated
   // by the same dedup window as the Telegram send (handled above), and skipped
@@ -371,6 +418,14 @@ async function main(): Promise<void> {
     const agentDir = process.env.CTX_AGENT_DIR || process.cwd();
     const maxCrashes = readMaxCrashesPerDay(agentDir);
     const restartAttempted = maxCrashes === null || crashCount < maxCrashes;
+    await runCli(buildCrashLogEventArgs({
+      agentName,
+      endType,
+      reason,
+      lastTask,
+      crashCount,
+      restartAttempted,
+    }));
     notifyAgents({
       agentName,
       endType,
@@ -444,15 +499,6 @@ async function main(): Promise<void> {
   //                                    not-deliver = false-confidence, worse than an honest no-alert).
   //   user-restart / user-disable / user-stop -> SUPPRESS (redundant success-confirmations of the operator's own
   //                                    action; a FAILURE is a different endType -> crash/error -> ops, nothing hidden).
-  const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
-  const runCli = (args: string[]): Promise<void> => new Promise((resolve) => {
-    const done = (): void => resolve();
-    if (frameworkRoot) {
-      execFile(process.execPath, [join(frameworkRoot, 'dist', 'cli.js'), ...args], { timeout: 10_000 }, done);
-    } else {
-      execFile('cortextos', args, { timeout: 10_000 }, done);
-    }
-  });
   if (endType === 'rate-limited' && message) {
     await runCli(['bus', 'notify-agent', 'the-orchestrator', `[LIFECYCLE:rate-limited] ${message}`]);
   } else if (endType === 'session-refresh') {

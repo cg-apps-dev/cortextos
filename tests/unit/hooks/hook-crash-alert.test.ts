@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -8,7 +8,13 @@ vi.mock('child_process', () => ({
   execFile: (...args: unknown[]) => execFileMock(...args),
 }));
 
-import { readMaxCrashesPerDay, notifyAgents, classifyFromMarkers } from '../../../src/hooks/hook-crash-alert';
+import {
+  readMaxCrashesPerDay,
+  notifyAgents,
+  classifyFromMarkers,
+  buildCrashLogEventArgs,
+  readLatestCrashReason,
+} from '../../../src/hooks/hook-crash-alert';
 import { clearEndMarkers } from '../../../src/bus/heartbeat';
 
 describe('readMaxCrashesPerDay', () => {
@@ -144,6 +150,74 @@ describe('notifyAgents', () => {
     })).not.toThrow();
     // Second recipient still attempted
     expect(execFileMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('buildCrashLogEventArgs', () => {
+  it('builds a durable crash event independent of alert recipients', () => {
+    const args = buildCrashLogEventArgs({
+      agentName: 'dev',
+      endType: 'crash',
+      reason: 'uncaught',
+      lastTask: 'task x',
+      crashCount: 4,
+      restartAttempted: false,
+    });
+
+    expect(args.slice(0, 5)).toEqual(['bus', 'log-event', 'error', 'agent_crash', 'error']);
+    expect(args[5]).toBe('--meta');
+    expect(JSON.parse(args[6])).toEqual({
+      agent: 'dev',
+      end_type: 'crash',
+      reason: 'uncaught',
+      last_status: 'task x',
+      crashes_today: 4,
+      restart_attempted: false,
+    });
+  });
+
+  it('uses fallback values for empty reason and status', () => {
+    const args = buildCrashLogEventArgs({
+      agentName: 'dev',
+      endType: 'daemon-crashed',
+      reason: '',
+      lastTask: '',
+      crashCount: 0,
+      restartAttempted: true,
+    });
+
+    expect(JSON.parse(args[6])).toMatchObject({
+      reason: 'none',
+      last_status: 'unknown',
+    });
+  });
+});
+
+describe('readLatestCrashReason', () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'crashalert-reason-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('uses the latest unplanned restart entry for real crash reasons', () => {
+    mkdirSync(tmp, { recursive: true });
+    writeFileSync(join(tmp, 'restarts.log'), [
+      '[2026-07-25T01:00:00Z] SELF-RESTART: routine',
+      '[2026-07-25T01:01:00Z] CRASH: exit_code=1 crash_count=1 backoff_s=5',
+      '[2026-07-25T01:02:00Z] CRASH_LOOP: exit_code=1 crash_count=3 backoff_s=0',
+    ].join('\n') + '\n', 'utf-8');
+
+    expect(readLatestCrashReason(tmp, 'crash', '')).toBe('CRASH_LOOP exit_code=1 crash_count=3 backoff_s=0');
+  });
+
+  it('keeps marker reasons for non-crash end types and falls back when no crash detail exists', () => {
+    expect(readLatestCrashReason(tmp, 'daemon-crashed', '2026-07-25T01:00:00Z')).toBe('2026-07-25T01:00:00Z');
+    expect(readLatestCrashReason(tmp, 'crash', 'none')).toBe('none');
   });
 });
 
