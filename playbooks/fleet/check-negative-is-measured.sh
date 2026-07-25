@@ -79,6 +79,54 @@ expect "5. SENSITIVITY   a pattern that matches nothing" "$h" 1 "passes as 'no f
 grep -q 'Telegram message arrives' "$F"; i=$?
 expect "5. SENSITIVITY   known-present needle (the real test)" "$i" 0 "detector can actually fire"
 
+# --- 6. NO OUTPUT IS NOT A RESULT --------------------------------------------
+# Fourth axis, and the only one the other five cannot reach, because it has no
+# value to inspect. THREE INSTANCES ON 2026-07-25 (the-orchestrator once,
+# the-analyst twice): an unquoted glob or a guessed path, zsh answers
+# "no matches found", the command NEVER RUNS, and a conclusion gets published
+# under it. One nearly closed a durability task on the finding that the tree it
+# protects does not exist; there were 14 tracked files.
+#
+# ALL THREE PRODUCED NO OUTPUT AND A CONCLUSION ANYWAY. NOT ONE PRODUCED A WRONG
+# VALUE -- which is why the class lands on careful people: THERE IS NOTHING TO
+# CHECK. A wrong number invites arithmetic; an empty result invites a conclusion.
+# It is also exactly where the night's one working detector goes blind:
+# IMPLAUSIBILITY CANNOT FIRE ON ABSENCE, BECAUSE ABSENCE HAS NO MAGNITUDE TO BE
+# ABSURD ABOUT (the-orchestrator).
+GLOBDIR="$(mktemp -d)"; trap 'rm -f "$CONT"; rm -rf "$GLOBDIR"' EXIT
+printf 'needle_is_here\n' > "$GLOBDIR/real.txt"
+# THE FIRST DRAFT OF THIS AXIS FAILED ITS OWN FIXTURE, AND THE FAILURE IS THE
+# FINDING. It asserted exit 1, because the three live instances were in zsh. Run
+# under bash it returns 2. A PROBE WRITTEN FOR ONE SHELL AND RUN IN ANOTHER IS
+# NOT A MEASUREMENT (SPEC-single-voice:426) -- committed while encoding a rule
+# about unmeasured searches. Measured, both shells, rather than assumed:
+#   bash: unmatched glob passes the literal through -> grep exit 2 = FILE ERROR
+#   zsh:  "no matches found", THE COMMAND NEVER RUNS  -> exit 1
+#   grep on a real file, genuinely absent             -> exit 1
+# SO THE DANGER IS ZSH-SPECIFIC AND THE FLEET RUNS ZSH: zsh returns EXACTLY the
+# code that means "searched, found nothing". bash at least returns a distinct 2 --
+# a signal that exists and that nobody checks. In zsh there is no difference to
+# ignore. That is why all three instances tonight were zsh.
+grep -q 'needle_is_here' "$GLOBDIR"/*.nosuchext 2>/dev/null ; j=$?
+expect "6. NO OUTPUT     bash: never-searched is exit 2, NOT 1" "$j" 2 "distinguishable -- if you check for 2"
+if command -v zsh >/dev/null 2>&1; then
+  zsh -c "grep -q needle_is_here '$GLOBDIR'/*.nosuchext 2>/dev/null" >/dev/null 2>&1; z=$?
+  expect "6. NO OUTPUT     zsh: never-searched is exit 1 = 'absent'" "$z" 1 "IDENTICAL to a real zero"
+fi
+grep -q 'zzz_absent_needle' "$GLOBDIR"/real.txt 2>/dev/null ; m=$?
+expect "6. NO OUTPUT     a REAL search that found nothing" "$m" 1 "same 1 zsh returns for never-ran"
+# The fix is not a better pattern. It is asserting the search had something to
+# search: resolve the target list FIRST and refuse when it is empty.
+FILES=( "$GLOBDIR"/*.txt )
+if [ ! -e "${FILES[0]}" ]; then k=2; else grep -q 'needle_is_here' "${FILES[@]}"; k=$?; fi
+expect "6. NO OUTPUT     target list resolved and asserted first" "$k" 0 "ABSENCE WAS FALSE"
+# And the guard itself must be exercised: an empty target list returns 2
+# (UNMEASURED), never 1 (absent). Same shape as assert-the-value-not-the-key and
+# as the positive control on the same pid -- prove the thing ran before reading it.
+EMPTY=( "$GLOBDIR"/*.nosuchext )
+if [ ! -e "${EMPTY[0]}" ]; then l=2; else grep -q 'needle_is_here' "${EMPTY[@]}"; l=$?; fi
+expect "6. NO OUTPUT     empty target list returns UNMEASURED not absent" "$l" 2 "2 != 1: unmeasured != clean"
+
 echo
 # Derive the summary from the accumulated failure flag, NOT by re-checking the
 # values. An earlier version re-tested $a/$b/$c here and printed HOLDS while
