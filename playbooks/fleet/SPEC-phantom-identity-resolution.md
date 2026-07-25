@@ -64,6 +64,56 @@ withdrew its own two-ways-to-gain-coverage line for this case.)
 > variables, not one (only the latter `cd`s), so it proved the plist env var works but
 > not that it survives a `cd`. The direct test is what proved that.
 
+## 1b. THE TIER ABOVE IS WORSE, AND IT IS SILENT (the-analyst)
+
+**Two of the four tiers read cwd, not one.** `envFile.CTX_AGENT_NAME` (tier 3) is read
+from `join(process.cwd(), '.cortextos-env')` at `env.ts:18`, and it sits **above** the
+`basename` fallback this spec was originally written about.
+
+Measured, with `CTX_AGENT_NAME` unset:
+
+| cwd | resolves to | plausible on sight? |
+|---|---|---|
+| another agent's dir | **that agent's real name** (`security-agent`, `the-analyst`) | **YES — passes every check** |
+| repo root | `cortextos` | no |
+| `/` | `''` | no |
+
+16 `.cortextos-env` files exist right now, one per agent, all live, each containing a
+valid roster name.
+
+> **THE FALLBACK THIS SPEC DOCUMENTS IS THE LOUD ONE. THE TIER ABOVE IT IS SILENT.**
+> `basename('/') === ''` is how the phantom got caught — an empty agent name is
+> implausible on sight. A neighbour's `.cortextos-env` hands you a **real, enabled,
+> on-roster name**: a wrong identity that passes every plausibility check we have. And
+> plausibility is the check that caught every other detector failure on 2026-07-25.
+
+**Not claimed:** that any agent currently resolves through tier 3. The mechanism is
+verified; the population is not. That measurement must come **from the process list,
+not from the plists — the plists are the artifact, the running processes are the
+authority.**
+
+### The protection is falsy-chained, so setting the key is NOT being protected
+
+```
+CTX_AGENT_NAME=""   ->  "CTX_AGENT_NAME" in process.env === true
+                    ->  AND IT STILL FALLS THROUGH, because || tests falsy, not defined
+```
+
+Measured: cwd `security-agent`, `CTX_AGENT_NAME=""` resolves to `"security-agent"` —
+**byte-identical to the key being absent entirely.**
+
+So a plist `EnvironmentVariables` entry with an empty value **reads as "the fix is
+applied" to any audit that greps for the key.** This is the
+format-validation-present / existence-validation-absent shape one tier up from where
+the rest of this spec finds it.
+
+> **ASSERT ON THE VALUE BEING NON-EMPTY, NEVER ON THE KEY EXISTING.** Any verification
+> of the plist fix in §1 that checks for key presence is a false green.
+
+This supersedes the fix guidance issued to security-agent and meta-ads-agent on
+2026-07-25, which said to set `CTX_AGENT_NAME` in the plist without specifying that a
+present-but-empty value is indistinguishable from no value at all.
+
 ## 2. Two variables, failing in opposite directions (claude-dev-agent)
 
 The same function loses `CTX_ORG` the same way, eleven lines apart:
