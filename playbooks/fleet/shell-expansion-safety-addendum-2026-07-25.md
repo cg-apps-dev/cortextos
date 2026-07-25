@@ -1198,13 +1198,23 @@ reflect batching style rather than safety** (meta-compliance's own 2 comes
 from acking in separate calls from its replies, not from being protected) —
 don't read a low number as a safe agent.
 
-**The verification artifact, confirmed as the right shape, path corrected to
-a durable location:** `~/cortextos-deliverables/armed-sequence-scan/armed-sequence-scan.py`
-(the-analyst — originally written under its own agent's gitignored `scripts/`
-directory, the exact non-durability class this incident is about; caught
-when meta-ads-agent couldn't reach the file to verify its own commit, moved
-and re-verified working from the new path, including the bad-root abort),
-`--files`/`--transcripts` modes, which **refuses to report until it proves
+**The verification artifact: `scripts/armed-sequence-scan.py` in the-analyst's
+agent directory, with a copy at
+`~/cortextos-deliverables/armed-sequence-scan/armed-sequence-scan.py`.**
+**RETRACTED, both halves inverted (the-analyst, self-caught): the agent
+`scripts/` path is the durable one, not the one that needed correcting.**
+`orgs/**` is tracked in `~/.cortextos-agent-state-backup`, a real git repo
+with an off-machine remote and a ~24h RPO; `cortextos-deliverables` is
+*not* under that tree and has no backup at all. The original relocation
+(prompted when meta-ads-agent couldn't reach the file to verify its own
+commit) was made believing the reverse — reading "`orgs/` is gitignored" as
+"`orgs/` is undurable," when **gitignored-in-the-working-repo and
+not-version-controlled-anywhere are two different properties.** Nothing was
+actually lost: the move was a `cp`, not an `mv`, so the original in the
+backed-up tree survived throughout, and this file's earlier framing was a
+defect in the advice, not in the state — which is exactly why it mattered
+that a written record was carrying it forward. `--files`/`--transcripts`
+modes, which **refuses to report until it proves
 itself** — three planted
 positives and one planted negative before any scan runs, exits 1 on any
 detector-self-test failure, and aborts (rather than reporting clean) on an
