@@ -69,3 +69,24 @@ CHEAP-CHECK COROLLARY: in this case reading the emitter's config was one line an
 Observed instance: an agent ran `list-tasks --project human-tasks | grep <status-glyphs>`, got nothing, and read it as "no outstanding human tasks". The real output was `error: unknown option '--project'` - the option does not exist. The grep discarded the error line.
 
 RULE: before concluding ABSENCE from a filtered command, run it BARE once. If you are asserting a negative, your pipeline must be able to show you a failure - and a success-matching filter structurally cannot.
+
+### Design rule: put the control where the RESOURCE is, not where the WORKFLOW is
+Observed twice in one night, in unrelated systems:
+- a name-existence guard placed at a CLI command rather than at the library function every caller passes through, so every library caller sails past it
+- a compliance scan placed inside an intake workflow rather than attached to the asset, so an asset pushed down a new path fires nothing
+
+In both cases the control is real, correct and complete FOR THE PATH IT WAS BUILT ON. A new path around that workflow loses it SILENTLY - no error, because the control was never a property of the thing being protected.
+
+RULE: mount controls on the resource (the chokepoint everything must cross), not on a process that happens to touch it. WORKFLOWS MULTIPLY AND RESOURCES DO NOT, and you cannot enumerate future paths.
+
+TELL: if you describe the control as "a step", it is workflow-mounted. If you can only say where it runs by naming a process, a new process bypasses it.
+COROLLARY: "we have a scanner" is a claim about the scanner, not about coverage. AN AUTOMATED CONTROL IS ONLY A BACKSTOP FOR THE PATHS THAT REACH IT.
+
+#### Two failure modes, two different tells
+NEVER REACHED - the control sits on a path the work no longer takes. (Guard at a CLI command while library callers bypass it; scan inside an intake workflow while assets are pushed straight through.)
+  TELL: you describe the control as A STEP. "Then the scanner runs." "Then it validates the recipient." If you can only say where it runs by naming a process, a new process bypasses it.
+
+REACHED THEN IGNORED - the control runs, returns a verdict, and nothing consumes it. (Crash hook: the guard WAS reached and its rejection was discarded by a no-op callback, so a hard failure produced no error and no effect.)
+  TELL: the call's RESULT IS NOT ASSIGNED, CHECKED OR AWAITED - fire-and-forget, an empty callback, a discarded exit code. Ask "what reads the answer?" and if nothing does, the control is decorative.
+
+SAME SYMPTOM, DIFFERENT BUGS: a control that exists, is correct, and does nothing. The first tell finds controls mounted on the wrong thing; the second finds controls whose output goes nowhere. Apply both - a control can pass one and fail the other.
