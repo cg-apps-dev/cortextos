@@ -29,27 +29,40 @@ deliberately.
 
 ## Four things that will break a naive pass
 
-1. **It is ONE PARAGRAPH of FOUR sentences — not two paragraphs, and not one sentence.** Seven agents
-   (and this spec's first draft) reported "one sentence, no clean seam." research-agent split it on
-   sentence boundaries and that is wrong. Verified:
+1. **It is ONE PARAGRAPH of several sentences — not two paragraphs, and not one sentence.** Seven
+   agents (and this spec's first two drafts) reported "one sentence, no clean seam." That is wrong.
+   The stable structure, in order:
 
-   | # | Sentence | Class |
-   |---|---|---|
-   | 1 | `**CRITICAL: When a Telegram message arrives, you MUST reply BEFORE doing any work.** The user is waiting.` | reactive — **keep** |
-   | 2 | `Acknowledge immediately, then execute.` | reactive — **keep** |
-   | 3 | `Never leave the user as the last person to have sent a message — always follow up when work is done, when something changes, or when you are waiting on something.` | **proactive — the defect** |
-   | 4 | `The user should never have to ask "are you still there?"` | **ambiguous — see below** |
+   | Clause | Class |
+   |---|---|
+   | `**CRITICAL: When a Telegram message arrives, you MUST reply BEFORE doing any work.**` … `The user is waiting.` … `Acknowledge immediately, then execute.` | reactive — **keep** |
+   | `Never leave the user as the last person to have sent a message — always follow up when work is done, when something changes, or when you are waiting on something.` | **proactive — the defect, and independently removable** |
+   | `The user should never have to ask "are you still there?"` | **residual licence — see below** |
 
-   **Sentence 3 is the whole defect and it IS independently removable.** There is no *paragraph*
-   seam, which is the real hazard: an editor expecting to delete a paragraph finds one block and
-   takes the reactive half with it.
+   **Do not quote a sentence count.** This spec said "four"; the-ad-strategist counted five. Both were
+   run honestly and the difference is the splitter — a naive `(?<=[.?"])\s+` merges the first two
+   because a `**` sits between the period and the next capital. **The count is an artifact of the
+   instrument; the structure is not.** Key any edit on the clause text.
 
-   **Sentence 4 is the residue that "no clean seam" hides.** It reads as liveness (reactive) but also
-   implies telling him before he wonders (proactive). **Delete sentence 3 alone and sentence 4 still
-   licenses initiating.** The pass must handle sentence 4 explicitly, not just remove sentence 3.
+   **There is no *paragraph* seam**, which is the real hazard: an editor expecting to delete a
+   paragraph finds one block and takes the reactive half with it.
+
+   **The trailing clause is the residue that "no clean seam" hid rather than caught.** *"The user
+   should never have to ask are you still there"* reads as liveness (reactive) but also implies
+   telling him before he wonders (proactive). **Remove the proactive sentence alone and this one still
+   licenses initiating — and the edit will look complete.** Handle it explicitly.
 
    → **Specify replacement text. Do not specify a deletion.** That covers both hazards by
    construction.
+
+   > **Read this row as a warning about the method, not just about the paragraph.** Seven agents
+   > independently reported "one sentence, no clean seam." They were all wrong, and the *agreement*
+   > is what made it feel settled — one of them wrote "read it precisely" in the same message and
+   > then did not parse to the sentence. **Consensus across agents is not independent evidence when
+   > everyone is reading the same text the same careless way.** What broke it was not an eighth
+   > reader; it was one agent using a *different instrument* — splitting the string on sentence
+   > boundaries instead of eyeballing it. When a claim is confirmed by many and checked by none,
+   > the confirmations are one observation, not seven.
 2. **Line numbers drift per agent:** 386 (vitalis), 389 (claude-dev), 392 (mmb), 398 (the-analyst),
    409 (ad-strategist), 418 (team-lead), 427 (cro). → **Key the pass on the STRING, never a line
    number.**
@@ -110,8 +123,25 @@ Consequences for this pass, all of which cut against the obvious plan:
   *or* invisible, and those are opposite states** — absence-of-output versus absence-of-hits, the
   same confusion that produced most of the 2026-07-25 errors, on the instrument the whole night was
   audited with. meta-media-buyer-agent read an empty status as "my edits are committed."
-- Several agents banked incident rules into `MEMORY.md` on 07-25 believing that was durable. **It is
-  not version-controlled.** It survives a context reset; it does not survive a clean.
+- Several agents banked incident rules into `MEMORY.md` on 07-25 believing that was durable.
+  **The durability test has two halves and most of us checked one:**
+  - **(a) is it in the bootstrap read chain?** → survives a context reset.
+  - **(b) is it tracked by git, or KB-ingested?** → survives a `git clean`, a reclone, a reprovision.
+
+  vitalis published (a) as the test and later retracted it: it passes (a) and **fails (b)**. Anyone
+  who applied the one-sided test concluded they were safe when they were not.
+
+  **security-agent found the real second copy: the KB ingest.** It queried a distinctive string from
+  07-25 and got four chunks back from `memory/2026-07-25.md` at 0.71–0.72 — and the vector store is
+  not in the working tree, so a clean does not touch it. A second query returned nothing and it
+  could not tell a retrieval miss from its own filter, so this is **verified for one entry, not for
+  every entry.** → **The ingest is what makes memory durable, not the write** — which inverts how
+  this usually feels, since the write seems like the save and the ingest seems like publishing.
+
+- **Storage consequence for this pass, independent of the availability-versus-operative argument:**
+  playbooks are tracked and reviewable; `MEMORY.md` is neither. **A rule written into a playbook is in
+  git. The same rule written into memory is in no diff and no history.** That is a second reason the
+  daylight fix must land in files.
 
 **This is probably correct as configured, not a bug.** `orgs/` holds `.env` files with
 `sk-ant-oat01` setup-tokens, sheet IDs and customer data; ignoring it wholesale is the fail-closed
