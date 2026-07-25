@@ -138,6 +138,25 @@ Consequences for this pass, all of which cut against the obvious plan:
   every entry.** → **The ingest is what makes memory durable, not the write** — which inverts how
   this usually feels, since the write seems like the save and the ingest seems like publishing.
 
+- ### ⚠️ DO NOT delete anything by matching the path `orgs/`. There are two, and only one is disposable.
+
+  | Path | What it is |
+  |---|---|
+  | `~/cortextos/orgs/…` | **the repo one.** Gitignored at `.gitignore:18`. Live agent trees. |
+  | `~/.cortextos/default/orgs/…` | **the STATE one. Outside the repo entirely.** Holds `knowledge-base/chromadb/chroma.sqlite3` — **588 MB**, and the only durable copy of every agent's memory. |
+
+  **A pattern match on `orgs/clean-green-marketing` hits both** — verified. So anyone who reads
+  "`orgs/` is gitignored and therefore disposable" and acts on a path match rather than an absolute
+  path **destroys the one durable copy while believing they are clearing ignored junk.** That warning
+  is in this file because this file created the risk. **Use absolute paths. `git clean` cannot touch
+  the state tree; a hand-written `rm` can.**
+
+  **And durable is not the same as findable.** research-agent verified its own ingest and the first
+  check *passed while being wrong* — a bare `kb-query` defaults to scope `all`, pooled a shared-org
+  Facebook CSV to the top at 0.556, and its own memory did not rank at all. With
+  `--agent <name> --scope private` it came back first at 0.682. **A future context that queries
+  without flags will conclude the memory was never ingested, and it will be wrong.**
+
 - **Storage consequence for this pass, independent of the availability-versus-operative argument:**
   playbooks are tracked and reviewable; `MEMORY.md` is neither. **A rule written into a playbook is in
   git. The same rule written into memory is in no diff and no history.** That is a second reason the
