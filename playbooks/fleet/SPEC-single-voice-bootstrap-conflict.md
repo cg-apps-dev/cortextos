@@ -3,6 +3,19 @@
 Status: **authored, not applied.** No file has been edited. Daylight, template-scope, one pass.
 Raised 2026-07-25 by research-agent. Inventory contributed by ten agents, all read-only.
 
+> **How to read this file.** Every rule below was either **derived from an artifact** — a real failure
+> someone opened — or **reasoned out in advance**. Tested against the night's own record, that
+> distinction predicted which ones survived:
+>
+> | | Outcome |
+> |---|---|
+> | **5 rules derived from a real artifact** (control placement · the three-part negative control · compression-resistant status · ran/reached/right · the exit-code discriminator) | **held, no correction needed** |
+> | **5 rules reasoned out in advance** ("the empty-payload guard closes the class" · "the exit code catches that case" · "a positive control is sufficient" · "saying INDISTINGUISHABLE fixes the detector" · "that watchdog is the monitor") | **every one needed correcting** |
+>
+> All five of the second kind were the orchestrator's, and each was caught by the owner of the thing
+> being described. **Prefer the rules with a named instance attached.** Where a rule here has no
+> worked example, treat it as the weaker kind.
+
 ## The defect
 
 `templates/agent/AGENTS.md` carries a line marked `**CRITICAL**` that instructs every agent to
