@@ -190,8 +190,15 @@ Consequences for this pass, all of which cut against the obvious plan:
   `memory/2026-07-25.md` returned **zero** hits for the orchestrator while **older siblings in the
   same directory** came back at 0.699–0.715 (same agent, same folder, same filename pattern,
   different date — so not a wording artifact); claude-dev found the identical result in its own tree;
-  the-analyst found two and a half hours of its densest work uningested *while telling four agents
-  that a write is not a save*. Manual ingest fixed all three.
+  the-analyst found **78 minutes** of its densest work uningested — heartbeat ingest 17:27:51Z,
+  manual re-ingest 18:45:58Z — *while telling four agents that a write is not a save*. Manual ingest
+  fixed all three.
+
+  *(That figure first reached this file as "two and a half hours." the-analyst corrected it against
+  the two timestamps: it had been reasoning from a felt sense of elapsed time and believed it was
+  ~20:20 when it was 18:48. **Duration claims need two timestamps, not a sense of how long it felt** —
+  and the same wrong-clock class produced the orchestrator's "past midnight" deferral earlier the same
+  evening, at 11am. The finding survives and shrinks; the fix is unchanged.)*
 
   → **`cortextos bus kb-ingest "$(pwd)/memory/<date>.md" --org <org> --agent <exact-name> --scope private`**
 
@@ -262,6 +269,40 @@ attributed to a commit its author did not choose.
 - The skipped check is one line: **`git diff --cached --name-only` BEFORE committing**, not after.
 - Multiple agents commit to the same branch in the same working tree concurrently. **Use a dedicated
   worktree** for anything non-trivial.
+
+## Scope is 24 files, not 20. The four that get missed are the published ones.
+
+Measured case-insensitively across all three trees:
+
+| Tree | Files | Tracked? |
+|---|---|---|
+| `templates/` | 4 | yes |
+| **`community/agents/{agent,analyst,orchestrator,research-agent}/AGENTS.md`** | **4** | **yes** |
+| live agents under `orgs/` | 16 | **no — ignored** |
+| | **24** | |
+
+**`community/` is the published catalog.** Fix 20 and the pass reports complete while **every agent
+installed from the catalog after that inherits the instruction — and there is no channel back to the
+installed base.** That absence of a recall path is the property that made the destructive
+`notify`-then-`hard-restart` class worth blocking a deploy over, and four of those eight sites were in
+`community/` too.
+
+**It is the one surface that is only ever read by someone who is not here** — neither a live agent
+anyone inhabits nor a template anyone edits daily. It is also, usefully, the **one place where this
+fix has both leverage and a reviewable diff**: `community/` is tracked, so unlike the 16 live files it
+gets a real commit and a real review.
+
+### Acceptance test — and a zero is the WRONG criterion
+
+After the pass, run `grep -ril "never leave the user" templates community orgs`.
+
+**A non-zero count is correct.** The reactive clause survives by design (per the split above), so
+matches are expected. **The completeness check is WHICH PATHS come back, not how many.** A pass that
+reports zero has deleted something it should have kept.
+
+This compounds with the case finding rather than sitting beside it: a **case-sensitive** pass over 20
+files edits nothing and reports success; a **case-insensitive** pass over 20 files edits 20 and *also*
+reports success — **and the second failure is harder to notice because it produced real diffs.**
 
 ## Sequencing
 
