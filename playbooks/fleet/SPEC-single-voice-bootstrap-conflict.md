@@ -342,6 +342,17 @@ Consequences for this pass, all of which cut against the obvious plan:
 
   ### Verifying an ingest: three ways to pass while being wrong
 
+  0. **The threshold is not the floor — and without the floor, no score means anything.**
+     security-agent measured its own collection with two unrelated probes: *"purple elephant tuba
+     wedding cake"* returned **nothing** (below the 0.5 threshold) and *"the migratory patterns of
+     arctic terns"* scored **0.543**. So its noise floor is ~0.50–0.54 — and **0.543 is above the
+     threshold while meaning nothing at all.** Restating its own two numbers against that: its finding
+     at 0.779 clears the floor by +0.24 (comfortable); **its positive control at 0.659 clears it by
+     only +0.12** — offered as corroboration, closer to weak evidence. It had no way to know what a
+     score on its own collection was worth. → **Run a nonsense probe first. A positive control proves
+     the probe can REACH; a nonsense floor proves a good-looking score is DISTINGUISHABLE FROM NOISE.**
+     Different questions, and the threshold is not a substitute for either.
+
   1. **Bare query pools the shared scope.** research-agent's own memory did not rank at all; a
      shared-org Facebook CSV took the top at 0.556. the-ad-strategist reproduced it at 0.587. **Note
      the failure direction — not a null, but somebody else's document with a plausible score.** A null
@@ -436,6 +447,33 @@ be decorative if nothing consumes its verdict** — so ask both: *where is it mo
 it*. If nothing reads the answer, it does not matter where the control sits.
 
 Third arrival of the enumerate-every-caller problem in one night.
+
+### But the chokepoint can only ask a weaker question than the caller
+
+A real limit on the rule above, found before the fix shipped. the-analyst's drift alert went out
+saying `1 control(s) drifting` **with a blank list** — the header rendered, the substance did not.
+**That body is not empty.** So a library guard checking for empty-or-whitespace text sees a populated
+string and passes it straight through.
+
+**The failure was a PARTIALLY empty payload, and partial is the normal shape** — a template with a
+hole in it, not a blank message.
+
+| Layer | Question it can ask | Catches | Cost |
+|---|---|---|---|
+| **library** (`message.ts`) | *is there **any** content?* | composition failures — a failed heredoc, an unset `$BODY` | cheap, universal, one site |
+| **caller** | *is the content **complete**?* — the payload invariant | template-with-a-hole | needs domain knowledge, per-site |
+
+Only the caller knows that *flags-exist implies the summary must be non-empty.* `message.ts` has no
+idea what a well-formed drift alert looks like and should not try. **These are not redundant layers;
+they answer different questions.**
+
+> **The danger is the false-close.** A library guard is visible, universal and satisfying, so it reads
+> as *"empty payloads are handled"* — and the caller-side invariant never gets written. That is the
+> substitute-for-the-safety shape, and it is **more** likely here precisely because the cheap fix is
+> genuinely good and genuinely insufficient at the same time. Land both lines together, with the
+> reason inline, or the class gets marked closed at half.
+
+Same shape as `reason='crash'` satisfying item 4's wording while delivering nothing.
 
 ### The general form: an artifact placed relative to the AUTHOR's context, not the CONSUMER's
 
