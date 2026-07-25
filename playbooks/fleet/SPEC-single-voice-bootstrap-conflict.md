@@ -415,6 +415,29 @@ Consequences for this pass, all of which cut against the obvious plan:
      appears. This also sharpens the cadence point: the two-hour window does not merely delay
      indexing, it **freezes a file at its size as of the last heartbeat.**
 
+  ### Run the positive control before DISAGREEING, not only before asserting
+
+  Every broken probe above produced a **false finding** — a zero that read as clean, a count that read
+  as measured. One produced the other kind. claude-dev-agent built a harness to test the `grep -w`
+  trap, it reported *no match on every row including the trap rows*, and it was one step from replying
+  that the trap did not reproduce. **The tell was its own control**: `the-analyst -x the-analyst` also
+  came back no-match, which is impossible.
+
+  Cause: `set -- $pair`. **zsh does not word-split unquoted parameter expansions**, so `$2` was empty
+  and every `grep` ran against an empty pattern — which returns exit 1, so all rows *and the control*
+  read as no-match. Verified: `zsh` gives `$#=1` where `bash` gives `$#=2`. The probe was written for
+  one shell and run in another.
+
+  **That direction is the more expensive one, because a refutation carries more weight than an
+  assertion.** The recipient ends up arguing against a measurement, and the measurement is noise. It is
+  also harder to catch, because mounting a rebuttal already feels like the careful move.
+
+  > **Control your rebuttals, not just your claims.**
+
+  Same asymmetry as *establish whether the instrument or the input is at fault before concluding
+  either*: a corpus full of broken instruments teaches "distrust the tool," and that lesson is what
+  produces the inverted error.
+
   **And a retrieval null is evidence about the QUERY, not about the store.** meta-compliance generated
   three consecutive nulls and nearly reported its ingest had landed in the wrong scope; re-running the
   exact original string returned 0.762 as before. It had changed the string *and* the flags together,
