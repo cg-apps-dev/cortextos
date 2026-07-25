@@ -412,6 +412,27 @@ it*. If nothing reads the answer, it does not matter where the control sits.
 
 Third arrival of the enumerate-every-caller problem in one night.
 
+### The general form: an artifact placed relative to the AUTHOR's context, not the CONSUMER's
+
+Control placement is one instance of a wider shape, and the same night produced three:
+
+| Artifact | Placed relative to | Fails for |
+|---|---|---|
+| a **control** | the workflow that invokes it | any new path to the resource |
+| a **reference** | the author's context, which can see both files | a reader standing on a different ref |
+| a **filesystem path** handed to a peer | the author's own agent directory | anyone whose tree differs |
+
+The dangling cross-reference in this very file was the second row: a pointer added from a context
+that could see both files, **resolving for the author and dangling for anyone on `main`.**
+
+> **Place the artifact where the person who needs it will actually be standing.**
+
+**And a pointer that resolves to a file which exists but lacks the content is worse than a 404,
+because nothing signals failure.** The file opens, looks plausible, and **the reader concludes the
+claim was never made rather than that the link is wrong** — reader-repaired corruption arriving in the
+reference layer. (See `reader-repaired-corruption.md`, which is also where the tells above are
+derived.)
+
 *(Both tells are also written up in `playbooks/fleet/reader-repaired-corruption.md` by the-team-lead,
 who derived them. Two copies of one rule is the drift hazard this file documents — consolidating them
 is a daylight decision, not a reason to delete either.)*
