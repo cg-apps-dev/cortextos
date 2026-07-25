@@ -425,6 +425,69 @@ one.*
 
 ---
 
+## 7b. `ps` env readability: five dead discriminators, and the redaction rule
+
+Chasing *why* `ps eww` returns 0 env vars for some processes killed five hypotheses. They
+are recorded so nobody re-runs them.
+
+| hypothesis | whose | killed by |
+|---|---|---|
+| the interpreter (hermes vs homebrew) | the-orchestrator | zero-var set spans **both** |
+| process age / long-running | the-orchestrator | wrapper children are young and also 0 |
+| parent-unreadable / child-readable | the-analyst | `81545`=5 → `81549`=**0** → `81579`=13. Readable, unreadable, readable |
+| command-line length crowding out env | the-analyst | **dead backwards**: zero-var mean cmdlen **69**, readable **126** |
+| strictly bimodal, empty band 1..23 | the-analyst | band holds **8** processes (12, 13×6, 19) |
+
+**The mechanism is unresolved and guessing it was not productive.** What *is* established:
+
+- **No partial reads occur** — and the evidence is the **coherence of the var sets, not a
+  gap in the histogram.** Six mcp-remote children show byte-identical 13-var lists
+  (`COLOR EDITOR HOME INIT_CWD LOGNAME NODE PATH PWD SHELL SHLVL USER _
+  __CF_USER_TEXT_ENCODING`); a truncation mechanism does not produce six identical lists.
+  An empty range would have been weak evidence anyway — a gap in 64 samples is a
+  sample-size artifact as easily as a mechanism.
+- **A `> 0` threshold separates unreadable from readable and nothing more.** All 8 band
+  processes have `PATH` set and no token, so each **passes** `>0` and then reads as login
+  mode. The protection is **pid choice**, not the threshold.
+
+> **Do not add "provably sufficient because the band is empty" to the auth note.** It is a
+> true-sounding justification for a correct rule, which is the most durable kind of wrong
+> thing: the rule keeps working, so nobody rechecks the reason.
+
+### Pipeline redaction, not eyeball redaction (security-agent)
+
+Two agents ran the same credential investigation an hour apart. One leaked both tokens into
+three of its own session files; the other leaked nothing. **The only difference was where
+the redaction sat.**
+
+- **Worked:** pipe `ps` into a filter over stdin and print only derived values — the raw
+  argv lines exist in the pipe and never in the transcript. For disk searches, capture into
+  a shell variable and pass `"$TOK"` as an argument, so what gets logged is the unexpanded
+  variable.
+- **Failed:** redact at the *reporting* step. By then the raw lines are already in the
+  session record — including in the very message that says "values redacted".
+
+> **NEVER LET RAW `ps` OUTPUT REACH A TRANSCRIPT.** Pipe it into a filter that emits only
+> fingerprints, lengths and hosts.
+
+**A control that depends on the operator noticing fails on the one occasion the operator is
+busy noticing something else** — and here the operator was busy characterising an exposure.
+That is the same shape as the discard that depends on judgement (§8), the audit that greps
+for a key (§1b), and the acceptance test that depends on remembering which writers share a
+file (§6).
+
+**INVESTIGATING AN EXPOSURE IS ITSELF AN EXPOSURE EVENT.** Three instances in one night — a
+specimen filename copied into eight transcripts, an analysis writeup contaminating the
+retrieval corpus it would be re-tested on, and raw `ps` output persisted to three files.
+**None was prevented by knowing that.** Only a pipeline-level filter prevented one, in the
+single case where someone had built one.
+
+Resolution order for the argv exposure: **rotate first, then the at-rest copies are inert.**
+Nothing needs deleting if the values are worthless — which avoids destroying live session
+records to clean up a credential.
+
+---
+
 ## 8. Method lessons that generalise past this defect
 
 **A guard is a property of its call sites, not of its definition.** the-orchestrator
