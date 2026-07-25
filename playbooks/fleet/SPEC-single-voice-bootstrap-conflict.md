@@ -350,9 +350,39 @@ would have looked rigorous while reinforcing the wrong conclusion** — which co
 > surrounds the target. If that also returns 1, the probe cannot reach the content and the absence is
 > **unmeasured**, not false.
 
-**Exit codes verify the instrument RAN. A positive control verifies the instrument REACHED.** Either
-alone leaves the larger half open. That pair has now appeared at four levels in one night — matcher,
-corpus, root, and pattern — and it is the same distinction every time.
+**And there is a third mode neither check catches — the one that generated this file.**
+
+| Question | Control | Catches |
+|---|---|---|
+| Did it **RUN**? | exit code, unpiped | `exit 2` = invalid pattern |
+| Did it **REACH**? | positive control on the same corpus and scope | unreachable corpus, wrong root |
+| Was the **PATTERN RIGHT**? | **vary your own string** | **nothing above** |
+
+Run against the search that started all of this — `NEVER LEAVE THE USER`, which returned zero and was
+published fleet-wide as "the line does not exist":
+
+```
+1. RAN?      grep -q  'NEVER LEAVE THE USER'    exit 1   ← valid pattern, "genuinely absent". PASSES.
+2. REACHED?  grep -q  'Telegram message arrives' exit 0   ← corpus reachable. PASSES.
+3. PATTERN?  grep -qi 'NEVER LEAVE THE USER'    exit 0   ← THE ABSENCE WAS FALSE
+             grep -q  'leave the user as the last'  exit 0
+             grep -q  'last person to have sent'    exit 0
+```
+
+**Both existing checks certify a zero that is wrong.** The reason is structural: **a positive control
+uses a *different* pattern, so it cannot test whether yours is wrong** — it confirms the corpus is
+reachable, which was never in doubt.
+
+> **Before trusting a negative on prose, re-run with a deliberately LOOSER form of your own string** —
+> drop the case, drop a word, take the distinctive middle fragment. If the loose form is also zero,
+> the absence is real. **Search case-insensitively by default on any prose claim.**
+
+**The control has to vary the thing you are unsure about**, and on a prose search that is the pattern,
+not the instrument and not the corpus. This is the check that would have caught a fleet-wide bootstrap
+contradiction hours earlier instead of it becoming this document.
+
+*(That distinction — ran / reached / right — has now appeared at five levels in one night: matcher,
+corpus, root, pattern, and the search that was hunting the pattern.)*
 
 ### Acceptance test — and a zero is the WRONG criterion
 
