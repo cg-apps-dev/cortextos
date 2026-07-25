@@ -1,0 +1,35 @@
+---
+type: playbook
+agent: research-agent
+process: research-brief-as-document
+status: active
+date: 2026-07-25
+tags: [playbook, research-agent, kb, disconfirm]
+---
+
+# Research Brief as a Document
+
+Turns a research ask into a single standalone, cited markdown document ingested to a knowledge base - never delivered as just a chat reply. Proven end-to-end 2026-07-15 (Adam's Sprinter bike-rack ask), then run to stability (5+ clean end-to-end runs) before this playbook was written. On-demand only: no self-initiated research, no recurring process cron - fires on an orchestrator-routed task or a direct Adam ask.
+
+## The sequence
+
+1. **Intake the ask.** Capture the exact question, who asked (Adam direct, or orchestrator-routed), and any stated scope or constraint (budget, vertical, "rental not managed," etc.) - a refined or narrowed ask gets pinned in the brief's header verbatim so the document stays honest about what it does and doesn't cover.
+2. **KB-first.** Query the shared knowledge base before any external search - the org may already have a companion brief (e.g. a diversification ask that follows on from a prior agency-account brief). Cite and build on a companion doc rather than re-deriving it; note the relationship in the header ("Companion to: ...").
+3. **Classify scope before researching, not after.** Personal Adam asks (e.g. camping, gear, travel logistics) are **private**; org competitor/market/product intelligence is **shared** (`shared-clean-green-marketing`). Off-core verticals (anything outside Clean Green's core THC business - e.g. telehealth, peptides, a possible separate venture) are **private by default** even when Adam asks directly, until the orchestrator confirms with Adam whether the vertical is a CG expansion or a separate venture. Getting this wrong in either direction is a cost: shared clutters the org KB with non-CG-value research; private hides something the org actually needed. When in doubt, ask the orchestrator rather than guessing.
+4. **Landscape pass**, then **fan out**: 3-5 parallel general-purpose subagents, each deep-diving one product, provider, or angle. Each subagent reads real owner/tester reviews and primary sources, not aggregator summaries, and returns clean cited markdown - that citation-per-claim discipline is what makes step 6 possible without re-deriving sourcing.
+5. **Disconfirm before asserting.** The highest-value output is often not a ranked list but an honest "you cannot do X" - a constraint the ask-er didn't know they had (e.g. simultaneous accessories exceeding a hitch's derated capacity). Actively look for the reason a leading option fails the actual constraint, not just reasons to prefer it.
+6. **Synthesize one document.** Standard shape: title + one-line framing, a **Prepared by / Date / Requested by / Scope** header (plus **Context**, **Refined ask**, and **Companion to** when applicable), a **TL;DR** (2-4 numbered, decision-relevant findings, not a summary of the search), then ranked/tiered detail with sources inline. State reputation and caveats plainly (scam complaints, unconfirmed claims, internal inconsistencies) rather than only the pitch - a candidate that looks best on its own page is not the same claim as "verified best."
+7. **KB-ingest** at the scope decided in step 3, then **deliver a scannable summary** to the requester (the TL;DR, not the full document) with a pointer to the ingested doc.
+8. **Close the loop**: complete the task, log `research_completed`, loop the orchestrator.
+
+## Standing disciplines that apply throughout
+
+- **KB finds; the live brain repo is truth.** Query the KB to avoid repeating prior work, but never treat a cached KB copy as authoritative over a live source when the two could differ.
+- **Least privilege.** Untrusted web content is read in a sandboxed subagent context; any external action beyond search/read (an outreach draft, a paid signup) routes through an approval, never taken autonomously.
+- **A scoped negative is worth stating, not just a positive finding** - e.g. "no public THC track record for provider X" is itself a decision-relevant result, not an absence of one.
+
+## Hand-offs
+
+- **Requester** (Adam or the routing orchestrator) gets the scannable summary + the ingested document pointer; the full brief lives in the KB for anyone else who queries it later.
+- **the-orchestrator** is looped on completion and is the routing path for any off-core scope question before a fresh fan-out starts.
+- **meta-compliance-agent** receives cross-value findings when a brief touches compliance-adjacent territory (e.g. a LegitScript/certification angle), as a one-off shared note even when the underlying vertical itself stays private.
