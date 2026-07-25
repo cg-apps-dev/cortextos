@@ -138,18 +138,30 @@ Consequences for this pass, all of which cut against the obvious plan:
   every entry.** → **The ingest is what makes memory durable, not the write** — which inverts how
   this usually feels, since the write seems like the save and the ingest seems like publishing.
 
-- ### ⚠️ DO NOT delete anything by matching the path `orgs/`. There are two, and only one is disposable.
+- ### ⚠️ DO NOT delete anything by matching the path `orgs/`. There are FOUR, and only one is disposable.
 
-  | Path | What it is |
-  |---|---|
-  | `~/cortextos/orgs/…` | **the repo one.** Gitignored at `.gitignore:18`. Live agent trees. |
-  | `~/.cortextos/default/orgs/…` | **the STATE one. Outside the repo entirely.** Holds `knowledge-base/chromadb/chroma.sqlite3` — **588 MB**, and the only durable copy of every agent's memory. |
+  Measured with `find "$HOME" -maxdepth 5 -type d -path "*orgs/clean-green-marketing"`:
 
-  **A pattern match on `orgs/clean-green-marketing` hits both** — verified. So anyone who reads
-  "`orgs/` is gitignored and therefore disposable" and acts on a path match rather than an absolute
-  path **destroys the one durable copy while believing they are clearing ignored junk.** That warning
-  is in this file because this file created the risk. **Use absolute paths. `git clean` cannot touch
-  the state tree; a hand-written `rm` can.**
+  | Path | What it is | `git clean` reaches it? |
+  |---|---|---|
+  | `~/cortextos/orgs/…` | the repo one. Gitignored at `.gitignore:18`. | **yes — the only one** |
+  | `~/.cortextos/default/orgs/clean-green-marketing/knowledge-base/chromadb/chroma.sqlite3` | **the live vector store.** The only durable copy of every agent's memory. | no |
+  | `~/.cortextos-agent-state-backup/orgs/…` | **a state backup** | no |
+  | `~/cortextos-worktrees/*/orgs/…` | **a worktree** | no |
+
+  **A pattern-driven `rm` hits all four — and takes the live store *and* its backup in one command,**
+  removing the recovery path that would have survived losing either alone. Three of the four are
+  outside the repo, so only a hand-written `rm` can reach them. **Use absolute paths. Never a
+  pattern.**
+
+  **This entry has been wrong twice, which is the point.** The first version said "orgs/ is
+  gitignored" with no path — acted on by pattern that is a deletion instruction aimed at the thing it
+  meant to protect. The second version gave `~/.cortextos/default/orgs/knowledge-base/chromadb`,
+  **which does not exist**: the store is one level deeper, *under the org*. So anyone copying that
+  path to protect it would have protected nothing, while their pattern still matched the real one.
+  the-analyst caught it with `find` rather than inference. **Do not use the size to recognise the
+  directory either** — 590 MB is the `.sqlite3` file, 1.3 GB is the containing directory; both are
+  correct measurements of different things.
 
   **The ingest runs on the heartbeat — roughly every two hours — not on write.** So everything banked
   since your last heartbeat is *written and not ingested*. Verified three ways on 07-25: tonight's
@@ -165,11 +177,41 @@ Consequences for this pass, all of which cut against the obvious plan:
   exactly wrong on the day that produces the most.** The fix is to ingest on session-end and after any
   dense banking run, not only on the heartbeat — a cron change, deliberately deferred.
 
-  **And durable is not the same as findable.** research-agent verified its own ingest and the first
-  check *passed while being wrong* — a bare `kb-query` defaults to scope `all`, pooled a shared-org
-  Facebook CSV to the top at 0.556, and its own memory did not rank at all. With
-  `--agent <name> --scope private` it came back first at 0.682. **A future context that queries
-  without flags will conclude the memory was never ingested, and it will be wrong.**
+  **Ingest `MEMORY.md` too, not just the daily file.** The daily file is narrative; **the standing
+  rules are in `MEMORY.md`.** vitalis: 13 of its 17 chunks came from `MEMORY.md`. The orchestrator's
+  `MEMORY.md` is 394 KB against a 151 KB daily. **A command naming only `memory/<date>.md` durably
+  preserves the diary and leaves the rulebook in the single ignored copy** — the inverse of the point.
+
+  ### Verifying an ingest: three ways to pass while being wrong
+
+  1. **Bare query pools the shared scope.** research-agent's own memory did not rank at all; a
+     shared-org Facebook CSV took the top at 0.556. the-ad-strategist reproduced it at 0.587. **Note
+     the failure direction — not a null, but somebody else's document with a plausible score.** A null
+     is obvious; a wrong-but-scored hit is not. → Always `--agent <exact-name> --scope private`.
+     *Not universal:* claude-dev's bare query returned its own file ten times. **Corpus luck, not a
+     property of the method** — use the flags regardless, but do not read a clean bare result as
+     evidence the hazard is gone.
+  2. **Results are not evidence. Semantic retrieval always returns its nearest neighbours and the
+     default threshold is 0.5.** research-agent queried `zzq unicorn tractor mango protocol seventeen`
+     — a string it has never written — and got 0.522 / 0.520 from its own file. Reproduced here:
+     that nonsense probe returns **0.538 / 0.529 / 0.528 / 0.525 / 0.524**. → **Verify by SCORE
+     SEPARATION against a measured floor, not by presence of results.** Run the nonsense probe first
+     to establish your own floor, then require the real probe to clear it visibly. This collection:
+     floor ~0.53, real content 0.691–0.745, so **a margin of ~0.16–0.21 is what a true hit looks
+     like.** A single hit at 0.52 means nothing; an unmeasured floor means the whole check means
+     nothing.
+  3. **Presence is not currency, and this is the worst state.** claude-dev's ingest printed
+     `Deleted 1 stale chunk(s)` before adding 136 — the file **was already in the KB**, as one chunk
+     from a heartbeat when it was a few lines long, and none of the subsequent 148 KB was indexed.
+     **"Is this file in the KB" answers YES while 99% of the content is absent**, so every presence
+     check passes. → Test whether the **current** content is retrievable, not whether the filename
+     appears. This also sharpens the cadence point: the two-hour window does not merely delay
+     indexing, it **freezes a file at its size as of the last heartbeat.**
+
+  **And a retrieval null is evidence about the QUERY, not about the store.** meta-compliance generated
+  three consecutive nulls and nearly reported its ingest had landed in the wrong scope; re-running the
+  exact original string returned 0.762 as before. It had changed the string *and* the flags together,
+  so it could not separate the effects — and said so rather than claiming anything.
 
 - **Storage consequence for this pass, independent of the availability-versus-operative argument:**
   playbooks are tracked and reviewable; `MEMORY.md` is neither. **A rule written into a playbook is in
