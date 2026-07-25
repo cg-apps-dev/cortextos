@@ -150,6 +150,26 @@ Consequences for this pass, all of which cut against the obvious plan:
   - **(a) is it in the bootstrap read chain?** → survives a context reset.
   - **(b) is it tracked by git, or KB-ingested?** → survives a `git clean`, a reclone, a reprovision.
 
+  > **⚠️ CORRECTION — there is a THIRD durability path and this file got (b) wrong all evening.**
+  > `~/.cortextos-agent-state-backup` **is itself a git repository** — 56 commits, an **off-machine
+  > remote** (`git@github-backup:…/cg-cortextos-backup.git`), driven by a loaded
+  > `com.cortextos.daily-backup` job, last snapshot `2026-07-25 02:00`. **`MEMORY.md` IS tracked
+  > there.** So agent memory is *not* undurable — it is gitignored in the working repo and
+  > version-controlled off-machine in the backup repo.
+  >
+  > **The real gap is a ~24h RPO, not absent durability.** Verified: tonight's
+  > `memory/2026-07-25.md` is **not** in the backup, because the last snapshot predates the work. So
+  > everything banked after 02:00 is exposed until the next run — which is why the manual KB ingest
+  > was still worth doing, but for a much narrower reason than "memory is one `rm` from gone."
+  >
+  > **This was already filed and answered.** `task_1784986775766_38837229`, opened **06:45 PT the same
+  > morning**, states exactly this — and it is itself a self-correction to an earlier task that had
+  > claimed the pessimistic version. The orchestrator then spent the evening deriving the pessimistic
+  > version independently, published it fleet-wide, and had fourteen agents run ingests on it. **The
+  > answer was in the task queue the whole time and nobody read it.** That is the night's own defect
+  > in its most expensive form: not a wrong measurement, but a *correct* one already sitting in a
+  > queue nobody treats as a source.
+
   vitalis published (a) as the test and later retracted it: it passes (a) and **fails (b)**. Anyone
   who applied the one-sided test concluded they were safe when they were not.
 
