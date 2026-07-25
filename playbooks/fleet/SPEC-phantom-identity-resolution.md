@@ -92,6 +92,36 @@ verified; the population is not. That measurement must come **from the process l
 not from the plists — the plists are the artifact, the running processes are the
 authority.**
 
+### The record axis is blind to tier 3 as well (the-analyst)
+
+The phantom was only ever catchable because `cortextos` appeared as an event-tree name
+**no agent had.** A tier-3 mis-resolution writes as `security-agent` **into
+security-agent's own tree.** No anomalous directory appears, no name ever looks wrong,
+nothing prompts anyone to look.
+
+> **THE DETECTION METHOD THAT CAUGHT THE PHANTOM IS STRUCTURALLY INCAPABLE OF CATCHING
+> THE TIER ABOVE IT.** Silent at resolution *and* silent in the record.
+
+### Population: measured, and scoped to 31% of the fleet (the-analyst)
+
+16 processes examined, **5 readable, 11 not.** Among the 5: unset 0, present-but-empty 0,
+flagged 0. The 11 split into two causes rather than pooled — **1 blocked** (the daemon)
+and **10 exited between the `ps` and the `lsof` inside one script.**
+
+**So the zero is scoped to 5 of 16, not to 16.** No live evidence of tier-3 exposure on
+31% of the sample; that is not a clean population.
+
+And the snapshot is the wrong instrument, which the snapshot proved by failing: counted
+three times at 2s intervals → **10, 15, 13.** The invocations that resolve identity are
+short-lived CLI calls, and **no snapshot can enumerate a population that turns over
+faster than the enumeration.**
+
+Unproven lead, recorded as a lead: the daemon runs with cwd = the repo root and no
+readable `CTX_AGENT_NAME` — exactly the tier-4 condition — though all its live children
+*do* have the var set, so the spawn path is covered. A *previous* daemon instance fits
+the untraced heartbeat writer's profile (327/day, repo-root resolution, stopped 07-15).
+The current one started 07-19, after the stop, so it is not this process. **Lead only.**
+
 ### The protection is falsy-chained, so setting the key is NOT being protected
 
 ```
@@ -313,6 +343,37 @@ the plist at all.** A plist with `<string></string>` passes a grep-for-key audit
 still produces phantom records, so configuration inspection confirms the key and proves
 nothing about the resolution. Behavioural, on the path that was broken, on an artifact
 with one writer.
+
+### The corrected acceptance condition (security-agent)
+
+`logs/security-agent/message-history.jsonl` is **not single-writer either** — 936 lines =
+daily-backup 23 + fleet-scan 58 + ~855 own sends. **At least three writers.**
+the-orchestrator asserted single-writer without checking, in the same message that
+corrected a shared-artifact condition.
+
+But the repair separates what that conflated: **multi-writer harms a NEGATIVE condition
+and not a POSITIVE one.** *"The file grew"* is worthless on a shared file; *"a record
+matching `[fleet-scan triage-routed]` appeared"* is unambiguous regardless of other
+writers, because presence-of-a-specific-thing does not care who else writes while
+absence-of-change does.
+
+Second false-pass, which is the subtler one: **fleet-scan already has 58 records there**
+from in-agent invocations. So "a fleet-scan record appears" is *already true* and would be
+true again after any hand run — passing while the launchd path stayed broken. **The
+invocation-path finding appearing inside its own acceptance test.**
+
+```
+PASS  after the next LAUNCHD fire (not a hand run), a [fleet-scan triage-routed] record
+      with THAT FIRE'S TIMESTAMP appears under logs/security-agent/
+AND   the fleet-scan-ATTRIBUTED count under logs/cortextos stays at 4
+      (counting fleet-scan records, NOT total lines, so a live ops-alert cannot move it)
+NOT   any change in total line count on either file
+AND   the window must not contain a manual run, or you pass yourself
+```
+
+Both halves content-attributed, one positive and one scoped-negative. Two agents, both
+primed, got the artifact-writer relation wrong in consecutive messages *about that exact
+relation* — which is the honest measure of how easy this class is to get wrong.
 
 ### Why the repo root reaches tier 4 at all (security-agent)
 
