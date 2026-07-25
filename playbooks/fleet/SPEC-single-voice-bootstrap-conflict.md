@@ -151,6 +151,20 @@ Consequences for this pass, all of which cut against the obvious plan:
   is in this file because this file created the risk. **Use absolute paths. `git clean` cannot touch
   the state tree; a hand-written `rm` can.**
 
+  **The ingest runs on the heartbeat — roughly every two hours — not on write.** So everything banked
+  since your last heartbeat is *written and not ingested*. Verified three ways on 07-25: tonight's
+  `memory/2026-07-25.md` returned **zero** hits for the orchestrator while **older siblings in the
+  same directory** came back at 0.699–0.715 (same agent, same folder, same filename pattern,
+  different date — so not a wording artifact); claude-dev found the identical result in its own tree;
+  the-analyst found two and a half hours of its densest work uningested *while telling four agents
+  that a write is not a save*. Manual ingest fixed all three.
+
+  → **`cortextos bus kb-ingest "$(pwd)/memory/<date>.md" --org <org> --agent <exact-name> --scope private`**
+
+  **The ingest cadence IS the durability window, and a two-hour window is fine on a quiet day and
+  exactly wrong on the day that produces the most.** The fix is to ingest on session-end and after any
+  dense banking run, not only on the heartbeat — a cron change, deliberately deferred.
+
   **And durable is not the same as findable.** research-agent verified its own ingest and the first
   check *passed while being wrong* — a bare `kb-query` defaults to scope `all`, pooled a shared-org
   Facebook CSV to the top at 0.556, and its own memory did not rank at all. With
