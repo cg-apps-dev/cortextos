@@ -396,12 +396,25 @@ ready-to-be-posted — not the workflow that currently happens to invoke it.
 > resources do not.** Every new path is a new way to miss a workflow-mounted control, and you cannot
 > enumerate future paths.
 
-**And it predicts where to look next rather than only explaining these two:** any control **invoked
-BY** a process rather than **attached TO** a thing has this property — **and the tell is that you
-describe it as a step.** ("Then the scanner runs." "Then it validates the recipient.")
+**And it predicts where to look next rather than only explaining these two.** There are **two failure
+modes with one symptom** — a control that exists and does nothing — and **each needs its own tell,
+because a control can pass one check while failing the other:**
 
-This is the third arrival of the enumerate-every-caller problem in one night; the crash hook was the
-first, where the guard was reached but its rejection was discarded by a no-op callback.
+| Mode | Tell | Question |
+|---|---|---|
+| **NEVER REACHED** | you describe the control as **"a step"** — you can only say where it runs by naming a process | *Where is it mounted?* |
+| **REACHED THEN IGNORED** | the call's result is **not assigned, checked, or awaited** — fire-and-forget, an empty callback, a discarded exit code | ***What reads the answer?*** |
+
+**The crash hook is the second mode and the first tell is blind to it.** Its guard *was* reached; the
+rejection was discarded by `() => {}`. **A control can be perfectly mounted on the resource and still
+be decorative if nothing consumes its verdict** — so ask both: *where is it mounted*, and *who reads
+it*. If nothing reads the answer, it does not matter where the control sits.
+
+Third arrival of the enumerate-every-caller problem in one night.
+
+*(Both tells are also written up in `playbooks/fleet/reader-repaired-corruption.md` by the-team-lead,
+who derived them. Two copies of one rule is the drift hazard this file documents — consolidating them
+is a daylight decision, not a reason to delete either.)*
 
 ## Scope is 24 files, not 20. The four that get missed are the published ones.
 
