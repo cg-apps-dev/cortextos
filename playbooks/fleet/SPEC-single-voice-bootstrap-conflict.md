@@ -323,6 +323,37 @@ be skipped as "not a real agent."
 That is what makes the acceptance test below **mandatory rather than tidy: for three quarters of the
 files it is the only evidence that exists.**
 
+### Every grep in this file is an instruction to someone on a different engine
+
+**8 of the 13 fleet playbooks on `main` embed `grep` steps, and they are not portable.** Measured: the
+pattern `resolvePaths(agent` matches as a **literal** on one engine (exit 0) and is wrapped into
+`(?:resolvePaths(agent)` — an unclosed group — on another, printing `0 matches for X` and exiting 2.
+**Same pattern, two outcomes. A verification step written here passes for some agents and is
+unmeasured for others, and the author cannot know which reader gets which.**
+
+So any step in this file whose output is a **negative** must carry its own check, beside it, not in a
+broadcast:
+
+> **Run it unpiped and echo `$?`.** `exit 0` = found · `exit 1` = genuinely absent · **`exit 2` =
+> UNMEASURED, do not report it.** Unpiped is not optional: `$?` in a pipeline is the *last* command's,
+> so `| head` or `| wc -l` silently substitutes the formatter's exit for the measurement's.
+
+**But scope that honestly — it catches patterns that cannot RUN, not patterns aimed at nothing.**
+security-agent tested it against its own ten instances before adopting it: **both its failed probes
+returned `exit 1`**, because its patterns were syntactically valid and the strings really were absent
+*in that form*. `exit 1` was the correct answer to the wrong question. **With an exit code attached it
+would have looked rigorous while reinforcing the wrong conclusion** — which covers one of its ten, not nine.
+
+**What covers the other nine is a positive control on the probe:**
+
+> **Before believing an absence, prove your pattern can match something.** Grep for a string you know
+> surrounds the target. If that also returns 1, the probe cannot reach the content and the absence is
+> **unmeasured**, not false.
+
+**Exit codes verify the instrument RAN. A positive control verifies the instrument REACHED.** Either
+alone leaves the larger half open. That pair has now appeared at four levels in one night — matcher,
+corpus, root, and pattern — and it is the same distinction every time.
+
 ### Acceptance test — and a zero is the WRONG criterion
 
 After the pass, run `grep -ril "never leave the user" templates community orgs`.
