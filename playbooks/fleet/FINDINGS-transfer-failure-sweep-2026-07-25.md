@@ -32,8 +32,50 @@ the one rule with a perfect record precisely because it required nobody to notic
 produced roughly twenty prose lessons and exactly one control with a perfect record; the-orchestrator
 violated four of their own written rules in the session they wrote them. So each pair below is marked
 **MECHANICAL** (closable by a check, a grep, a fixture assertion, or a deleted instruction) or
-**PROSE** (closable only by better wording). **Seven of ten are mechanical.** Rank the mechanical
-ones above the prose ones regardless of how severe the prose ones sound.
+**PROSE** (closable only by better wording). Rank the mechanical ones above the prose ones regardless
+of how severe the prose ones sound.
+
+### How to count this document — assert the structure, do not re-derive it
+
+```
+grep -cE '^## [0-9]+\.'          →  11   pairs          (structural, cannot drift)
+grep -cE '^> \*\*MECHANICAL'     →   9   mechanical
+grep -cE '^> \*\*PROSE'          →   2   prose
+grep -cE 'MECHANICAL|PROSE'      →  UNSTABLE — do not use
+```
+
+**The three structural counts self-check against this file and are verified to.** The naive
+word-count is deliberately left unpinned, and the reason is a third-order instance of the same
+defect: **it read 17 before this section existed, and writing this section moved it to 20.** A count
+that changes when you describe the count cannot be asserted at all — so it is named as unusable
+rather than given a number that would go stale in the act of publishing it.
+
+**The gap between 11 and "however many words" IS a finding, so it is printed rather than tidied
+away.** A reader counting the verdict *words* also counts every occurrence in this paragraph. On first reading
+of this file the-orchestrator invented a pattern for a format they had not looked at, got **zero**,
+caught it only because a zero on a just-described document is absurd — then corrected to **seventeen**
+and reported it. *Both* were wrong, thirty seconds apart, in opposite directions, **on the document
+that catalogues that exact error.**
+
+> **IMPLAUSIBILITY CAUGHT THE ZERO AND MISSED THE SEVENTEEN — and that is failure by construction,
+> not by chance.** It fires only on *absurd* wrongness, so **the corrected-but-still-wrong number is
+> by definition the plausible one.** The consequence is the part that travels: **a second attempt at
+> a broken measurement is more dangerous than the first, because it arrives wearing the authority of
+> a correction and lands inside the plausible range.** Every retraction in this incident was a second
+> attempt.
+
+**This also demotes implausibility from "the thing that saved us four times tonight" to "the thing
+that saves us only from the errors we would have caught anyway."** Hence the assertion block above: a
+number that asserts itself beats one a reader re-derives with a pattern they invent — **the mechanical
+column applied to the document that introduced the mechanical column.**
+
+**And it caught one of mine.** "Seven of ten are mechanical" stood here until this edit. It was
+correct for a draft in which §10 was the `README.md` staleness pair; when that was replaced by the
+mechanical alert-path pair, **the count sentence sat outside the edited span and survived**. So the
+delivery message said *seven mechanical, three prose* and the true figures were **8 / 2 at delivery
+and 9 / 2 now** — the-orchestrator ranked the list against a number that was wrong when they got it.
+That is `SPEC-phantom`'s span-replace class committed by this file's own author, inside this file,
+and it is why the counts above are commands rather than prose.
 
 **Kill rate — read this before the list.** Five further candidates were verified and **two were
 killed on the DO-differently test**, both by a single grep:
