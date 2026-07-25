@@ -27,7 +27,7 @@ import { IPCClient } from '../daemon/ipc-server.js';
 import { TelegramAPI } from '../telegram/api.js';
 import { logOutboundMessage, cacheLastSent } from '../telegram/logging.js';
 import { appendContextFooter } from '../telegram/context-footer.js';
-import type { Priority, Task, TaskStatus, EventCategory, EventSeverity, ApprovalCategory, ApprovalStatus, OrgContext, CronDefinition } from '../types/index.js';
+import type { Priority, Task, TaskStatus, EventCategory, EventSeverity, ApprovalCategory, ApprovalStatus, OrgContext, CronDefinition, BusPaths } from '../types/index.js';
 
 /**
  * Check if the org requires deliverables and the task has none attached.
@@ -70,6 +70,143 @@ function checkDeliverableRequirement(taskId: string, frameworkRoot: string, org:
 
 export const busCommand = new Command('bus')
   .description('Bus commands for agent messaging, tasks, and events');
+
+const SEND_MESSAGE_REPLY_TO_RE = /^[0-9]{13}-[a-z0-9-]+-[a-z0-9]{5}$/;
+export const SEND_MESSAGE_REJECTED_PREFIX = 'CORTEXTOS_SEND_MESSAGE_REJECTED:';
+
+type ReplyToLookupStatus = 'found' | 'absent' | 'unresolvable' | 'older-than-retained';
+
+export interface SendMessageReplyToValidation {
+  ok: boolean;
+  error?: string;
+  warning?: string;
+  lookupStatus?: ReplyToLookupStatus;
+}
+
+function replyToTimestamp(id: string): number | null {
+  const raw = id.split('-', 1)[0];
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function messageIdsInDir(dir: string): string[] {
+  const ids: string[] = [];
+  for (const file of readdirSync(dir).filter(f => f.endsWith('.json'))) {
+    try {
+      const parsed = JSON.parse(readFileSync(join(dir, file), 'utf-8'));
+      if (parsed && typeof parsed.id === 'string') {
+        ids.push(parsed.id);
+      }
+    } catch {
+      // Individual corrupt inbox files should not block unrelated sends.
+    }
+  }
+  return ids;
+}
+
+export function findReplyToInRetainedInbox(paths: { ctxRoot: string }, agentName: string): (replyTo: string) => ReplyToLookupStatus {
+  return (replyTo: string): ReplyToLookupStatus => {
+    const inflightDir = join(paths.ctxRoot, 'inflight', agentName);
+    const processedDir = join(paths.ctxRoot, 'processed', agentName);
+    if (!existsSync(inflightDir) || !existsSync(processedDir)) {
+      return 'unresolvable';
+    }
+
+    let ids: string[];
+    try {
+      ids = [...messageIdsInDir(inflightDir), ...messageIdsInDir(processedDir)];
+    } catch {
+      return 'unresolvable';
+    }
+
+    if (ids.includes(replyTo)) return 'found';
+
+    const retainedTimestamps = ids
+      .map(replyToTimestamp)
+      .filter((ts): ts is number => ts !== null);
+    if (retainedTimestamps.length === 0) return 'unresolvable';
+
+    const targetTimestamp = replyToTimestamp(replyTo);
+    if (targetTimestamp !== null && targetTimestamp < Math.min(...retainedTimestamps)) {
+      return 'older-than-retained';
+    }
+
+    return 'absent';
+  };
+}
+
+export function validateSendMessageReplyTo(
+  replyTo: string | undefined,
+  paths: { ctxRoot: string },
+  agentName: string,
+): SendMessageReplyToValidation {
+  if (!replyTo) return { ok: true };
+
+  if (!SEND_MESSAGE_REPLY_TO_RE.test(replyTo)) {
+    return {
+      ok: false,
+      error: `Invalid reply_to '${replyTo}'. Use the exact msg_id from the inbound message header, or omit reply_to.`,
+    };
+  }
+
+  const lookupStatus = findReplyToInRetainedInbox(paths, agentName)(replyTo);
+  if (lookupStatus === 'found') return { ok: true, lookupStatus };
+
+  if (lookupStatus === 'unresolvable') {
+    return {
+      ok: true,
+      lookupStatus,
+      warning: `Warning: could not verify reply_to '${replyTo}' because the retained inbox is unreadable. Message will be sent, but the reply may not ACK/thread correctly.`,
+    };
+  }
+
+  if (lookupStatus === 'older-than-retained') {
+    // This deny depends on processed/ remaining unpruned. If partial retention is
+    // added later, legitimate old replies can land here and this policy must be
+    // revisited instead of inheriting the new retention boundary silently.
+    return {
+      ok: false,
+      lookupStatus,
+      error: `Invalid reply_to '${replyTo}'. It is older than the retained inbox window, so it cannot be verified or ACKed. Omit reply_to for an unthreaded send.`,
+    };
+  }
+
+  return {
+    ok: false,
+    lookupStatus,
+    error: `Invalid reply_to '${replyTo}'. It is not a message in your retained inbox, so it will not ACK/thread correctly. Use the exact msg_id from the inbound message header, or omit reply_to.`,
+  };
+}
+
+export function sendMessageTargetAgentExists(projectRoot: string, to: string): boolean {
+  const orgsDir = join(projectRoot, 'orgs');
+  if (!existsSync(orgsDir)) return false;
+
+  try {
+    for (const org of readdirSync(orgsDir)) {
+      if (existsSync(join(orgsDir, org, 'agents', to))) {
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
+export function logSendMessageRejection(
+  paths: BusPaths,
+  agentName: string,
+  org: string,
+  metadata: Record<string, unknown>,
+): void {
+  logEvent(paths, agentName, org, 'message', 'agent_message_rejected', 'warning', metadata);
+}
+
+function sendMessageRejectionLine(message: string): string {
+  return `${SEND_MESSAGE_REJECTED_PREFIX} ${message}`;
+}
 
 export interface AgentAccountCliRow {
   org: string;
@@ -228,26 +365,42 @@ busCommand
 
     const env = resolveEnv();
     const paths = resolvePaths(env.agentName, env.instanceId, env.org);
-
-    // Warn if target agent doesn't exist (check project dir)
-    const { existsSync } = require('fs');
-    const { join } = require('path');
-    const projectRoot = env.projectRoot || env.frameworkRoot || process.cwd();
-    const orgsDir = join(projectRoot, 'orgs');
-    let agentExists = false;
-    if (existsSync(orgsDir)) {
-      const { readdirSync } = require('fs');
+    const replyToValidation = validateSendMessageReplyTo(effectiveReplyTo, paths, env.agentName);
+    if (!replyToValidation.ok) {
       try {
-        for (const org of readdirSync(orgsDir)) {
-          if (existsSync(join(orgsDir, org, 'agents', to))) {
-            agentExists = true;
-            break;
-          }
-        }
-      } catch { /* skip */ }
+        logSendMessageRejection(paths, env.agentName, env.org, {
+          to,
+          priority,
+          reply_to: effectiveReplyTo ?? null,
+          reason: 'invalid_reply_to',
+          error: replyToValidation.error,
+          lookup_status: replyToValidation.lookupStatus ?? null,
+        });
+      } catch { /* best-effort visibility; hard fail remains authoritative */ }
+      // Match the invalid-priority precedent above: this is a hard validation
+      // failure, not a warning, because continuing would silently mis-thread.
+      console.error(sendMessageRejectionLine(replyToValidation.error ?? 'Invalid reply_to.'));
+      process.exit(1);
     }
-    if (!agentExists) {
-      console.error(`Warning: agent '${to}' not found in project. Message will be queued but may never be read.`);
+    if (replyToValidation.warning) {
+      console.error(replyToValidation.warning);
+    }
+
+    // Hard-fail if target agent doesn't exist. This follows the same validation
+    // precedent as invalid priority rather than the old warn-and-continue shape:
+    // a queued message to a nonexistent agent is not a partial success.
+    const projectRoot = env.projectRoot || env.frameworkRoot || process.cwd();
+    if (!sendMessageTargetAgentExists(projectRoot, to)) {
+      try {
+        logSendMessageRejection(paths, env.agentName, env.org, {
+          to,
+          priority,
+          reply_to: effectiveReplyTo ?? null,
+          reason: 'unknown_agent',
+        });
+      } catch { /* best-effort visibility; hard fail remains authoritative */ }
+      console.error(sendMessageRejectionLine(`Invalid target agent '${to}'. Agent not found in project; message was not queued.`));
+      process.exit(1);
     }
 
     const msgId = sendMessage(paths, env.agentName, to, priority as Priority, text, effectiveReplyTo);
