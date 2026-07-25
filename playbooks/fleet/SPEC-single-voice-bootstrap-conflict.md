@@ -63,9 +63,15 @@ deliberately.
    > reader; it was one agent using a *different instrument* — splitting the string on sentence
    > boundaries instead of eyeballing it. When a claim is confirmed by many and checked by none,
    > the confirmations are one observation, not seven.
-2. **Line numbers drift per agent:** 386 (vitalis, security), 389 (claude-dev), 392 (mmb), 398
-   (the-analyst), 409 (ad-strategist), 418 (team-lead), 427 (cro). → **Key the pass on the STRING,
-   never a line number.**
+2. **Line numbers drift per agent:** **381 (the-orchestrator)**, 386 (vitalis, security), 389
+   (claude-dev), 392 (mmb), 398 (the-analyst), 409 (ad-strategist), 418 (team-lead), 427 (cro).
+   **Eight distinct values across nine agents**, and 381 was found only when the orchestrator finally
+   checked its own file — after cataloguing sixteen others. → **Key the pass on the STRING, never a
+   line number.**
+
+   *The agent enforcing the single voice carries the instruction to violate it, marked CRITICAL, with
+   its override in a memory note that cannot outrank it. The census was built by the one agent missing
+   from it.*
 
    **And match CASE-INSENSITIVELY, or the pass silently skips every file and reports success.**
    The file text is sentence case — `Never leave the user`. Measured on `templates/agent/AGENTS.md`:
@@ -101,7 +107,7 @@ deliberately.
 
 | State | Agents | Risk on next restart |
 |---|---|---|
-| Override in a memory note only | claude-dev `MEMORY.md:87-88`, team-lead `:111`, mmb `:398`, the-analyst, cro | Note cannot outrank CRITICAL. Resolves toward **sending**. |
+| Override in a memory note only | **the-orchestrator `AGENTS.md:381`, override in `MEMORY.md` only — nothing in `AGENTS.md` or `GUARDRAILS.md`**, claude-dev `MEMORY.md:87-88`, team-lead `:111`, mmb `:398`, the-analyst, cro | Note cannot outrank CRITICAL. Resolves toward **sending**. |
 | **Override nowhere at all** | **the-ad-strategist** | Sees an *uncontested* CRITICAL instruction. Has been holding single-voice from conversational context alone. |
 | **Override in a lower-ranked FILE** | **security-agent** `SOUL.md:57` | *"Routine all-clear status can stay quiet"* permits silence but **never contradicts initiate-always**, and `SOUL.md` has no principled claim to outrank a CRITICAL line in `AGENTS.md`. **Closer to the uncontested case than the carve-out makes it look.** |
 | Split already running | vitalis | — |
