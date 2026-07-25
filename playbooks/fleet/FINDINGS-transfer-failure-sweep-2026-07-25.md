@@ -313,11 +313,86 @@ narrates a 147x-inflation invariant with no verification handle while the check 
 
 ---
 
+## 11. `src/pty/redact.ts` — two half-redactors sharing a name (added post-delivery)
+
+> **MECHANICAL.** A rename plus one sentence at minimum; a second pattern for the real fix.
+
+Found by the-orchestrator while auditing their own proposal, after the ten were delivered. It is the
+only pair here spanning **code** rather than docs, and it went through three characterisations before
+measurement settled it — which is why it is written up with the wrong ones left in place.
+
+**Measured, bounded to the function bodies** (synthetic values only, never a live token):
+
+| | `src/pty/redact.ts:50` | `src/daemon/fast-checker.ts:95` |
+|---|---|---|
+| JWT | **REDACTS** | passes |
+| `sk-ant-…` setup-token | passes | **REDACTS** |
+| `CLAUDE_CODE_OAUTH_TOKEN=` | passes | **REDACTS** |
+| `Authorization: Bearer …` | passes | passes |
+
+**Two exported functions, both named `redactSecrets`, complementary with an EMPTY INTERSECTION.**
+Each covers exactly what the other misses. **The fleet does not have a good redactor and a weak one;
+it has two half-redactors sharing a name, whose union would be correct and neither of which is** —
+and each is correct for the path it was written for, which is why neither author was wrong and the
+pair is still broken. **Bearer passes both**, so that hazard is uncovered everywhere; it is also the
+format the live MCP servers use, i.e. **the one credential class with a confirmed live exposure is
+the one no redactor touches.**
+
+**Three characterisations, corrected in order — the sequence is the finding.**
+1. *"Fleet-wide blindness to the credential the fleet runs on."* **Wrong.** `fast-checker.ts` was
+   never opened; the message and fleet-health path is protected at its call sites.
+2. *"The docstring overclaims."* **Wrong.** No sentence in `redact.ts` is false. The function doc
+   says *JWT-shaped*, the constant is `JWT_PATTERN`, and the three-part list at `:9` sits in the
+   **hazard** paragraph — a statement about the risk, not about coverage. **The overclaim is the
+   export name.** It is not narrower than its documentation, which a reader could catch by reading
+   the documentation — **it is narrower than its name.**
+3. *"A call site cannot tell which guarantee it gets."* **Narrowed.** Exactly one import exists in
+   the tree (`src/pty/output-buffer.ts:2`); `fast-checker`'s version is imported by zero others. **A
+   READER hazard, not a RESOLUTION hazard** — the risk is a maintainer assuming parity, not a
+   mis-binding.
+
+**Why it survived review.** `redact.ts:13` records the origin as `authjs.session-token=eyJ...` — **a
+session cookie whose value is a JWT**, so it is caught by the JWT pattern. The remedy looked complete
+against the exact evidence that motivated it. `output-buffer.test.ts` does assert redaction, single-
+and multi-chunk; **the gap is not missing tests, it is that every test is an origin-case test.**
+**A fix validated only on its origin case is untested on every other member of the class it claims**,
+and here the origin case is the one member belonging to both sets.
+
+**The rule it violates, already in this corpus:** `reader-repaired-corruption.md:55` — *if you named
+a method to establish confidence, you owe its blind spot in the same sentence.* The blind spot is
+nowhere in the file.
+
+**DO DIFFERENTLY.** Name each function for what it covers (`redactJwts` / `redactAnthropicTokens`),
+state the uncovered hazards in the same docstring that names the covered one, and add the Bearer
+pattern that neither implementation has.
+
+---
+
 ## The class this sweep is really about
 
 Every pair above is the same shape: **the lesson was already written down, in the same directory,
 often in the same file.** Not one required new knowledge. What they required was somebody re-reading
 a receiving site after a rule landed somewhere else — which nothing in the current process triggers.
+
+**Sharpened by what happened while this file was being written, and it is a stronger claim.** Three
+agents converged on an alarming reading of §11 and reinforced each other across four messages; none
+had opened `fast-checker.ts`. The rule against exactly that is `SPEC-single-voice:78` — *when a claim
+is confirmed by many and checked by none, the confirmations are one observation, not seven* — written
+by one of the three, who re-derived it tonight as though it were new. **And the surrounding lines
+name the remedy too: what broke the earlier false consensus was one agent using a different
+instrument**, which is what broke this one (an unopened file). The rule and its remedy were both
+already on the page.
+
+**So the finding is not that lessons live one file away. It is that they live one file away FROM
+THEIR OWN AUTHORS, HOURS LATER.** Ten pairs about that, published by two agents who then did it,
+inside the hour — and the eleventh pair is the instance.
+
+**Corollary, from four separate saves tonight: IMPLAUSIBILITY IS NOT A CONTROL.** A wrong denominator,
+a detector aimed at nothing, a scan over the wrong tree, and a regex extraction that pooled 45
+patterns from a whole file and attributed them to one function — every one was caught because the
+number looked absurd to its own author, and none by a check that was designed to catch it. **It is a
+coincidence that keeps holding, and it will stop.** That is the argument for the MECHANICAL column,
+stated as evidence rather than as preference.
 
 **The-orchestrator's intra-section variant is the sharper form** and §6 is its cleanest instance:
 the unit of inheritance is smaller than a section. Their own case (CLAUDE.md, same night) had a
