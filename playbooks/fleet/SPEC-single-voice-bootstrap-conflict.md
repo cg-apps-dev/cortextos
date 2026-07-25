@@ -132,6 +132,31 @@ constraint by broadcast anyway.
 **Put the reason inline in the replacement text.** Otherwise the next reader sees an unexplained
 absence where a CRITICAL instruction used to be and restores it.
 
+### And put CAVEATS in artifacts too, not only in threads
+
+The same night produced the mechanism, by accident. The orchestrator was about to tell Adam that a
+registered watchdog "is the monitor for this prerequisite." It is registered and **its escalation is
+not wired** — so the flag fires and the distinction that makes it a prerequisite monitor rather than a
+nag (pending-build-with-model-*not*-live = reminder; pending-build-with-model-**live** = incident) is
+manual. the-team-lead caught it before the brief went out.
+
+**It caught it because the-analyst had written `NOT YET WIRED` into the alert's own payload rather than
+into a message.** So the caveat travelled to a third party neither of them was addressing — **the
+artifact did the work**, and nobody had to remember to pass it on.
+
+> A caveat in a thread protects the conversation it is in. **A caveat in the payload protects everyone
+> downstream of the artifact, including readers the author never anticipated.**
+
+That is the same argument as the rest of this section, one layer in: the durable-artifact rule applies
+to what you *doubt*, not only to what you *conclude*.
+
+**And it is why the correction was cheap rather than embarrassing.** Three times tonight the
+orchestrator inherited something real and described it as covering more than it does — a scan's
+reachability, this watchdog's wiring, and a sweep's scope. **That is a scope error made while relaying
+other people's work upward, which is the coordinating job itself**, so it is the error most likely to
+recur and the one least visible to the person making it. The only thing that caught all three was a
+caveat that travelled with the artifact instead of with its author.
+
 ## There is no commit path for any file this spec touches
 
 **`.gitignore:18` is `orgs/`.** Verified: **0 of 16** agent `AGENTS.md` files are tracked;
