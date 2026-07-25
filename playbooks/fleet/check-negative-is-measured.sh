@@ -51,6 +51,34 @@ expect "3. PATTERN?  distinctive middle fragment" "$d" 0 "ABSENCE WAS FALSE"
 grep -q 'last person to have sent' "$F"; e=$?
 expect "3. PATTERN?  leading words dropped" "$e" 0 "ABSENCE WAS FALSE"
 
+# --- 4. LINE CONTINUATION ----------------------------------------------------
+# Second axis of the same defect: A PATTERN THAT DOES NOT MATCH THE TEXT FOR A
+# REASON THE PATTERN CANNOT SEE. Axis 1 was case. This is line structure.
+# Real instance 2026-07-25: the-analyst grepped its own cron scripts for bus calls
+# ending in >/dev/null and got ZERO across three files -- because the redirect sits
+# on a CONTINUATION LINE after a backslash. Joining continuations first gave 12.
+# Caught by implausibility (it knew it had written them), not by design.
+CONT="$(mktemp)"; trap 'rm -f "$CONT"' EXIT
+printf '%s\n' 'cortextos bus log-event action thing info \' '    --meta "{}" >/dev/null 2>&1' > "$CONT"
+grep -q 'log-event.*>/dev/null' "$CONT"; f=$?
+expect "4. CONTINUATION  single-line grep over a wrapped call" "$f" 1 "reads as absent -> FALSE ZERO"
+# Join continuations, then match. This is the fix, not a second pattern.
+perl -0pe 's/\\\s*\n\s*/ /g' "$CONT" | grep -q 'log-event.*>/dev/null'; g=$?
+expect "4. CONTINUATION  continuations joined first" "$g" 0 "ABSENCE WAS FALSE"
+
+# --- 5. SPECIFIC BUT NOT SENSITIVE -------------------------------------------
+# Third axis, and the one no negative control can reach: A NEGATIVE CONTROL IS THE
+# SPECIFICITY TEST. It proves the detector does not fire on the wrong thing. It
+# says nothing about whether the detector fires on the RIGHT thing.
+# So a pattern that matches NOTHING AT ALL passes every negative control offered
+# and catches nothing -- perfectly specific, perfectly blind.
+grep -q 'zzz_this_string_exists_nowhere' "$F"; h=$?
+expect "5. SENSITIVITY   a pattern that matches nothing" "$h" 1 "passes as 'no false positives'"
+# The sensitivity test is a KNOWN-PRESENT needle. It is a different question and
+# needs a different fixture; specificity cannot answer it.
+grep -q 'Telegram message arrives' "$F"; i=$?
+expect "5. SENSITIVITY   known-present needle (the real test)" "$i" 0 "detector can actually fire"
+
 echo
 # Derive the summary from the accumulated failure flag, NOT by re-checking the
 # values. An earlier version re-tested $a/$b/$c here and printed HOLDS while
