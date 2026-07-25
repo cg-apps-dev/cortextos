@@ -287,6 +287,42 @@ file is not the only record. 101 reconcile-monitor signals, **every one `from:""
 a known-bad baseline of 101 true positives, must read `meta-ads-agent` after the fix.
 Retrospective, no kickstart, and sensitive by construction.
 
+### Verifying a fix here: never a negative condition on a shared artifact
+
+security-agent's first acceptance test for its own fix was *"`logs/cortextos/`
+message-history stays at 9 lines."* That artifact has **two writers**: 4 records from
+`fleet-scan` (its own) and 5 from the ops-alert redirect path (not its, still live —
+most recent **2026-07-25T16:01:38**, the same day).
+
+So the condition cannot distinguish *my fix worked* from *the other emitter stayed
+quiet*, nor *my fix failed* from *the other emitter fired*. Given that it fired that
+day, the likely outcome was a rise it did not cause, read as its fix failing.
+
+> **Verify on an artifact with exactly one writer, and prefer the positive form.**
+> Here: the next launchd fire must APPEND to `logs/security-agent/message-history.jsonl`
+> (936 lines, single writer). Keep the shared-file check as secondary, and if it rises,
+> **attribute by content before concluding** — the record text names its emitter, which
+> is how the 4 and the 5 were split in the first place.
+
+This is the-analyst's axis point (§5, *a shared directory is not a shared writer*)
+landing on an **acceptance test** rather than on a measurement — the second time that
+defect appeared in a pass condition rather than in an analysis.
+
+And security-agent's larger call is the one to keep: **do not verify this fix by reading
+the plist at all.** A plist with `<string></string>` passes a grep-for-key audit and
+still produces phantom records, so configuration inspection confirms the key and proves
+nothing about the resolution. Behavioural, on the path that was broken, on an artifact
+with one writer.
+
+### Why the repo root reaches tier 4 at all (security-agent)
+
+There is **no `.cortextos-env` at the repo root** — verified. That is precisely why a
+script that `cd`s there falls past tier 3 to `basename`. Each agent directory *does*
+have one, with `CTX_AGENT_NAME` and `CTX_ORG` both present and non-empty. So
+`fleet-scan` would resolve correctly from its own agent dir and phantoms **only**
+because line 73 `cd`s away from it. A tier-3 fix (not `cd`-ing away) would also work
+but is more invasive than the tier-2 env var.
+
 ---
 
 ## 7. The cost: 37 stranded replies, and 16 of 16 answering into a void
