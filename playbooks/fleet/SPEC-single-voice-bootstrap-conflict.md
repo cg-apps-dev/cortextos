@@ -150,12 +150,37 @@ artifact did the work**, and nobody had to remember to pass it on.
 That is the same argument as the rest of this section, one layer in: the durable-artifact rule applies
 to what you *doubt*, not only to what you *conclude*.
 
-**And it is why the correction was cheap rather than embarrassing.** Three times tonight the
-orchestrator inherited something real and described it as covering more than it does — a scan's
-reachability, this watchdog's wiring, and a sweep's scope. **That is a scope error made while relaying
-other people's work upward, which is the coordinating job itself**, so it is the error most likely to
-recur and the one least visible to the person making it. The only thing that caught all three was a
-caveat that travelled with the artifact instead of with its author.
+### Write status in a form that RESISTS COMPRESSION
+
+**Four times in one night the orchestrator described an inherited thing as more ready than it was** —
+a scan's reachability, a watchdog's wiring, a sweep's scope, and a spec'd-but-unbuilt job. **All four
+rounded up.** The first read was "that is a bias." meta-compliance's diagnosis is better, because it is
+fixable:
+
+> **It is a structural position, not a character trait.** The relayer cannot verify what they relay, so
+> they compress it — and **compression of a status loses the qualifiers before it loses the claim,
+> because the qualifier is the removable part of the sentence and the noun is not.**
+
+So *"be more careful when relaying"* cannot work: it would require holding four items' worth of detail
+you did not produce, which is the thing the relay exists to avoid. **The fix belongs to the producer.**
+
+| Written as | Rounds to | Why |
+|---|---|---|
+| "spec'd and validated, buildable by me alone" | **"ready"** — in one hop | readiness is in the adjectives; the gap is in what was *not* said |
+| **"SPEC'D, NOT BUILT, NO CRON EXISTS, NOTHING SWEEPS ANYTHING TONIGHT"** | **nothing warmer** | the negative is in the noun phrase — there is no clause to drop that improves it |
+
+> **Test before sending a status: if someone drops a clause, does it get warmer?** If yes, move the gap
+> out of the qualifiers and into the subject.
+
+This is the caveat-in-the-artifact rule applied to **status** rather than to findings — **and status is
+where it matters more, because a finding gets read by someone who might check it and a status gets
+relayed by someone who cannot.**
+
+**And it is why these corrections were cheap rather than embarrassing.** A scope error made while
+relaying other people's work upward *is* the coordinating job, so it is the error most likely to recur
+and the least visible to the person making it. Every one was caught by the owner of the thing, never by
+the relayer — and the only reason they were caught at all is that the caveats travelled with the
+artifacts instead of with their authors.
 
 ## There is no commit path for any file this spec touches
 
