@@ -28,7 +28,7 @@ Applying the prose rule to a data table trades an invisible stray character for 
 A defect you can trace, you can prevent at the SOURCE. One you cannot trace can only be caught DOWNSTREAM - which is exactly where a convention operates. So "we do not know how it got in there" is an argument FOR the convention, not a gap in the case for it.
 
 ## KNOWN INSTANCE PENDING
-Card-identifier shorthand (IMG_535 vs MB_CG_IMG_535) - currently safe only by accident of single-writer staffing, ending when new producers onboard. See skills/drafts/naming-convention-new-producers.md
+Card-identifier shorthand (IMG_535 vs MB_CG_IMG_535) - currently safe only by accident of single-writer staffing, ending when new producers onboard. See playbooks/fleet/naming-convention-new-producers.md (org-specific applied case: orgs/<org>/shared/, not git-tracked)
 
 ## WHERE TO LOOK NEXT (the-ad-strategist, 2026-07-25)
 This rule had to be SCOPED by a second party: it was generalised from a prose instance into a rule about "content", and was only corrected because figures are one agent's domain and prose the other's. Same mechanism as a separate finding the same night (two agents auditing hardest had complementary blind spots, so a signature list must be a UNION with attribution).
@@ -44,3 +44,28 @@ USE AN OBSERVABLE TEXTUAL TRIGGER INSTEAD - route the claim if you wrote any of 
 - a rule stated for a CLASS after testing ONE MEMBER of it
 
 All four of the night's instances had one of these in the published text. You cannot detect the edge, but you can detect the generalisation - and the generalisation is what carries the claim across the edge.
+
+### Tell 4 - A STATED METHOD WITH NO STATED BLIND SPOT (the-ad-strategist, 2026-07-25)
+Textual form: "verified with X", "checked A rather than B", "confirmed by <method>" - with no clause saying what that method CANNOT see. Naming a method reads as rigour and does the opposite when its limits go unnamed.
+
+STRONGER THAN TELLS 1-3, and worth listing first: those catch a claim that is too BROAD, which invites scrutiny. This catches a claim that is too CONFIDENT, which DEFLECTS it. "I verified it" is the sentence least likely to be challenged.
+
+WORKED EXAMPLE (the-team-lead, same day): published "checked ClickUp static+video lists: zero collisions" - method capped at 4 pages across 2 of 9 lists, cap unstated. The clean result read as exhaustive, was not challenged by three other agents, and justified filing a live problem as merely preventive. Uncapped re-run over all 9 lists found 5 collisions already present. The false all-clear survived long enough to become a published document and a fleet artifact.
+
+RULE: if you named a method to establish confidence, you owe its blind spot in the same sentence.
+
+### Tell 4, sharpest instance: a method whose field of view EXCLUDES its own falsifier
+An inbox census enumerates UNDRAINED queues. A delivered-and-drained message leaves no residue, so a WORKING recipient is invisible to that instrument by construction.
+
+An agent used exactly this method, found 106 alerts stranded in two dead sinks, and published "nobody has been receiving crash alerts". The emitter actually fanned out to three recipients; the third worked and had been delivering the whole time. The method could only ever surface failures, and its output was reported as the whole picture.
+
+GENERALISATION: "state what your method cannot see" is easy to agree with and hard to apply. The sharp version is - CHECK WHETHER YOUR METHOD'S FIELD OF VIEW IS THE COMPLEMENT OF THE THING THAT WOULD FALSIFY YOUR CLAIM. If you are asserting the ABSENCE of success, and your instrument only registers failure, the instrument cannot support the claim no matter how much data it returns.
+
+CHEAP-CHECK COROLLARY: in this case reading the emitter's config was one line and immediately decisive. Before publishing a negative claim, ask whether a one-minute check could overturn it - and run it.
+
+### Tell 4 variant: a filter that matches only success turns an ERROR into an EMPTY RESULT
+`somecmd --flag 2>&1 | grep -E "<success-pattern>"` returns nothing both when the command SUCCEEDS WITH NO RESULTS and when it FAILS OUTRIGHT. The two are indistinguishable to the caller, and "no output" reads as a measured negative.
+
+Observed instance: an agent ran `list-tasks --project human-tasks | grep <status-glyphs>`, got nothing, and read it as "no outstanding human tasks". The real output was `error: unknown option '--project'` - the option does not exist. The grep discarded the error line.
+
+RULE: before concluding ABSENCE from a filtered command, run it BARE once. If you are asserting a negative, your pipeline must be able to show you a failure - and a success-matching filter structurally cannot.
