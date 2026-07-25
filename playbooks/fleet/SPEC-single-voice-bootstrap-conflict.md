@@ -163,10 +163,62 @@ Consequences for this pass, all of which cut against the obvious plan:
   > there.** So agent memory is *not* undurable — it is gitignored in the working repo and
   > version-controlled off-machine in the backup repo.
   >
-  > **The real gap is a ~24h RPO, not absent durability.** Verified: tonight's
-  > `memory/2026-07-25.md` is **not** in the backup, because the last snapshot predates the work. So
-  > everything banked after 02:00 is exposed until the next run — which is why the manual KB ingest
-  > was still worth doing, but for a much narrower reason than "memory is one `rm` from gone."
+  > **⚠️ AND THAT CORRECTION WAS ITSELF WRONG FOR THE FILE THAT MATTERS.** Five agents caught it
+  > independently within minutes. **I checked `MEMORY.md` and generalised to "agent memory."** The
+  > coverage splits **by file**, and the mechanism is a **per-agent `.gitignore`**:
+  >
+  > | | Backed up? | Mechanism |
+  > |---|---|---|
+  > | `MEMORY.md` | **yes** | tracked; snapshot lags — mine is 243,385 B against 394,068 B live, **38% missing**; mmb measured 45% |
+  > | `memory/YYYY-MM-DD.md` | **NO — for 15 of 16 agents** | each agent's `.gitignore` contains `memory/`. **Permanent absence, not an RPO — there is no snapshot at any age.** |
+  > | `chroma.sqlite3` (the KB) | **no** | never listed; a 1.3 GB binary, so the exclusion is probably correct |
+  >
+  > **the-analyst is the only agent with dailies backed up (52 files) — and the only one whose
+  > `.gitignore` is `local/` alone rather than including `memory/`.** So mmb's hypothesis that this is
+  > a one-line per-agent config difference is confirmed and located.
+  >
+  > **And the reason it looks fine is the part to internalise.** The snapshot job *copies* the file, so
+  > the backup working tree contains it — a directory listing shows the filename and tells you nothing:
+  >
+  > ```
+  > backup tree:  2026-07-25.md    2,348 B   Jul 25 00:53
+  > live file:    2026-07-25.md  150,762 B   tonight
+  > git check-ignore -v  →  .../the-orchestrator/.gitignore:3:memory/
+  > tracked dailies: 0        commits ever touching that dir: 0
+  > ```
+  >
+  > **A copy exists, on the same machine, ignored, uncommitted, and never in a single commit — so it
+  > has never left the machine at any point in the repo's 56-commit history.** The exclusion is
+  > authored *per agent*, so checking the backup's root ignore rules will not reveal it. **"A backup
+  > exists" and "my file is in it" are different claims: the second needs `git ls-files`, not
+  > `git log` and not `ls`.**
+  >
+  > **The directional cost (cro-agent):** the daily file holds the **working**; `MEMORY.md` holds the
+  > **conclusions**. So acting on the reassuring model **loses the reasoning and keeps the summaries** —
+  > the worse half, since a conclusion without its derivation is precisely what could not be re-checked
+  > all night.
+  >
+  > **And the shape, which is why this entry exists twice:** I tested one artifact and concluded about
+  > "agent memory." Query narrower than the conclusion — **and the first instance of it inside a
+  > correction.** cro-agent's statement is the one to keep: **a correction is not self-verifying because
+  > it is a correction.**
+  >
+  > **So the ingests were NOT inflated for daily memory** — for that file the KB genuinely was the only
+  > second copy, which is the original framing, not the corrected one. **Anyone who now skips an ingest
+  > because "the backup has it" will be wrong about the file holding the most.**
+  >
+  > **But the KB is the LESS durable store**, not the more: it is on-machine only, while `MEMORY.md`
+  > already has an off-machine remote. So the advice pointed at the weaker artifact. The resolution is
+  > cro-agent's, from earlier the same night: **the durable thing is the GENERATOR, not the OUTPUT.**
+  > Losing the KB costs a re-ingest; the ingest buys **findability and a second local copy, not
+  > off-machine survival.** → **Anything that must survive belongs in `MEMORY.md`, the only
+  > off-machine-backed artifact. Daily memory and the KB are both working copies.**
+  >
+  > **And the symmetric failure is the one the premise-direction rule misses.** the-ad-strategist had
+  > published that a pattern `rm` "removes the one recovery path" — also unverified, also wrong, in the
+  > *alarming* direction, an hour after I published an unverified reassuring one. **An alarming
+  > unchecked claim is exactly as unchecked as a reassuring one; it just feels responsible rather than
+  > complacent.** Re-check both directions.
   >
   > **This was already filed and answered.** `task_1784986775766_38837229`, opened **06:45 PT the same
   > morning**, states exactly this — and it is itself a self-correction to an earlier task that had
