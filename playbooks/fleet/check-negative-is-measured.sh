@@ -161,6 +161,44 @@ EMPTY=( "$GLOBDIR"/*.nosuchext )
 if [ ! -e "${EMPTY[0]}" ]; then l=2; else grep -q 'needle_is_here' "${EMPTY[@]}"; l=$?; fi
 expect "6. NO OUTPUT     empty target list returns UNMEASURED not absent" "$l" 2 "2 != 1: unmeasured != clean"
 
+# --- 7. YOUR grep MAY NOT BE grep ---------------------------------------------
+# The widest axis here, because it invalidates a CATEGORY of negative result
+# rather than one shape of mistake. In an interactive agent session `grep` is not
+# /usr/bin/grep -- it is a SHELL FUNCTION from the claude-home shell snapshot that
+# execs `ARGV0=ugrep <claude> -G ...` (ugrep 7.5.0). Measured 2026-07-25 on the
+# identical pattern and file, by two agents independently:
+#     bare grep      0        <- the wrapper
+#     command grep   115      <- /usr/bin/grep
+#     grep -F        115
+# So EVERY REGEX CLAIM AN AGENT MAKES WITH BARE grep IS A UGREP CLAIM, under a
+# metacharacter set nobody is writing for. The divergence is not between agents;
+# it is between an agent and the human-authored doc it is following. Five wrong
+# mechanisms were published for that zero before anyone ran `type grep`.
+#
+# THIS SCRIPT CANNOT REPRODUCE THAT DIRECTLY -- `bash script.sh` does not inherit
+# a zsh shell function, so `grep` here is already /usr/bin/grep. Stating that
+# rather than writing a check that silently cannot fire (axis 5's own warning).
+# What IS reproducible everywhere is the class: the SAME literal, present in the
+# file, found by one engine and missed by another.
+LIT="$(mktemp)"; trap 'rm -f "$CONT" "$LIT"; rm -rf "$GLOBDIR"' EXIT
+printf 'path is state/${CTX_AGENT_NAME}/crons.json here\n' > "$LIT"
+NEEDLE='state/${CTX_AGENT_NAME}/crons.json'
+# NOTE: no `|| echo 0` here. `grep -c` PRINTS a count and EXITS 1 when that count
+# is zero, so `$(grep -c ... || echo 0)` appends a second 0 and the variable
+# becomes "0\n0" -- which fails an equality test against 0 while looking correct
+# in the output. This axis failed its own first run on exactly that, which is the
+# third time a new axis here has caught its own author before review did.
+n1=$(grep -c  "$NEEDLE" "$LIT" 2>/dev/null); n1=${n1:-0}
+expect "7. WHICH grep?   default engine finds the literal" "$n1" 1 "present, and found"
+n2=$(grep -Ec "$NEEDLE" "$LIT" 2>/dev/null); n2=${n2:-0}
+expect "7. WHICH grep?   -E on the SAME string, same file" "$n2" 0 "FALSE ZERO -- engine, not content"
+n3=$(grep -Fc "$NEEDLE" "$LIT" 2>/dev/null); n3=${n3:-0}
+expect "7. WHICH grep?   -F is the answer to both" "$n3" 1 "literal means literal"
+# THE RULE, and it needs no knowledge of which binary you have:
+# ON ANY NEGATIVE THAT MATTERS, RE-RUN WITH -F (or `command grep`). IF THE COUNT
+# MOVES, THE PATTERN WAS NEVER LITERAL. Here 1 vs 0 vs 1 -- the disagreement is
+# the signal, and you get it without diagnosing the engine at all.
+
 echo
 # Derive the summary from the accumulated failure flag, NOT by re-checking the
 # values. An earlier version re-tested $a/$b/$c here and printed HOLDS while
