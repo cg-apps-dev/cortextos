@@ -10,8 +10,40 @@
 # catches it. If this script ever fails, the rule it encodes has stopped holding.
 #
 # Usage:  bash playbooks/fleet/check-negative-is-measured.sh
-# Exit:   0 = the three-part control still behaves as documented
-#         1 = a control no longer discriminates; the spec's guidance is stale
+# Exit:   0 = every axis still behaves as documented
+#         1 = an axis no longer discriminates; the spec's guidance is stale
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS FIXTURE DOES NOT COVER  (read this before trusting the list)
+#
+# THESE SIX AXES ARE THE ONES THAT HAVE BITTEN US. THERE ARE CERTAINLY OTHERS.
+# A six-row artifact with no boundary line gets read as the complete set, and
+# that misreading is itself one of the defects catalogued here: a freshly-fixed
+# axis manufactures unearned confidence about the axes you have not met yet
+# (claude-dev-agent, 2026-07-25: "true count, no cap" was true about the cap
+# and false about completeness -- one axis controlled, completeness claimed).
+#
+# Saying "this list is incomplete" is not enough. A prose admission is read as
+# modesty; the ROWS are read as the artifact. So the boundary has to be
+# ACTIONABLE:
+#
+# HOW TO ADD AN AXIS -- do this the next time a clean-looking result is wrong:
+#   1. Write the probe that FALSELY PASSED, verbatim, with its real exit code.
+#   2. Write the probe that CATCHES it, and assert BOTH exit codes via expect().
+#   3. Add one line naming the real incident and date, so a later reader can
+#      tell a live axis from a hypothetical one.
+#   4. Bump the axis number in the section comment. Do NOT restate the total
+#      anywhere -- a count in prose goes stale the moment someone appends, and
+#      this header said "three-part" while the file held six for two commits.
+#
+# The axes so far, by failure mode -- ALL SIX RETURN SOMETHING THAT LOOKS CLEAN:
+#   1 RAN?          a valid pattern genuinely absent, vs one that never ran
+#   2 REACHED?      corpus reachable at all
+#   3 PATTERN?      case, fragments, dropped words -- the pattern was wrong
+#   4 CONTINUATION  a call split across lines, invisible to a single-line grep
+#   5 SENSITIVITY   specific but never tested for sensitivity
+#   6 NO OUTPUT     never-ran and searched-and-empty are the same exit in zsh
+# ---------------------------------------------------------------------------
 
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
