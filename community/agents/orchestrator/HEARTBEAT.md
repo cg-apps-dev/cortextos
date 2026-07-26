@@ -164,8 +164,14 @@ Keep your memory collection searchable and current:
 RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
   --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private 2>&1)
 echo "$RESULT"
-echo "$RESULT" | grep -qE "Ingested [0-9]+|Added [0-9]+ chunk" \
-  || echo "WARNING: KB ingest reported NO chunks — memory may not be searchable. Check GEMINI_API_KEY; do NOT add a --collection flag (it does not exist)."
+if echo "$RESULT" | grep -qE "Ingested 0 new chunk|Added 0 chunk"; then
+  echo "WARNING: KB ingest stored ZERO CHUNKS on a run that may have real new content — a bare success word does not mean anything was stored (the-ad-strategist + meta-compliance-agent, 2026-07-25/26). Re-running once before treating this as a failure."
+  RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
+    --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private 2>&1)
+  echo "$RESULT"
+fi
+echo "$RESULT" | grep -qE "Ingested [1-9][0-9]* new chunk|Added [1-9][0-9]* chunk" \
+  || echo "WARNING: KB ingest reported NO confirmed chunks after retry — this may be a genuine failure (check for a stale content-hash/dedup). Check GEMINI_API_KEY; do NOT add a --collection flag (it does not exist)."
 ```
 
 Run this every heartbeat cycle — it is NOT automatic, you must run it (the verify line above is your tripwire against silent memory loss). It ensures past experiences, user preferences, and learned patterns are semantically searchable for future tasks. Skip if GEMINI_API_KEY is not configured.

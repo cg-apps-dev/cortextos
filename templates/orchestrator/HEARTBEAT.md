@@ -171,7 +171,14 @@ RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
   --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private 2>&1)
 echo "$RESULT"
 if echo "$RESULT" | grep -qE "Errors: [1-9]"; then echo "WARNING: Step 9 KB ingest ERROR (likely Gemini free-tier 429 daily embed-quota, 1000/day/project — blocks KB writes fleet-wide until daily reset/plan upgrade); flag the orchestrator."
-elif echo "$RESULT" | grep -qE "Ingested [0-9]+|Added [0-9]+ chunk"; then echo "Step 9: KB ingest OK"
+elif echo "$RESULT" | grep -qE "Ingested 0 new chunk|Added 0 chunk"; then
+  echo "WARNING: Step 9 KB ingest stored ZERO CHUNKS on a run that may have real new content — a bare success word does not mean anything was stored (the-ad-strategist + meta-compliance-agent, 2026-07-25/26). Re-running once before treating this as a failure."
+  RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
+    --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private 2>&1)
+  echo "$RESULT"
+  if echo "$RESULT" | grep -qE "Ingested [1-9][0-9]* new chunk|Added [1-9][0-9]* chunk"; then echo "Step 9: KB ingest OK (after re-run)"
+  else echo "WARNING: Step 9 KB ingest STILL zero after re-run — this is a genuine failure, not a no-op. Check for a stale content-hash/dedup, then flag the orchestrator."; fi
+elif echo "$RESULT" | grep -qE "Ingested [1-9][0-9]* new chunk|Added [1-9][0-9]* chunk"; then echo "Step 9: KB ingest OK"
 else echo "WARNING: Step 9 KB ingest reported NO confirmation — memory may not be searchable. Check GEMINI_API_KEY; do NOT add a --collection flag (it does not exist)."; fi
 ```
 
