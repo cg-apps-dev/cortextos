@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Fixture for the three-part negative control in SPEC-single-voice-bootstrap-conflict.md.
+# Fixture for the negative-control axes in SPEC-single-voice-bootstrap-conflict.md.
+# (Six axes as of 2026-07-26. The count is NOT restated below - see HOW TO ADD AN AXIS.)
 #
 # This is a TEST, not an example. The rest of that spec is prose that needs a reader;
 # this fires. It runs the real failed search from 2026-07-25 that was published
 # fleet-wide as "the line does not exist" — a false zero that hid a bootstrap
 # contradiction in 24 files for hours.
 #
-# The point: TWO OF THE THREE CONTROLS PASS ON THAT ZERO. Only varying the pattern
+# The point: THE FIRST TWO CONTROLS PASS ON THAT ZERO. Only varying the pattern
 # catches it. If this script ever fails, the rule it encodes has stopped holding.
 #
 # Usage:  bash playbooks/fleet/check-negative-is-measured.sh
