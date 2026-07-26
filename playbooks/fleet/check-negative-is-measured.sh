@@ -18,7 +18,7 @@
 # ---------------------------------------------------------------------------
 # WHAT THIS FIXTURE DOES NOT COVER  (read this before trusting the list)
 #
-# THESE SIX AXES ARE THE ONES THAT HAVE BITTEN US. THERE ARE CERTAINLY OTHERS.
+# THESE AXES ARE THE ONES THAT HAVE BITTEN US. THERE ARE CERTAINLY OTHERS.
 # A six-row artifact with no boundary line gets read as the complete set, and
 # that misreading is itself one of the defects catalogued here: a freshly-fixed
 # axis manufactures unearned confidence about the axes you have not met yet
