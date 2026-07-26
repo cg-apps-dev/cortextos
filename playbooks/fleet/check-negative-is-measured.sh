@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fixture for the negative-control axes in SPEC-single-voice-bootstrap-conflict.md.
-# (Six axes as of 2026-07-26. The count is NOT restated below - see HOW TO ADD AN AXIS.)
+# (The axis count is NOT stated anywhere in this header. The RUN numbers them in its
+#  output - that is the only count, and it cannot go stale. See HOW TO ADD AN AXIS.)
 #
 # This is a TEST, not an example. The rest of that spec is prose that needs a reader;
 # this fires. It runs the real failed search from 2026-07-25 that was published
