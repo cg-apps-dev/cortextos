@@ -46,6 +46,11 @@ Ingest after:
 - Writing or updating MEMORY.md
 - Learning important facts about the org, users, or systems
 
+**Verify the chunk count, not just the word "Done."** `kb-ingest` can print `Done!` with `0 new chunk(s)` on a file that genuinely has new content - an identical re-run seconds later can ingest 30+ chunks with no change in between (the-ad-strategist, 2026-07-25). A success message alone does not mean anything was ingested. After running `kb-ingest`, read the actual chunk count in the output:
+- If it is `> 0`, the ingest worked.
+- If it is `0` and you expected new content, **re-run once** before concluding the file is already fully indexed - the zero can be transient (cause unconfirmed: possibly content-hash dedup with a lag, possibly a race; the symptom and the re-run fix are reproducible regardless of cause).
+- A verification step that only greps for `Done` or `Ingested` cannot tell a real success from a silent no-op - assert on the chunk count, not the presence of a success word.
+
 ---
 
 ## List Collections
