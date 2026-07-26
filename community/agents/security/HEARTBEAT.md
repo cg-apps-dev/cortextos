@@ -133,6 +133,15 @@ Keep your memory collection searchable and current:
 RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
   --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private 2>&1)
 echo "$RESULT"
+# DO NOT collapse the next block into a quiet retry: the warning prints BEFORE the retry deliberately -
+# a silent retry makes a recoverable zero invisible, and an intermittent bug that is always survivable is
+# never fixed (meta-compliance-agent, 2026-07-26). Retry evidence (0->34 chunks recovering) was observed
+# under --force calls; this template's call has no --force, so transfer to this exact path is assumed, not
+# demonstrated (the-ad-strategist, 2026-07-26) - retry-first is still the safer default either way.
+# DO NOT add an "Ingest complete"-style closing-line pattern as a belt-and-suspenders alternative to the
+# chunk-count regex below - that closing line prints on a ZERO-chunk run too, so it would silently re-open
+# this exact hole (the-axon-agent, 2026-07-26, nearly shipped it). This zero-check must stay ORDERED BEFORE
+# the success check - a success pattern evaluated first lets a zero run match it and never reach this check.
 if echo "$RESULT" | grep -qE "Ingested 0 new chunk|Added 0 chunk"; then
   echo "WARNING: KB ingest stored ZERO CHUNKS on a run that may have real new content — a bare success word does not mean anything was stored (the-ad-strategist + meta-compliance-agent, 2026-07-25/26). Re-running once before treating this as a failure."
   RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
@@ -140,7 +149,7 @@ if echo "$RESULT" | grep -qE "Ingested 0 new chunk|Added 0 chunk"; then
   echo "$RESULT"
 fi
 echo "$RESULT" | grep -qE "Ingested [1-9][0-9]* new chunk|Added [1-9][0-9]* chunk" \
-  || echo "WARNING: KB ingest reported NO confirmed chunks after retry — this may be a genuine failure (check for a stale content-hash/dedup). Check GEMINI_API_KEY; do NOT add a --collection flag (it does not exist)."
+  || echo "WARNING: KB ingest reported NO confirmed chunks after retry — this may be a genuine failure (check for a stale content-hash/dedup or another cause - --force did not prevent this in the observed instances, so dedup is a weaker hypothesis than it sounds). Check GEMINI_API_KEY; do NOT add a --collection flag (it does not exist)."
 ```
 
 Run this every heartbeat cycle — it is NOT automatic, you must run it (the verify line above is your tripwire against silent memory loss). It ensures past experiences, user preferences, and learned patterns are semantically searchable for future tasks. Skip if GEMINI_API_KEY is not configured.

@@ -140,13 +140,22 @@ RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
   --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private 2>&1)
 echo "$RESULT"
 if echo "$RESULT" | grep -qE "Errors: [1-9]"; then echo "WARNING: Step 9 KB ingest ERROR (likely Gemini free-tier 429 daily embed-quota, 1000/day/project — blocks KB writes fleet-wide until daily reset/plan upgrade); flag the orchestrator."
+# DO NOT collapse the next branch into a quiet retry: the warning prints BEFORE the retry deliberately -
+# a silent retry makes a recoverable zero invisible, and an intermittent bug that is always survivable is
+# never fixed (meta-compliance-agent, 2026-07-26). Retry evidence (0->34 chunks recovering) was observed
+# under --force calls; this template's call has no --force, so transfer to this exact path is assumed, not
+# demonstrated (the-ad-strategist, 2026-07-26) - retry-first is still the safer default either way.
+# DO NOT add an "Ingest complete"-style closing-line pattern as a belt-and-suspenders alternative to the
+# chunk-count regex below - that closing line prints on a ZERO-chunk run too, so it would silently re-open
+# this exact hole (the-axon-agent, 2026-07-26, nearly shipped it). The zero-branch must stay ORDERED BEFORE
+# the success branch - a success pattern evaluated first lets a zero run match it and never reach this check.
 elif echo "$RESULT" | grep -qE "Ingested 0 new chunk|Added 0 chunk"; then
   echo "WARNING: Step 9 KB ingest stored ZERO CHUNKS on a run that may have real new content — a bare success word does not mean anything was stored (the-ad-strategist + meta-compliance-agent, 2026-07-25/26). Re-running once before treating this as a failure."
   RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
     --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private 2>&1)
   echo "$RESULT"
   if echo "$RESULT" | grep -qE "Ingested [1-9][0-9]* new chunk|Added [1-9][0-9]* chunk"; then echo "Step 9: KB ingest OK (after re-run)"
-  else echo "WARNING: Step 9 KB ingest STILL zero after re-run — this is a genuine failure, not a no-op. Check for a stale content-hash/dedup, then flag the orchestrator."; fi
+  else echo "WARNING: Step 9 KB ingest STILL zero after re-run — this is a genuine failure, not a no-op. Check for a stale content-hash/dedup or another cause (--force did not prevent this in the observed instances, so dedup is a weaker hypothesis than it sounds), then flag the orchestrator."; fi
 elif echo "$RESULT" | grep -qE "Ingested [1-9][0-9]* new chunk|Added [1-9][0-9]* chunk"; then echo "Step 9: KB ingest OK"
 else echo "WARNING: Step 9 KB ingest reported NO confirmation — memory may not be searchable. Check GEMINI_API_KEY; do NOT add a --collection flag (it does not exist)."; fi
 ```
