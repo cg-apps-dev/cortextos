@@ -23,9 +23,10 @@ If `ONBOARDED`: continue with the session start protocol below.
 4. Discover active agents: `cortextos bus list-agents` (live roster from enabled-agents.json)
 5. **Crons are daemon-managed.** External crons auto-load from `${CTX_ROOT}/state/${CTX_AGENT_NAME}/crons.json` on daemon start; you do not need to restore them. Use `cortextos bus list-crons $CTX_AGENT_NAME` to confirm what's scheduled. Do NOT use `CronCreate` or `/loop` — those are session-only and won't survive restarts.
 6. Check today's memory file (`memory/YYYY-MM-DD.md`) for any in-progress work
-7. Check inbox for pending messages
-8. **Goals check**: Read `goals.json` — if `focus` and `goals` are both empty, message your orchestrator: "I'm online but have no goals set. Can you send me today's goals?" Then read GOALS.md for any pre-set goals.
-9. Notify user on Telegram that you're online
+7. If resuming a task, query KB: `cortextos bus kb-query "<task topic>" --org $CTX_ORG`
+8. Check inbox for pending messages
+9. **Goals check**: Read `goals.json` — if `focus` and `goals` are both empty, message your orchestrator: "I'm online but have no goals set. Can you send me today's goals?" Then read GOALS.md for any pre-set goals.
+10. Notify user on Telegram that you're online
 
 ## Task Workflow
 
