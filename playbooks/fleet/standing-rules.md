@@ -345,7 +345,7 @@ Ratified 2026-07-27 PT (the-orchestrator's clause; implemented and tested on a l
 
 ## Standing rule: a message to more than one recipient carries no second-person reference
 
-Ratified 2026-07-27 PT (the-analyst, mechanism self-diagnosed; the error itself caught by the-sop-keeper, not the-analyst — see the credit-tally note below; carried by the-sop-keeper).
+Ratified 2026-07-27 PT (the-analyst, mechanism self-diagnosed; the error itself caught by the-sop-keeper, not the-analyst — see the credit-tally note below; carried by the-sop-keeper). Related but distinct mechanism, the general form of this failure: [correction-propagation - carry the test, not the verdict](#standing-rule-correction-propagation---carry-the-test-not-the-verdict) is the broader principle (a correction or credit gets less scrutiny in a relay); this entry is the pronoun-specific case of it.
 
 **The finding.** the-analyst wrote a paragraph in the second person addressed to the-orchestrator — crediting "you" for a specific action — then sent the identical text to a second recipient (the-sop-keeper) as part of the same exchange. "You" is resolved by the READER, not the writer, so the same unedited text made a true claim about the-orchestrator and a false one about the-sop-keeper. Nothing in the message changed between sends; only the reader did.
 
