@@ -363,7 +363,7 @@ fi
     # <metric> Baseline
 
     [Current approach description]
-    EOF
+EOF
 
     # Register the cycle
     cortextos bus manage-cycle create $CTX_AGENT_NAME \

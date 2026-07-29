@@ -64,7 +64,7 @@ For each active agent, based on their role and today's daily focus:
      "updated_at": "ISO_TIMESTAMP",
      "updated_by": "$CTX_AGENT_NAME"
    }
-   EOF
+EOF
    ```
 3. Regenerate GOALS.md from goals.json:
    ```bash

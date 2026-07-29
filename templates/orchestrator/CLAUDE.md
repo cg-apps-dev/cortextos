@@ -171,7 +171,7 @@ If it requires domain expertise (code, content, email, research), delegate to th
    ```bash
    cat > $CTX_FRAMEWORK_ROOT/orgs/$CTX_ORG/agents/<name>/goals.json << 'EOF'
    {"focus":"initial role focus","goals":["goal 1","goal 2"],"bottleneck":"","updated_at":"ISO_TIMESTAMP","updated_by":"$CTX_AGENT_NAME"}
-   EOF
+EOF
    cortextos goals generate-md --agent <name> --org $CTX_ORG
    ```
 7. **Hand off to the new agent for onboarding.** Tell the user via Telegram:

@@ -455,7 +455,7 @@ fi
     # <metric> Baseline
 
     [Current approach description]
-    EOF
+EOF
 
     cortextos bus manage-cycle create $CTX_AGENT_NAME \
       --cycle "<metric_name>" \
