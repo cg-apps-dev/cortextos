@@ -231,7 +231,7 @@ probe_codex_runtime_auth() {
   local state_base="${CODEX_AUTH_STATE_BASE:-${CTX_ROOT}/state}"
   [[ -d "$orgs_root" ]] || { echo -e "SKIP\tno orgs dir ($orgs_root)"; return; }
   local now cfg agent runtime logf hbf sig age checked=0
-  local -a dead=() transient=() unknown=()
+  local -a dead=() transient=() unknown=() notstarted=()
   now=$(date -u +%s)
   while IFS= read -r cfg; do
     agent="$(basename "$(dirname "$cfg")")"
@@ -243,6 +243,30 @@ probe_codex_runtime_auth() {
     [[ -f "$logf" ]] || continue
     sig="$(tail -n "$CODEX_AUTH_LOG_TAIL" "$logf" 2>/dev/null | grep -aE "$CODEX_AUTH_SIG_RE" | tail -1)"
     [[ -n "$sig" ]] || continue   # no revocation signature => this agent is fine
+    # ── LOG FRESHNESS GATE (added 2026-07-29) ──────────────────────────────────
+    # The signature above comes from a LINE tail, not a time window, and that is deliberate
+    # (immune to per-agent log-clock skew). But a line tail has no notion of WHEN: if the log
+    # stops being written, the tail FREEZES on whatever it last held, so an old revocation
+    # line persists indefinitely while the heartbeat goes stale because nothing is running.
+    # Signature + stale then fires CODE RED "token REVOKED, needs re-auth" at an agent that
+    # was simply never started.
+    #
+    # This becomes REACHABLE the moment LimitLoadToSessionType=Aqua lands on the PM2
+    # LaunchAgent: after a reboot launchd holds PM2 until a GUI login, so agents never spawn,
+    # logs freeze, and heartbeats go stale -- all three preconditions at once. The alarm is
+    # also self-reinforcing: the staleness that fires it is the same condition that freezes
+    # the evidence it fires on.
+    #
+    # THE DISCRIMINATOR IS MTIME, and it works because the two states genuinely differ in it:
+    #   RUNNING but auth-dead -> 401s every turn -> log mtime keeps advancing (FRESH)
+    #   NEVER STARTED         -> nothing writes   -> log mtime frozen (STALE)
+    # A stale heartbeat already means the agent is not heartbeating, so it is not running
+    # normally; mtime separates "running and failing" from "not running at all".
+    log_mtime="$(stat -f %m "$logf" 2>/dev/null || stat -c %Y "$logf" 2>/dev/null || echo 0)"
+    if [[ "$log_mtime" -gt 0 ]] && (( now - log_mtime > CODEX_AUTH_STALE_THRESHOLD )); then
+      notstarted+=("${agent} (log frozen ~$(( (now - log_mtime) / 3600 ))h)")
+      continue   # frozen log => NOT a revocation; must not escalate to CODE RED
+    fi
     # signature present: pair with heartbeat staleness (daemon clock)
     age="$(HBF="$hbf" NOW="$now" python3 - <<'PY' 2>/dev/null || echo -1
 import os, json, datetime
@@ -273,6 +297,10 @@ PY
   elif [[ ${#unknown[@]} -gt 0 ]]; then
     local names; names="$(printf '%s, ' "${unknown[@]}")"; names="${names%, }"
     echo -e "DEGRADED\tCodex revocation signature seen on ${names} but heartbeat.json unreadable - cannot confirm the staleness pairing; check manually (possible auth-death)."
+  elif [[ ${#notstarted[@]} -gt 0 ]]; then
+    local names; names="$(printf '%s, ' "${notstarted[@]}")"; names="${names%, }"
+    # Deliberately NOT a FAIL: nothing is broken. This is the fleet-not-started signature.
+    echo -e "DEGRADED\tFLEET NOT STARTED (not a revocation): ${names} - stdout.log is frozen, so the revocation signature in the log TAIL is stale evidence, not a live 401. Most likely PM2 is unloaded awaiting a GUI login (LimitLoadToSessionType=Aqua). Confirm with: cortextos status. A genuinely revoked-but-RUNNING agent logs a 401 every turn and keeps its log mtime FRESH, so it is still caught as CODE RED."
   elif [[ ${#transient[@]} -gt 0 ]]; then
     local names; names="$(printf '%s, ' "${transient[@]}")"; names="${names%, }"
     echo -e "OK\ttransient Codex 401 seen on ${names} but heartbeat FRESH - not auth-dead (pairing gate held; no alert)."
