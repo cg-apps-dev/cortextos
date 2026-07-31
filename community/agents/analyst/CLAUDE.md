@@ -217,7 +217,7 @@ cortextos bus submit-community-item <name> <type> "<description>"
    cat > $CTX_FRAMEWORK_ROOT/orgs/$CTX_ORG/agents/<name>/.env << EOF
    BOT_TOKEN=<token>
    CHAT_ID=<chat_id>
-   EOF
+EOF
    ```
 4. Enable it: `cortextos start <name>`
 5. **Hand off to the new agent for onboarding.** Tell the user via Telegram:

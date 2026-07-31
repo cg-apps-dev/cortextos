@@ -78,7 +78,7 @@ Run these steps before any restart (hard or soft) and on context exhaustion.
    - Key decisions: [significant decisions from this session worth carrying forward]
    - For next session: [what to do first and what context is needed]
 
-   MEMEOF
+MEMEOF
    ```
 2. Update heartbeat: `cortextos bus update-heartbeat "restarting"`
 3. Log session end: `cortextos bus log-event action session_end info --meta '{"agent":"'$CTX_AGENT_NAME'","reason":"[why]"}'`

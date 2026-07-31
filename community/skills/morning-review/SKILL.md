@@ -178,7 +178,7 @@ For each agent in the roster:
      "updated_at": "ISO_TIMESTAMP",
      "updated_by": "$CTX_AGENT_NAME"
    }
-   EOF
+EOF
    ```
 3. Regenerate GOALS.md:
    ```bash
