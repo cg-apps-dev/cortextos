@@ -58,13 +58,15 @@ claude.ai MCP **bridge connectors only work in login mode**; bearer kills the br
 
 ## 3. PER-ACCOUNT SETUP-TOKEN PROCEDURE
 
+**CHECK BEFORE YOU ASK (Adam hard rule, 2026-07-24) - do this before step 1.** Agent setup-tokens already exist on-machine in almost every case; a human ask is the LAST resort, never the first move. Check order: (1) the vault - `state/oauth/setup-tokens/<ACCOUNT>.token`; (2) `state/oauth/accounts.json` (`.accounts.<NAME>`); (3) `cortextos list-vault-accounts`. Only mint a fresh token (step 1 below) if all three come up empty for that account. To MOVE an already-provisioned agent between accounts, use the gated `cortextos switch-agent-account <agent> <account>` ([fleet/switch-agent-account.md](../../../playbooks/fleet/switch-agent-account.md) - both-halves flip + restart + verify + rollback + functional-sweep) instead of a hand-edited `.env`. Origin: 2026-07-24, the orchestrator wrongly asked Adam for the icloud setup-token that had existed in the vault since 2026-07-09.
+
 **Account ↔ email map** (Clean Green fleet; the billing account name is what `list-agent-accounts`/`usage_account` use):
 - `cg-team-seat` = adam@cleangreen.com (metered, extra-usage ON)
 - `icloud-max-20x` = afolker@icloud.com (metered, extra-usage ON)
 - `me-com-max` = afolker@me.com (NOT metered, extra-usage OFF)
 - `moonlight-max` = the moonlight account (extra-usage OFF)
 
-**Steps (per account):**
+**Steps (per account, once the check above confirms a fresh mint is genuinely needed):**
 1. **(HUMAN GATE - Adam) mint a FRESH `claude setup-token` AS the target account.** Authenticate as THAT account identity (incognito/clean browser signed into that account, or pick it on the consent screen). Output: `sk-ant-oat01-...`. Must be fresh + minted-as-the-account (a reused/stored token is dead-for-runtime).
 2. **Deliver the token via an ATTACHED FILE, never chat** (secret-handling). It goes straight into the agent `.env`.
 3. **Apply - FLIP BOTH HALVES together** (so attribution can't cross-account-mislabel):
