@@ -483,18 +483,43 @@ export class AgentProcess {
   }
 
   /**
+   * Match the "no conversation to resume" signature in recent stdout.
+   *
+   * The daemon spawns a resuming agent with `claude --continue`. When the agent
+   * has been dead long enough that its saved conversation is gone (or was
+   * cleared), `--continue` finds nothing to continue, prints
+   * "No conversation found to continue", and EXITS — the daemon then restarts it
+   * with --continue again, hits the same wall, and crash-loops (research-agent,
+   * 2026-07-31, was down 34h this way). Detecting the signature lets handleExit
+   * arm `.force-fresh` so the next start boots a FRESH session instead of
+   * crash-looping. General: any agent that loses its session while dead recovers.
+   *
+   * Safe by construction: this only fires when there is no conversation to
+   * resume, so discarding it via .force-fresh loses nothing that still existed.
+   */
+  private detectNoConversationCrash(recentOutput: string): boolean {
+    if (!recentOutput) return false;
+    return recentOutput.includes('No conversation found to continue');
+  }
+
+  /**
    * Write the `.force-fresh` marker that AgentProcess.shouldContinue() reads
    * on the next start() to force a fresh Claude Code session (no --continue).
-   * Used by the image-poison auto-recovery in handleExit().
+   * Used by the image-poison and no-conversation auto-recoveries in handleExit().
+   * Returns true iff the marker was persisted; a caller that recovers WITHOUT
+   * counting the crash must fall through to normal crash handling on false, or a
+   * failed write would produce an uncounted infinite recovery loop.
    */
-  private armForceFresh(reason: string): void {
+  private armForceFresh(reason: string): boolean {
     try {
       const stateDir = join(this.env.ctxRoot, 'state', this.name);
       ensureDir(stateDir);
       const markerPath = join(stateDir, '.force-fresh');
       writeFileSync(markerPath, `${new Date().toISOString()} ${reason}\n`, 'utf-8');
+      return true;
     } catch (err) {
       this.log(`Failed to arm .force-fresh marker: ${err}`);
+      return false;
     }
   }
 
@@ -582,6 +607,31 @@ export class AgentProcess {
         }
       }, 5000);
       return;
+    }
+
+    // No-conversation-to-resume auto-recovery. Parallel to the image-poison
+    // block above but a NON-zero exit: the daemon spawns a resuming agent with
+    // `claude --continue`; when the saved conversation is gone, --continue keeps
+    // failing ("No conversation found to continue") and the daemon crash-loops.
+    // Arm `.force-fresh` so the NEXT start boots fresh — that boot has no
+    // --continue and cannot re-hit this signature, so recovery is one-shot.
+    // Recover WITHOUT charging the crash counter, EXCEPT when the marker write
+    // fails: then fall through to normal crash handling so the crash cap can halt
+    // a stuck recovery instead of looping uncounted.
+    if (this.detectNoConversationCrash(recentOutput)) {
+      if (this.armForceFresh('no-conversation-to-continue auto-recovery')) {
+        this.log('No conversation to continue (saved session gone). Armed .force-fresh; restarting FRESH without counting against max_crashes_per_day.');
+        this.appendCrashToRestartsLog(exitCode, 5000, 'NO_CONVERSATION_RECOVERY');
+        this.status = 'crashed';
+        this.notifyStatusChange();
+        setTimeout(() => {
+          if (this.status === 'crashed') {
+            this.start().catch(err => this.log(`No-conversation restart failed: ${err}`));
+          }
+        }, 5000);
+        return;
+      }
+      this.log('No conversation to continue, but failed to persist .force-fresh — falling through to normal crash handling so the crash cap can halt a stuck recovery.');
     }
 
     // CrashLoopPauser (instar-inspired): if a sliding window is configured,
@@ -924,7 +974,7 @@ export class AgentProcess {
   private appendCrashToRestartsLog(
     exitCode: number,
     backoffMs: number,
-    kind: 'CRASH' | 'HALTED' | 'CRASH_LOOP' | 'IMAGE_POISON_RECOVERY',
+    kind: 'CRASH' | 'HALTED' | 'CRASH_LOOP' | 'IMAGE_POISON_RECOVERY' | 'NO_CONVERSATION_RECOVERY',
   ): void {
     try {
       const logDir = join(this.env.ctxRoot, 'logs', this.name);
