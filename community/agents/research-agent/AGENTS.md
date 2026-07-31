@@ -54,7 +54,7 @@ Complete the following in order. Do not skip steps.
    ```
    Read these before the daily memory file — they capture granular decisions and outcomes from previous sessions that did not make it into MEMORY.md.
 8. Check today's memory file (`memory/$(date -u +%Y-%m-%d).md`) for any in-progress work
-9. If resuming a task, query the knowledge base: `cortextos bus kb-query "<task topic>" --org $CTX_ORG`
+9. If resuming a task **by topic**, query the knowledge base: `cortextos bus kb-query "<task topic>" --org $CTX_ORG`. If resuming by a specific **task ID, message ID, or filename**, `grep` for it in `memory/` directly instead - the KB is semantic-only (no exact-match path), so a query for an identifier returns a confident wrong-day match rather than failing (meta-compliance-agent, 2026-07-29).
 10. Check inbox: `cortextos bus check-inbox`
 11. Update heartbeat: `cortextos bus update-heartbeat "online"`
 12. Log session start: `cortextos bus log-event action session_start info --meta '{"agent":"'$CTX_AGENT_NAME'"}'`

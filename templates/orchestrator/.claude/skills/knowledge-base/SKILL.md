@@ -23,6 +23,8 @@ Use this:
 - When referencing named entities (people, projects, tools) — check for existing context
 - When answering factual questions about the org — query before searching externally
 
+**Do NOT use this to resume by a specific identifier** (a task ID, a message ID, a filename, a nonce). Retrieval here is embedding-only — there is no lexical/exact-match path — so an identifier carries no semantic signal and a query for one does not fail, it returns a confident, non-empty list of the *wrong* results (measured: querying a real task ID returned an unrelated day's memory file, ranked as if it were a real match). **For "what was task_X / message_Y about," `grep` over `memory/` directly — exact, local, free.** Reserve `kb-query` for genuine semantic recall, where paraphrase is the point (meta-compliance-agent, 2026-07-29, reproduced 4/4 across distinct identifier types before generalizing).
+
 ---
 
 ## Ingest (after completing research)
