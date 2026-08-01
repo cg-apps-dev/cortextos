@@ -11,6 +11,87 @@ interface Check {
   fix?: string;
 }
 
+interface CredentialOverrideAuditAgent {
+  envKeys: string[];
+}
+
+interface CredentialOverrideFinding {
+  agent: string;
+  override: string;
+  detail: string;
+}
+
+interface CredentialOverrideFleetScan {
+  agents: Record<string, CredentialOverrideAuditAgent>;
+  scannedCount: number;
+  unreadable: Array<{ agent: string; path: string; error: string }>;
+}
+
+export const CREDENTIAL_OVERRIDE_KEYS = ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'] as const;
+
+export function auditCredentialOverrides(
+  { agents }: { agents: Record<string, CredentialOverrideAuditAgent> },
+): CredentialOverrideFinding[] {
+  const overrideKeys = new Set<string>(CREDENTIAL_OVERRIDE_KEYS);
+  const findings: CredentialOverrideFinding[] = [];
+
+  for (const [agent, record] of Object.entries(agents)) {
+    for (const envKey of record.envKeys ?? []) {
+      if (!overrideKeys.has(envKey)) continue;
+      findings.push({
+        agent,
+        override: envKey,
+        detail: `${envKey} overrides CLAUDE_CODE_OAUTH_TOKEN (silent auth/billing redirect)`,
+      });
+    }
+  }
+
+  return findings;
+}
+
+export function parseEnvKeyNames(content: string): string[] {
+  const keys: string[] = [];
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx <= 0) continue;
+    const key = trimmed.slice(0, eqIdx).replace(/^export\s+/, '').trim();
+    if (key) keys.push(key);
+  }
+  return keys;
+}
+
+export function enumerateAgentEnvKeys(frameworkRoot: string): CredentialOverrideFleetScan {
+  const agents: Record<string, CredentialOverrideAuditAgent> = {};
+  const unreadable: CredentialOverrideFleetScan['unreadable'] = [];
+  const orgsDir = join(frameworkRoot, 'orgs');
+
+  if (!existsSync(orgsDir)) {
+    return { agents, scannedCount: 0, unreadable };
+  }
+
+  for (const org of readdirSync(orgsDir)) {
+    const agentsDir = join(orgsDir, org, 'agents');
+    if (!existsSync(agentsDir)) continue;
+    for (const agent of readdirSync(agentsDir)) {
+      const envPath = join(agentsDir, agent, '.env');
+      if (!existsSync(envPath)) continue;
+      try {
+        agents[agent] = { envKeys: parseEnvKeyNames(readFileSync(envPath, 'utf-8')) };
+      } catch (err) {
+        unreadable.push({ agent, path: envPath, error: (err as Error).message });
+      }
+    }
+  }
+
+  return {
+    agents,
+    scannedCount: Object.keys(agents).length,
+    unreadable,
+  };
+}
+
 export const doctorCommand = new Command('doctor')
   .option('--instance <id>', 'Instance ID', 'default')
   .description('Diagnose common issues')
@@ -302,6 +383,45 @@ export const doctorCommand = new Command('doctor')
         status: geminiConfigured ? 'pass' : 'warn',
         message: geminiConfigured ? 'Configured' : 'Not set — semantic search and RAG disabled',
         fix: !geminiConfigured ? 'Add GEMINI_API_KEY to orgs/<org>/secrets.env — get a free key at https://aistudio.google.com/app/apikey' : undefined,
+      });
+    }
+
+    // Credential override audit. Static .env check only, names-only by design:
+    // it never reads or prints values. A complementary live process-environment
+    // sweep is still required to catch inherited/exported overrides that are not
+    // present in an agent's .env. Endpoint redirects such as ANTHROPIC_BASE_URL
+    // are a separate class and are not part of this auth-override key set.
+    const credentialScan = enumerateAgentEnvKeys(frameworkRoot);
+    const credentialFindings = auditCredentialOverrides({ agents: credentialScan.agents });
+    if (credentialScan.scannedCount === 0) {
+      checks.push({
+        name: 'Agent credential overrides',
+        status: 'fail',
+        message: 'Scanned 0 agent .env files - refusing to report a clean credential audit',
+        fix: 'Run doctor from the cortextOS framework root with orgs/<org>/agents/*/.env available',
+      });
+    } else if (credentialFindings.length > 0) {
+      checks.push({
+        name: 'Agent credential overrides',
+        status: 'fail',
+        message: `Scanned ${credentialScan.scannedCount} agent .env file(s); override env var(s) present: ${
+          credentialFindings.map(f => `${f.agent}:${f.override}`).join(', ')
+        }`,
+        fix: 'Remove ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY from live agent .env files; persistent agents should use CLAUDE_CODE_OAUTH_TOKEN bearer auth',
+      });
+    } else {
+      checks.push({
+        name: 'Agent credential overrides',
+        status: 'pass',
+        message: `Scanned ${credentialScan.scannedCount} agent .env file(s); no ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY overrides found (static .env audit only)`,
+      });
+    }
+    for (const item of credentialScan.unreadable) {
+      checks.push({
+        name: `Agent credential env unreadable: ${item.agent}`,
+        status: 'warn',
+        message: item.path,
+        fix: `Read failed: ${item.error}`,
       });
     }
 

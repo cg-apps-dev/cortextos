@@ -16,6 +16,7 @@ vi.mock('fs', async () => {
 });
 
 const fs = await import('fs');
+const nodePty = await import('node-pty');
 const { AgentPTY, enforceIsolatedClaudeCredentialEnv } = await import('../../../src/pty/agent-pty.js');
 
 const mockEnv = {
@@ -88,6 +89,30 @@ describe('AgentPTY isolated Claude config guard', () => {
     vi.mocked(fs.rmSync).mockClear();
     enforceIsolatedClaudeCredentialEnv({}, 'alice');
     expect(fs.rmSync).not.toHaveBeenCalled();
+  });
+
+  it('fires during spawn before node-pty launches an isolated agent with a malformed bearer', async () => {
+    const agentEnvPath = '/tmp/fw/orgs/acme/agents/alice/.env';
+    try {
+      vi.mocked(fs.existsSync).mockImplementation((path) => path === agentEnvPath);
+      vi.mocked(fs.readFileSync).mockImplementation((path) => {
+        if (path === agentEnvPath) {
+          return 'CLAUDE_CONFIG_DIR=/tmp/agent-home\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-short\n';
+        }
+        return '';
+      });
+      vi.mocked(fs.rmSync).mockClear();
+      vi.mocked(nodePty.spawn).mockClear();
+
+      const agent = new AgentPTY(mockEnv, {});
+
+      await expect(agent.spawn('fresh', 'PROMPT')).rejects.toThrow(/requires a 108-char/);
+      expect(nodePty.spawn).not.toHaveBeenCalled();
+      expect(fs.rmSync).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+      vi.mocked(fs.readFileSync).mockReset();
+    }
   });
 });
 

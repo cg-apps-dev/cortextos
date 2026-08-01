@@ -3,6 +3,7 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   entry: {
     cli: 'src/cli/index.ts',
+    'cli/doctor': 'src/cli/doctor.ts',
     daemon: 'src/daemon/index.ts',
     'daemon/heartbeat-staleness': 'src/daemon/heartbeat-staleness.ts',
     'hooks/hook-permission-telegram': 'src/hooks/hook-permission-telegram.ts',
