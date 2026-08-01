@@ -27,16 +27,18 @@ esac
 # gitleaks config" -> exit 1 -> and this hook reported "found a potential secret".
 # A path interpreted relative to something other than what the caller expects.
 repo_root="$(git rev-parse --show-toplevel)"
-# common-dir is the MAIN .git even from a worktree; its parent is the main checkout.
-common_dir="$(git rev-parse --git-common-dir)"
-case "$common_dir" in /*) ;; *) common_dir="$repo_root/$common_dir" ;; esac
-main_root="$(cd "$(dirname "$common_dir")" && pwd)"
+# repo_root (the CURRENT checkout - worktree OR primary) is correct now that the hook's
+# config + scanner are TRACKED files under scripts/hooks/: they travel with every
+# checkout, so a linked worktree finds ITS OWN copy. (Was main_root/the primary
+# checkout - a holdover from when the config lived under orgs/ and existed only in the
+# primary tree. Reviewer catch, codex-dev 2026-08-01: main_root sent a worktree looking
+# in the primary checkout's path, so a worktree with its own tracked config still failed.)
 cd "$repo_root"
 
 # Config lives beside the hook and is TRACKED (committed), so a fresh clone HAS it and
 # the fail-closed "config not found" branch below cannot fire on a clean checkout. This
 # was an UNTRACKED org/agent-specific path (broke every fresh clone) - fixed 2026-08-01.
-cfg="$main_root/scripts/hooks/gitleaks-backup.toml"
+cfg="$repo_root/scripts/hooks/gitleaks-backup.toml"
 
 refs_to_scan=()
 saw_push_ref=0
@@ -109,7 +111,7 @@ fi
 # (allows). That is a FAIL-OPEN on the only control blocking an unpushed leak.
 # So: assert the scanner still has the capability we depend on BEFORE believing a clean
 # verdict from it, and fail CLOSED if it does not.
-shape_scanner="$main_root/scripts/hooks/leak-shape-scan.sh"
+shape_scanner="$repo_root/scripts/hooks/leak-shape-scan.sh"
 if [ ! -f "$shape_scanner" ]; then
   echo "pre-push: BLOCKED - leak-shape-scan.sh not found at $shape_scanner (cannot verify shapes)." >&2
   exit 1
@@ -161,7 +163,7 @@ if [ "${#refs_to_scan[@]}" -gt 0 ]; then
     # Measured: fork push of a tree carrying the real leak exited 1 with NO REASON PRINTED.
     # A silent block on the exact case the guard exists for.
     shape_rc=0
-    shape_out="$(bash "$main_root/scripts/hooks/leak-shape-scan.sh" --tree "$ref" 2>&1)" || shape_rc=$?
+    shape_out="$(bash "$shape_scanner" --tree "$ref" 2>&1)" || shape_rc=$?
     printf '%s\n' "$shape_out" >&2
     if [ "$shape_rc" -ne 0 ]; then
       echo "pre-push: BLOCKED - operational leak shape found in $ref." >&2
