@@ -5,6 +5,10 @@ import {
   createRtkContinueDecayAutohealLoop,
   type RtkContinueDecayAutohealLoop,
 } from './rtk-continue-decay-autoheal.js';
+import {
+  createHeartbeatStalenessMonitorLoop,
+  type HeartbeatStalenessMonitorLoop,
+} from './heartbeat-staleness.js';
 import { readdirSync, readFileSync, writeFileSync, existsSync, chmodSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
@@ -246,6 +250,7 @@ class Daemon {
   private ipcServer: IPCServer | null = null;
   private agentAccountsSnapshotLoop: AgentAccountsSnapshotLoop | null = null;
   private rtkContinueDecayAutohealLoop: RtkContinueDecayAutohealLoop | null = null;
+  private heartbeatStalenessMonitorLoop: HeartbeatStalenessMonitorLoop | null = null;
   private instanceId: string;
   private ctxRoot: string;
 
@@ -303,6 +308,11 @@ class Daemon {
       frameworkRoot,
     });
     this.rtkContinueDecayAutohealLoop.start();
+    this.heartbeatStalenessMonitorLoop = createHeartbeatStalenessMonitorLoop({
+      ctxRoot: this.ctxRoot,
+      frameworkRoot,
+    });
+    this.heartbeatStalenessMonitorLoop.start();
 
     console.log(`[daemon] Running (pid: ${process.pid})`);
 
@@ -317,6 +327,10 @@ class Daemon {
         if (this.rtkContinueDecayAutohealLoop) {
           this.rtkContinueDecayAutohealLoop.stop();
           this.rtkContinueDecayAutohealLoop = null;
+        }
+        if (this.heartbeatStalenessMonitorLoop) {
+          this.heartbeatStalenessMonitorLoop.stop();
+          this.heartbeatStalenessMonitorLoop = null;
         }
         if (this.agentManager) {
           await this.agentManager.stopAll();
