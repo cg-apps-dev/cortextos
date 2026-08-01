@@ -21,6 +21,7 @@ import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/kn
 import { refreshUsage, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D, type AccountsStore, type OAuthAccount } from '../bus/oauth.js';
 import { captureKeychainUsageCredential, beginUsageAuth, completeUsageAuth, checkAllUsage, setAccountBenched, fingerprint as ucFingerprint, loadMultiAccountUsage, type AccountUsage } from '../bus/usage-accounts.js';
 import { KNOWN_SECRET_KEYS, setAgentEnv, shredSucceeded } from '../bus/env-edit.js';
+import { drainEnvBackups } from '../bus/env-backup-drain.js';
 import { resolveAgentAccount } from '../daemon/cron-capacity-gate.js';
 import { resolvePaths } from '../utils/paths.js';
 import { resolveEnv } from '../utils/env.js';
@@ -2977,6 +2978,48 @@ busCommand
       for (const warning of result.warnings) {
         console.error(warning);
       }
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  });
+
+busCommand
+  .command('shred-env-backups')
+  .description('Find and securely shred stray .env*bak* backup files across agent/org dirs (drains the timestamped-.env.bak pile). Fail-safe: never touches a live .env or .env.example.')
+  .option('--dry-run', 'List the backups that would be shredded without removing anything')
+  .action((opts: { dryRun?: boolean }) => {
+    const env = resolveEnv();
+    try {
+      const result = drainEnvBackups({
+        frameworkRoot: env.frameworkRoot || env.projectRoot || process.cwd(),
+        dryRun: !!opts.dryRun,
+      });
+
+      // Fail-LOUD drift/portability guard: surface a weakened at-rest guarantee
+      // (FileVault off / non-macOS) rather than let the shred silently downgrade.
+      if (!result.atRest.fileVaultProtected) {
+        console.error(`WARNING: at-rest shred guarantee weakened - ${result.atRest.detail}`);
+      }
+
+      if (result.matched.length === 0) {
+        console.log('No stray .env*bak* backups found.');
+        return;
+      }
+
+      if (result.dryRun) {
+        console.log(`[dry-run] ${result.matched.length} stray env-backup(s) would be shredded:`);
+        for (const path of result.matched) console.log(`  ${path}`);
+        return;
+      }
+
+      for (const path of result.shredded) console.log(`Shredded: ${path}`);
+      if (result.failed.length > 0) {
+        for (const f of result.failed) console.error(`FAILED to shred ${f.path}: ${f.error}`);
+        console.error(`${result.shredded.length} shredded, ${result.failed.length} FAILED`);
+        process.exit(1);
+      }
+      console.log(`${result.shredded.length} stray env-backup(s) shredded.`);
     } catch (err) {
       console.error((err as Error).message);
       process.exit(1);
