@@ -45,6 +45,31 @@ class ReconcileCompletedTests(unittest.TestCase):
         self.assertEqual(result["gaps"][0]["card_id"], "abc")
         self.assertEqual(result["gaps"][0]["file_count"], 2)
 
+    def test_zero_file_id_presence_but_card_id_on_sheet_is_excluded(self):
+        sheet_card_index = {"abc": [rc.SheetCardPresence("Ashley Monroe::VIDEOS", 8)]}
+        with patch.object(rc, "collect_finished_file_ids", return_value={"reexport-a", "reexport-b"}):
+            result = rc.reconcile([card()], {}, sheet_card_index=sheet_card_index)
+        self.assertEqual(result["gap_counts"], zero_counts())
+        self.assertEqual(result["excluded"]["card_id_present"], 1)
+        self.assertEqual(result["gaps"], [])
+
+    def test_card_id_present_takes_precedence_over_baseline_dropped_fail(self):
+        baseline = {"dropped_fail_cards": ["abc"], "testimonial_file_ids": []}
+        sheet_card_index = {"abc": [rc.SheetCardPresence("Ashley Monroe::VIDEOS", 8)]}
+        with patch.object(rc, "collect_finished_file_ids", return_value={"reexport-a", "reexport-b"}):
+            result = rc.reconcile([card()], {}, baseline=baseline, sheet_card_index=sheet_card_index)
+        self.assertEqual(result["gap_counts"], zero_counts())
+        self.assertEqual(result["excluded"]["card_id_present"], 1)
+        self.assertEqual(result["excluded"]["baseline_dropped_fail"], 0)
+
+    def test_card_id_from_cell_only_accepts_default_clickup_id_shape(self):
+        self.assertEqual(rc._card_id_from_cell("86e2b3fvx"), "86e2b3fvx")
+        self.assertEqual(rc._card_id_from_cell("https://app.clickup.com/t/86e2b3fvx"), "86e2b3fvx")
+        self.assertEqual(rc._card_id_from_cell("ab12cd34ef"), "ab12cd34ef")
+        self.assertIsNone(rc._card_id_from_cell("60320"))
+        self.assertIsNone(rc._card_id_from_cell("TRELLO"))
+        self.assertIsNone(rc._card_id_from_cell("ABC-123"))
+
     def test_partial_card_excludes_remaining_missing_variants(self):
         sheet_index = {"file-a": [presence("PASS")]}
         with patch.object(rc, "collect_finished_file_ids", return_value={"file-a", "file-b", "file-c"}):
@@ -250,6 +275,50 @@ class ReconcileCompletedTests(unittest.TestCase):
             index = rc.build_sheet_file_index(["IMAGES (Flower)"])
         self.assertEqual(index["file-a"][0], rc.SheetPresence("IMAGES (Flower)", 2, "PASS", rc.ACTIVE))
         self.assertEqual(index["file-b"][0], rc.SheetPresence("IMAGES (Flower)", 3, "", rc.PAUSED))
+
+    def test_sheet_indexes_extracts_card_ids_and_actor_sheet_targets(self):
+        target = rc.SheetTarget("actor-sheet-id", "VIDEOS", "Ashley Monroe::VIDEOS")
+        headers = {
+            "Meta Compliance Agent": 1,
+            "ADMANAGE": 2,
+            "E-0681 | Flower 2": 3,
+            "Variant #": 4,
+            "ClickUp Card ID": 5,
+            "4x5": 6,
+            "9x16": 7,
+        }
+        values = [
+            ["P", "Meta Compliance Agent", "ADMANAGE", "E-0681 | Flower 2", "Variant #", "ClickUp Card ID", "4x5", "9x16"],
+            ["", "PASS", "", "Active - 06/24/2026 - Ad ID: 1", "V01", "https://app.clickup.com/t/86e2b3fvx", "https://drive.google.com/file/d/file-a/view", ""],
+            ["", "", "", "", "V02", "ab12cd34ef", "", "https://drive.google.com/file/d/file-b/view"],
+        ]
+        with patch.object(rc, "_headers_target", return_value=headers), patch.object(rc, "_read_target", return_value=values):
+            file_index, card_index = rc.build_sheet_indexes([target])
+        self.assertEqual(file_index["file-a"][0], rc.SheetPresence("Ashley Monroe::VIDEOS", 2, "PASS", rc.ACTIVE))
+        self.assertEqual(card_index["86e2b3fvx"][0], rc.SheetCardPresence("Ashley Monroe::VIDEOS", 2))
+        self.assertEqual(card_index["ab12cd34ef"][0], rc.SheetCardPresence("Ashley Monroe::VIDEOS", 3))
+
+    def test_sheet_indexes_fail_loud_when_read_range_may_be_truncated(self):
+        target = rc.SheetTarget("actor-sheet-id", "VIDEOS", "Ashley Monroe::VIDEOS")
+        headers = {
+            "Meta Compliance Agent": 1,
+            "ADMANAGE": 2,
+            "E-0681 | Flower 2": 3,
+            "Variant #": 4,
+            "ClickUp Card ID": 5,
+            "4x5": 6,
+        }
+        values = [[""] * 7 for _ in range(4999)]
+        values[0] = ["P", "Meta Compliance Agent", "ADMANAGE", "E-0681 | Flower 2", "Variant #", "ClickUp Card ID", "4x5"]
+        values[-1][5] = "86e2b3fvx"
+        with patch.object(rc, "_headers_target", return_value=headers), patch.object(rc, "_read_target", return_value=values):
+            with self.assertRaisesRegex(RuntimeError, "population may be truncated"):
+                rc.build_sheet_indexes([target])
+
+    def test_default_sheet_targets_include_known_actor_sheets(self):
+        labels = {target.label for target in rc.DEFAULT_SHEET_TARGETS}
+        self.assertIn("Ashley Monroe::VIDEOS", labels)
+        self.assertIn("Sarah's Finds::IMAGES", labels)
 
     def test_sheet_index_halts_without_launch_boundaries(self):
         headers = {"Meta Compliance Agent": 1, "1x1": 3, "9x16": 5}

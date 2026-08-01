@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Zero-model completed-card to sheet reconciliation for Meta intake.
 
-Checks completed ClickUp cards against the upload sheet by Drive file ID only:
-- MISSING: no finished creative file IDs from the completed card are on the sheet.
+Checks completed ClickUp cards against the upload sheet by Drive file ID first, with
+ClickUp Card ID as the authoritative already-intaken fallback for re-exports:
+- MISSING: no finished creative file IDs or ClickUp Card ID from the completed card are on the sheet.
 - UNSCANNED: a sheet row has a blank Meta Compliance Agent verdict and active/ambiguous launch state.
-
-Card IDs are metadata only. They are never used as the reconciliation key.
 """
 
 from __future__ import annotations
@@ -25,11 +24,13 @@ import resolve_cards
 
 COMPLIANCE_HEADER = "Meta Compliance Agent"
 ADMANAGE_HEADER = "ADMANAGE"
+CARD_ID_HEADER = "ClickUp Card ID"
 ACCOUNT_HEADER_SIGNATURE = " | "  # every per-account launch header is 'ShortName | descriptor'
 DEFAULT_BASELINE_PATH = os.path.expanduser("~/.cortextos/default/state/meta-ads-agent/reconcile-baseline.json")
 NON_AD_FOLDER_RE = re.compile(r"b-?roll|raw|selects?|project files?|working|archive", re.I)
 EXCLUDED_KEYS = (
     "partial_card",
+    "card_id_present",
     "non_ad_folder",
     "dormant_unscanned",
     "paused_unscanned",
@@ -59,12 +60,21 @@ DEFAULT_SHEET_TABS = (
     "VIDEOS (Flower)",
     "VIDEOS (Sleep Gummies)",
 )
+ACTOR_SHEETS = {
+    "Jennifer Stone": "1sQ-11HAzbMPIAlrvT_0bJVctYO7FtIEno_OHC939hro",
+    "Gary Sullivan": "1yI5dWDOMSzonf_VVQdQWDdpasUyMl24jrQeSbWk3Sug",
+    "Megan Cole": "1vYXcBUqPVGriH2MwBjgNARvMOHyDM1g3iwYGDKeA_Wo",
+    "Sarah's Finds": "1LeLV4eThmqiGaS9xL6gm5m1N274C6BYiubn_lePC_HA",
+    "Ashley Monroe": "1L-ImOau4cOnfyqTEGZ6o0N7MKDhcdh2-li1IP0ssi8s",
+}
+ACTOR_SHEET_TABS = ("IMAGES", "VIDEOS")
 DEFAULT_LISTS = {
     "901711558014": "image",  # Static Image Ads
     "901711553702": "video",  # Video Ads
     "901711560388": "video",  # Pod 1 UGC
     "901712123770": "video",  # Pod 2 UGC
 }
+CLICKUP_TASK_ID_RE = re.compile(r"(?=.*[A-Za-z])[A-Za-z0-9]{9,10}")
 
 
 @dataclass(frozen=True)
@@ -73,6 +83,19 @@ class SheetPresence:
     row: int
     verdict: str
     launch_state: str = DORMANT
+
+
+@dataclass(frozen=True)
+class SheetCardPresence:
+    tab: str
+    row: int
+
+
+@dataclass(frozen=True)
+class SheetTarget:
+    spreadsheet_id: str
+    tab: str
+    label: str
 
 
 @dataclass(frozen=True)
@@ -120,6 +143,90 @@ def _clickup_get(path: str, params: dict[str, object] | None = None) -> dict[str
 
 def _is_completed_status(status: str | None) -> bool:
     return "posted to sheet" in (status or "").lower()
+
+
+def _card_id_from_cell(cell: str | None) -> str | None:
+    value = (cell or "").strip()
+    if not value:
+        return None
+    match = re.search(r"/t/([A-Za-z0-9]+)", value)
+    if match:
+        candidate = match.group(1)
+        return candidate if CLICKUP_TASK_ID_RE.fullmatch(candidate) else None
+    return value if CLICKUP_TASK_ID_RE.fullmatch(value) else None
+
+
+def _assert_not_truncated(tab: str, values: list[list[str]], limit: int, consumed_cols: Iterable[int]) -> None:
+    if len(values) < limit - 1:
+        return
+    cols = list(consumed_cols)
+    last_substantive = 0
+    for row_number, row in enumerate(values, start=1):
+        if any(len(row) > col and str(row[col]).strip() for col in cols):
+            last_substantive = row_number
+    if last_substantive >= limit - 1:
+        raise RuntimeError(
+            f"sheet read on {tab}: substantive data reaches row {last_substantive} at the "
+            f"{limit}-row range cap - population may be truncated; raise the cap before "
+            f"trusting any result"
+        )
+
+
+def _default_sheet_targets() -> tuple[SheetTarget, ...]:
+    targets = [SheetTarget(engine.SHEET_ID, tab, tab) for tab in DEFAULT_SHEET_TABS]
+    for actor, spreadsheet_id in ACTOR_SHEETS.items():
+        for tab in ACTOR_SHEET_TABS:
+            targets.append(SheetTarget(spreadsheet_id, tab, f"{actor}::{tab}"))
+    return tuple(targets)
+
+
+DEFAULT_SHEET_TARGETS = _default_sheet_targets()
+
+
+def _normalize_sheet_targets(tabs: Iterable[str | SheetTarget] | None = None) -> list[SheetTarget]:
+    if tabs is None:
+        return list(DEFAULT_SHEET_TARGETS)
+    targets: list[SheetTarget] = []
+    for tab in tabs:
+        if isinstance(tab, SheetTarget):
+            targets.append(tab)
+        else:
+            targets.append(SheetTarget(engine.SHEET_ID, str(tab), str(tab)))
+    return targets
+
+
+def _read_target(target: SheetTarget, a1: str) -> list:
+    if target.spreadsheet_id == engine.SHEET_ID:
+        return engine._read(target.tab, a1)
+    result = engine._rc([
+        "sheets",
+        "get",
+        target.spreadsheet_id,
+        engine._sheet_range(target.tab, a1),
+        "--render",
+        "FORMATTED_VALUE",
+    ])
+    return result.get("values", [])
+
+
+def _headers_target(target: SheetTarget) -> dict[str, int]:
+    if target.spreadsheet_id == engine.SHEET_ID:
+        return engine._headers(target.tab)
+    header_rows = _read_target(target, "A1:BZ1")
+    header = header_rows[0] if header_rows else []
+    index: dict[str, int] = {}
+    duplicates: list[str] = []
+    for i, name in enumerate(header):
+        value = (name or "").strip()
+        if not value:
+            continue
+        if value in index:
+            duplicates.append(value)
+        else:
+            index[value] = i
+    if duplicates:
+        raise RuntimeError(f"DUP_HEADERS {target.label}: {duplicates}")
+    return index
 
 
 def list_completed_cards(list_kind: dict[str, str] = DEFAULT_LISTS) -> list[CompletedCard]:
@@ -289,34 +396,64 @@ def _resolve_launch_cols(headers: dict[str, int]) -> list[int]:
     return launch_cols
 
 
-def build_sheet_file_index(tabs: Iterable[str] = DEFAULT_SHEET_TABS) -> dict[str, list[SheetPresence]]:
+def build_sheet_indexes(
+    tabs: Iterable[str | SheetTarget] | None = None,
+) -> tuple[dict[str, list[SheetPresence]], dict[str, list[SheetCardPresence]]]:
     index: dict[str, list[SheetPresence]] = {}
-    for tab in tabs:
-        headers = engine._headers(tab)
+    card_index: dict[str, list[SheetCardPresence]] = {}
+    for target in _normalize_sheet_targets(tabs):
+        headers = _headers_target(target)
         if COMPLIANCE_HEADER not in headers:
-            raise RuntimeError(f"missing header {COMPLIANCE_HEADER!r} on {tab}")
+            raise RuntimeError(f"missing header {COMPLIANCE_HEADER!r} on {target.label}")
         if ADMANAGE_HEADER not in headers:
-            raise RuntimeError(f"missing header {ADMANAGE_HEADER!r} on {tab}")
+            raise RuntimeError(f"missing header {ADMANAGE_HEADER!r} on {target.label}")
         launch_cols = _resolve_launch_cols(headers)
         if not launch_cols:
-            raise RuntimeError(f"no per-account launch columns (header '<account> | <descriptor>') after {ADMANAGE_HEADER!r} on {tab}")
+            raise RuntimeError(f"no per-account launch columns (header '<account> | <descriptor>') after {ADMANAGE_HEADER!r} on {target.label}")
         asset_cols = [headers[name] for name in ("1x1", "4x5", "9x16") if name in headers]
-        if not asset_cols:
+        card_id_col = headers.get(CARD_ID_HEADER)
+        if not asset_cols and card_id_col is None:
             continue
-        max_col = max([headers[COMPLIANCE_HEADER], headers[ADMANAGE_HEADER], *launch_cols, *asset_cols])
-        values = engine._read(tab, f"A1:{engine._col_letter(max_col)}5000")
+        max_col = max([
+            headers[COMPLIANCE_HEADER],
+            headers[ADMANAGE_HEADER],
+            *launch_cols,
+            *asset_cols,
+            *([card_id_col] if card_id_col is not None else []),
+        ])
+        values = _read_target(target, f"A1:{engine._col_letter(max_col)}5000")
+        _assert_not_truncated(
+            target.label,
+            values,
+            5000,
+            [
+                headers[COMPLIANCE_HEADER],
+                *launch_cols,
+                *asset_cols,
+                *([card_id_col] if card_id_col is not None else []),
+            ],
+        )
         for offset, row in enumerate(values[1:], start=2):
             verdict = row[headers[COMPLIANCE_HEADER]].strip() if len(row) > headers[COMPLIANCE_HEADER] else ""
             launch_cells = [row[col] if len(row) > col else "" for col in launch_cols]
             launch_state = classify_launch_state(launch_cells)
+            if card_id_col is not None and len(row) > card_id_col:
+                card_id = _card_id_from_cell(row[card_id_col])
+                if card_id:
+                    card_index.setdefault(card_id, []).append(SheetCardPresence(tab=target.label, row=offset))
             for col in asset_cols:
                 if len(row) <= col:
                     continue
                 file_id = engine._fid(row[col])
                 if not file_id:
                     continue
-                index.setdefault(file_id, []).append(SheetPresence(tab=tab, row=offset, verdict=verdict, launch_state=launch_state))
-    return index
+                index.setdefault(file_id, []).append(SheetPresence(tab=target.label, row=offset, verdict=verdict, launch_state=launch_state))
+    return index, card_index
+
+
+def build_sheet_file_index(tabs: Iterable[str | SheetTarget] | None = None) -> dict[str, list[SheetPresence]]:
+    file_index, _card_index = build_sheet_indexes(tabs)
+    return file_index
 
 
 def _empty_excluded() -> dict[str, int]:
@@ -339,6 +476,7 @@ def reconcile(
     cards: Iterable[CompletedCard],
     sheet_index: dict[str, list[SheetPresence]],
     baseline: dict[str, object] | None = None,
+    sheet_card_index: dict[str, list[SheetCardPresence]] | None = None,
 ) -> dict[str, object]:
     gaps: list[Gap] = []
     pending: list[dict[str, object]] = []
@@ -370,6 +508,9 @@ def reconcile(
         checked_file_ids += len(file_ids)
         present_count = sum(1 for file_id in file_ids if sheet_index.get(file_id))
         if present_count == 0:
+            if sheet_card_index and sheet_card_index.get(card.card_id):
+                excluded["card_id_present"] += 1
+                continue
             if card.card_id in dropped_fail_cards:
                 excluded["baseline_dropped_fail"] += 1
             else:
@@ -503,7 +644,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit JSON instead of markdown")
     args = parser.parse_args(argv)
 
-    tabs = args.tab or list(DEFAULT_SHEET_TABS)
+    tabs = [SheetTarget(engine.SHEET_ID, tab, tab) for tab in args.tab] if args.tab else None
     if args.card:
         cards = resolve_completed_cards(args.card, args.kind)
     else:
@@ -513,7 +654,8 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"unknown list IDs need kind mapping in code: {sorted(unknown)}")
         cards = list_completed_cards(selected)
     baseline = None if args.no_baseline else load_baseline()
-    result = reconcile(cards, build_sheet_file_index(tabs), baseline=baseline)
+    sheet_index, sheet_card_index = build_sheet_indexes(tabs)
+    result = reconcile(cards, sheet_index, baseline=baseline, sheet_card_index=sheet_card_index)
     if args.json:
         print(json.dumps(result, indent=2))
     else:
