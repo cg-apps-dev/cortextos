@@ -1,4 +1,4 @@
-import { openSync, fsyncSync, closeSync, unlinkSync, existsSync, statSync, writeSync } from 'fs';
+import { openSync, fsyncSync, closeSync, unlinkSync, existsSync, statSync, writeSync, constants } from 'fs';
 import { randomBytes } from 'crypto';
 import { execFileSync } from 'child_process';
 
@@ -53,7 +53,12 @@ export function shredFile(path: string): void {
   try {
     const size = statSync(path).size;
     if (size > 0) {
-      const fd = openSync(path, 'r+');
+      // O_NOFOLLOW: never write THROUGH a symlink. If a symlink were planted at
+      // this path (e.g. a `.env*bak*`-named link the drain discovers), following
+      // it would send random bytes to its target. O_NOFOLLOW makes the open throw
+      // (ELOOP) atomically instead - caught below, and the unlink then removes the
+      // link itself, not the target. TOCTOU-safe vs an lstat-then-open check.
+      const fd = openSync(path, constants.O_RDWR | constants.O_NOFOLLOW);
       try {
         for (let pass = 0; pass < 2; pass++) {
           const buf = randomBytes(size);

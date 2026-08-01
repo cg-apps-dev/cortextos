@@ -9,6 +9,7 @@ import {
   parseEnvAssignments,
   setAgentEnv,
   verifyEnvEdit,
+  isSecretKeyName,
 } from '../../../src/bus/env-edit.js';
 import { envBackupDir } from '../../../src/bus/env-backup.js';
 
@@ -255,5 +256,36 @@ describe('set-agent-env safe .env edit helper', () => {
 
     expect(after.endsWith('\n')).toBe(true);
     expect(() => verifyEnvEdit({ before, after, envPath, expected })).not.toThrow();
+  });
+});
+
+describe('leak-safety of error paths (security review findings)', () => {
+  it('Finding 1: an invalid key that is a token fragment is REDACTED, never echoed', () => {
+    // A bare token with a base64 "=" pad: pre-"=" slice has dashes -> fails
+    // ENV_KEY_RE -> the invalid-key error must NOT contain the fragment.
+    const fragment = 'sk-ant-oat01-abc123def456';
+    try {
+      parseEnvAssignments([`${fragment}=padding`]);
+      throw new Error('expected parseEnvAssignments to throw on an invalid key');
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).not.toContain(fragment);
+      expect(msg).toContain('redacted');
+    }
+  });
+
+  it('Finding 2: isSecretKeyName is fail-closed on named AND secret-shaped keys', () => {
+    // named
+    for (const k of ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'BOT_TOKEN']) {
+      expect(isSecretKeyName(k), k).toBe(true);
+    }
+    // shaped (NOT in the named set) - the class the .env.bak sweep proved exists
+    for (const k of ['SHOPIFY_ACCESS_TOKEN', 'GOG_KEYRING_PASSWORD', 'FUNCTION_HEALTH_PASSWORD', 'SOME_API_SECRET', 'X_CREDENTIAL']) {
+      expect(isSecretKeyName(k), k).toBe(true);
+    }
+    // non-secret keys pass through (can stay positional)
+    for (const k of ['FOO', 'PORT', 'CTX_ORG', 'DEBUG']) {
+      expect(isSecretKeyName(k), k).toBe(false);
+    }
   });
 });

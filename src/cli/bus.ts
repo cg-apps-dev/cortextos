@@ -20,7 +20,7 @@ import { nextFireFromCron } from '../daemon/cron-scheduler.js';
 import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/knowledge-base.js';
 import { refreshUsage, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D, type AccountsStore, type OAuthAccount } from '../bus/oauth.js';
 import { captureKeychainUsageCredential, beginUsageAuth, completeUsageAuth, checkAllUsage, setAccountBenched, fingerprint as ucFingerprint, loadMultiAccountUsage, type AccountUsage } from '../bus/usage-accounts.js';
-import { KNOWN_SECRET_KEYS, setAgentEnv, shredSucceeded } from '../bus/env-edit.js';
+import { isSecretKeyName, setAgentEnv, shredSucceeded } from '../bus/env-edit.js';
 import { drainEnvBackups } from '../bus/env-backup-drain.js';
 import { resolveAgentAccount } from '../daemon/cron-capacity-gate.js';
 import { resolvePaths } from '../utils/paths.js';
@@ -2953,12 +2953,16 @@ busCommand
   .action((agent: string, assignments: string[], opts: { fromFile?: string; org?: string }) => {
     const env = resolveEnv();
     try {
+      // Fail-CLOSED toward "looks secret -> must use --from-file": a value passed
+      // positionally lands in argv (ps / shell history). isSecretKeyName matches
+      // both the named secret keys and the secret-shape pattern. Only key NAMES
+      // are echoed here, never a value.
       const argvSecretKeys = assignments
         .map((arg) => {
           const eqIdx = arg.indexOf('=');
           return eqIdx > 0 ? arg.slice(0, eqIdx).trim() : '';
         })
-        .filter((key) => KNOWN_SECRET_KEYS.has(key));
+        .filter((key) => key !== '' && isSecretKeyName(key));
       if (argvSecretKeys.length > 0) {
         throw new Error(`set-agent-env: secret keys must be supplied via --from-file, not argv: ${argvSecretKeys.join(', ')}`);
       }

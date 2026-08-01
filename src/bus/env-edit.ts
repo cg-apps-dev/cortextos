@@ -13,6 +13,18 @@ export const KNOWN_SECRET_KEYS = new Set([
   'BOT_TOKEN',
 ]);
 
+// A key NAME whose shape says "this is a secret". Used to fail-CLOSED at the CLI
+// boundary: a secret passed positionally lands its VALUE in argv (ps / shell
+// history), so any secret-shaped key must go via --from-file. The 4 named keys
+// above are NOT the whole secret set (the .env.bak sweep found SHOPIFY_ACCESS_TOKEN
+// / GOG_KEYRING_PASSWORD / *_PASSWORD etc), so match by shape as well as by name.
+export const SECRET_KEY_SHAPE = /TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL/i;
+
+/** True if the key name is a known secret OR has a secret shape (fail-closed). */
+export function isSecretKeyName(key: string): boolean {
+  return KNOWN_SECRET_KEYS.has(key) || SECRET_KEY_SHAPE.test(key);
+}
+
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export interface SetAgentEnvInput {
@@ -218,7 +230,10 @@ function addAssignment(out: Map<string, string>, raw: string, source: string): v
   const key = raw.slice(0, eqIdx).trim();
   const value = raw.slice(eqIdx + 1);
   if (!ENV_KEY_RE.test(key)) {
-    throw new Error(`set-agent-env: invalid env key '${key}' at ${source}`);
+    // LEAK-SAFE: an invalid "key" can be a token fragment (e.g. a bare token with
+    // a base64 '=' pad, whose pre-'=' slice is secret material). Never echo the
+    // raw slice - report its shape only, like describeLineShape does for lines.
+    throw new Error(`set-agent-env: invalid env key <redacted: ${Buffer.byteLength(key, 'utf-8')} bytes> at ${source}`);
   }
   if (value.includes('\n') || value.includes('\r')) {
     throw new Error(`set-agent-env: value for ${key} must be a single line`);
