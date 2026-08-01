@@ -85,6 +85,10 @@ export interface AccountUsage {
   status?: 'impossible-read' | 'suspect' | 'benched';
   suspect?: boolean;
   error?: string;              // status/short reason only - never a token
+  /** Set ONLY on a thrown pre-response failure (see fetchAccountUsage catch),
+   *  to distinguish a credential-resolution throw from a network throw.
+   *  Absent for a success and for an HTTP-error response (that stays 'fetch-fail'). */
+  fetch_failure_kind?: 'cred-resolution' | 'fetch-network';
   five_hour_pct?: number;      // 0-100
   seven_day_pct?: number;      // 0-100
   five_hour_resets?: string;
@@ -111,6 +115,11 @@ export const USAGE_ALERT_5H_PCT = 80;
 export const USAGE_ALERT_7D_PCT = 60;
 // Fetch failures alert only after 3 consecutive reads: 15 min at the 5-min poll.
 export const FETCH_FAIL_ALERT_CYCLES = 3;
+// One retry with a short backoff on a THROWN pre-response failure. Both observed
+// real failures (2026-08-01 11:35Z + 19:35Z, all 4 accounts, status=None) self-
+// recovered within minutes, so a single retry turns most transient throws into a
+// success rather than a failed cycle. 3s is within the 2-5s window; tests pass 0.
+export const USAGE_FETCH_RETRY_BACKOFF_MS = 3000;
 
 
 // All OAuth constants are taken VERBATIM from the live Claude Code 2.1.173
@@ -608,7 +617,14 @@ function recordRawUsageResponse(
   atomicWriteSync(path, JSON.stringify({ account, entries: entries.slice(-20) }, null, 2));
 }
 
-type UsageDiagnosticFailure = 'impossible-read' | 'suspect' | 'fetch-fail' | 'no-credential';
+// 'fetch-fail' is kept for an HTTP-error RESPONSE (response.ok===false, e.g.
+// HTTP 401/429/500 — returned early, never via the catch). A THROWN pre-response
+// failure is split into two so diagnostics stop conflating a credential-resolution
+// throw with a network throw (the 2026-08-01 recurring status=None fetch-fail):
+// 'cred-resolution-fail' (resolveUsageTokenWithAttribution threw) vs
+// 'fetch-network-fail' (the fetch/response threw). classifyFailure routes on the
+// AccountUsage.fetch_failure_kind field that fetchAccountUsage sets in its catch.
+type UsageDiagnosticFailure = 'impossible-read' | 'suspect' | 'fetch-fail' | 'cred-resolution-fail' | 'fetch-network-fail' | 'no-credential';
 
 interface UsageResponseWindowShape {
   present: boolean;
@@ -711,10 +727,15 @@ function usageResponseShape(ctxRoot: string, row: AccountUsage): UsageResponseSh
   };
 }
 
-function classifyFailure(row: AccountUsage): UsageDiagnosticFailure {
+export function classifyFailure(row: AccountUsage): UsageDiagnosticFailure {
   if (row.status === 'impossible-read') return 'impossible-read';
   if (row.status === 'suspect') return 'suspect';
   if (row.error === 'no usage_credential') return 'no-credential';
+  // A thrown pre-response failure carries fetch_failure_kind; route it to the
+  // distinguished variant so cred-resolution and network throws never conflate.
+  if (row.fetch_failure_kind === 'cred-resolution') return 'cred-resolution-fail';
+  if (row.fetch_failure_kind === 'fetch-network') return 'fetch-network-fail';
+  // Everything left is an HTTP-error response (error='HTTP xxx', no kind set).
   return 'fetch-fail';
 }
 
@@ -722,6 +743,8 @@ function whichCheck(row: AccountUsage, failure: UsageDiagnosticFailure): string 
   if (failure === 'impossible-read') return row.error ?? 'utilization present without resets_at';
   if (failure === 'no-credential') return 'account has no usage_credential configured';
   if (failure === 'suspect') return row.error ?? 'delta sanity marked read as suspect';
+  if (failure === 'cred-resolution-fail') return `credential resolution threw before any fetch: ${row.error ?? 'unknown'}`;
+  if (failure === 'fetch-network-fail') return `the usage API fetch threw (network/transport): ${row.error ?? 'unknown'}`;
   if (row.error?.startsWith('HTTP ')) return `usage API returned ${row.error}`;
   return 'usage credential resolution or fetch threw an exception';
 }
@@ -737,6 +760,12 @@ function suggestedCause(row: AccountUsage, failure: UsageDiagnosticFailure): str
   }
   if (failure === 'suspect' && row.error?.includes('dropped to zero')) {
     return 'Window dropped to 0 before its prior reset_at passed - suspect read, not a real reset. Check raw buffer.';
+  }
+  if (failure === 'cred-resolution-fail') {
+    return `Credential resolution threw BEFORE any network call (retried once, still failed): ${error}. Source ${source}. This is a credential problem, not the API/network - check the account's keychain (logged out?) or pkce/refresh credential; the usage API was never reached.`;
+  }
+  if (failure === 'fetch-network-fail') {
+    return `The usage API fetch threw at the network/transport layer (retried once, still failed): ${error}. The credential resolved fine (${source}) - this is a connectivity/DNS/TLS/timeout issue reaching the API, not an auth or credential problem. Usually transient; self-heals next cycle.`;
   }
   if (failure === 'fetch-fail' && row.error === 'HTTP 401') {
     return 'Auth rejected - credential expired/invalid; pkce should reactive-refresh, keychain re-reads live. If persistent, re-capture the credential.';
@@ -887,6 +916,7 @@ export async function fetchAccountUsage(
   ctxRoot: string,
   accountName: string,
   blobReader: () => KeychainBlob | null = readKeychainBlob,
+  retryBackoffMs: number = USAGE_FETCH_RETRY_BACKOFF_MS,
 ): Promise<AccountUsage> {
   const now = new Date().toISOString();
   const store = requireStore(ctxRoot);
@@ -895,52 +925,75 @@ export async function fetchAccountUsage(
     return { account: accountName, ok: false, error: 'no usage_credential', fetched_at: now };
   }
   const isKeychain = cred.source === 'keychain-capture';
-  let attribution: Omit<UsageTokenResolution, 'token'> | undefined;
-  try {
-    let resolved = await resolveUsageTokenWithAttribution(ctxRoot, accountName, blobReader);
-    attribution = {
-      credential_source: resolved.credential_source,
-      credential_fingerprint: resolved.credential_fingerprint,
-    };
-    let response = await fetch(USAGE_API, {
-      headers: { Authorization: `Bearer ${resolved.token}`, 'anthropic-beta': 'oauth-2025-04-20' },
-    });
-    if (response.status === 401 && !isKeychain) {
-      // Reactive refresh+retry only for PKCE (a fresh keychain read already
-      // gave the newest token; a 401 there is not fixable by re-reading).
-      const token = await refreshUsageCredential(ctxRoot, accountName);
-      resolved = {
-        token,
-        credential_source: 'pkce-authorize',
-        credential_fingerprint: fingerprint(token),
-      };
+  // ONE retry with a short backoff on a THROWN pre-response failure (credential
+  // resolution or the network fetch). A non-throw HTTP-error RESPONSE returns
+  // below WITHOUT looping (the 401 path already has its own PKCE refresh+retry).
+  // attempt 0 throws -> back off -> attempt 1; attempt 1 throw -> record failure.
+  for (let attempt = 0; ; attempt++) {
+    // Reset per attempt so the catch attributes THIS attempt's throw: attribution
+    // is populated ONLY after resolution succeeds, so attribution===undefined at
+    // the catch => resolution threw; set => the fetch/response threw.
+    let attribution: Omit<UsageTokenResolution, 'token'> | undefined;
+    try {
+      let resolved = await resolveUsageTokenWithAttribution(ctxRoot, accountName, blobReader);
       attribution = {
         credential_source: resolved.credential_source,
         credential_fingerprint: resolved.credential_fingerprint,
       };
-      response = await fetch(USAGE_API, {
+      let response = await fetch(USAGE_API, {
         headers: { Authorization: `Bearer ${resolved.token}`, 'anthropic-beta': 'oauth-2025-04-20' },
       });
-    }
-    if (!response.ok) {
+      if (response.status === 401 && !isKeychain) {
+        // Reactive refresh+retry only for PKCE (a fresh keychain read already
+        // gave the newest token; a 401 there is not fixable by re-reading).
+        const token = await refreshUsageCredential(ctxRoot, accountName);
+        resolved = {
+          token,
+          credential_source: 'pkce-authorize',
+          credential_fingerprint: fingerprint(token),
+        };
+        attribution = {
+          credential_source: resolved.credential_source,
+          credential_fingerprint: resolved.credential_fingerprint,
+        };
+        response = await fetch(USAGE_API, {
+          headers: { Authorization: `Bearer ${resolved.token}`, 'anthropic-beta': 'oauth-2025-04-20' },
+        });
+      }
+      if (!response.ok) {
+        // An HTTP-error RESPONSE (not a throw) - stays 'fetch-fail', not retried here.
+        return {
+          account: accountName,
+          ok: false,
+          error: `HTTP ${response.status}`,
+          fetched_at: now,
+          ...(attribution ?? {}),
+        };
+      }
+      const raw = await response.json();
+      recordRawUsageResponse(ctxRoot, accountName, raw, now, resolved);
+      return {
+        ...parseUsageResponse(accountName, raw, now),
+        credential_source: resolved.credential_source,
+        credential_fingerprint: resolved.credential_fingerprint,
+      };
+    } catch (err) {
+      if (attempt === 0) {
+        // One short backoff, then retry the whole resolve+fetch once.
+        if (retryBackoffMs > 0) await new Promise((resolve) => setTimeout(resolve, retryBackoffMs));
+        continue;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      const fetch_failure_kind = attribution === undefined ? 'cred-resolution' : 'fetch-network';
       return {
         account: accountName,
         ok: false,
-        error: `HTTP ${response.status}`,
+        error: msg.slice(0, 200),
+        fetch_failure_kind,
         fetched_at: now,
         ...(attribution ?? {}),
       };
     }
-    const raw = await response.json();
-    recordRawUsageResponse(ctxRoot, accountName, raw, now, resolved);
-    return {
-      ...parseUsageResponse(accountName, raw, now),
-      credential_source: resolved.credential_source,
-      credential_fingerprint: resolved.credential_fingerprint,
-    };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { account: accountName, ok: false, error: msg.slice(0, 200), fetched_at: now, ...(attribution ?? {}) };
   }
 }
 

@@ -10,6 +10,7 @@ import {
   evaluateAlerts,
   captureKeychainUsageCredential,
   fetchAccountUsage,
+  classifyFailure,
   checkAllUsage,
   resolveUsageToken,
   beginUsageAuth,
@@ -852,6 +853,85 @@ describe('usage-accounts', () => {
       const token = await resolveUsageToken(ctxRoot, 'cg-team-seat', () => { keychainRead = true; return null; });
       expect(token).toBe('sk-ant-oat01-PKCESTOREDwTOK');
       expect(keychainRead).toBe(false);
+    });
+  });
+
+  describe('fetch-failure distinguish + one retry (task_1785543345285)', () => {
+    // Seed one account carrying a usage_credential of the given source.
+    function seedOne(source: 'keychain-capture' | 'pkce-authorize', token: string) {
+      atomicWriteSync(join(ctxRoot, 'state', 'oauth', 'accounts.json'), JSON.stringify({
+        active: 'acct',
+        accounts: { acct: {
+          label: 'acct', access_token: '', refresh_token: '', expires_at: 0, last_refreshed: '',
+          five_hour_utilization: 0, seven_day_utilization: 0,
+          usage_credential: {
+            access_token: token, refresh_token: 'rt', expires_at: Date.now() + 3600_000,
+            scopes: ['user:profile'], source, captured_at: NOW,
+          },
+        } },
+        rotation_log: [],
+      }, null, 2));
+    }
+    const goodBlob = () => ({
+      accessToken: 'sk-ant-oat01-LIVEwTOK', refreshToken: 'rt',
+      expiresAt: Date.now() + 3600_000, scopes: ['user:profile'],
+    });
+
+    it('classifyFailure routes the distinguished kinds and never conflates them (D1)', () => {
+      expect(classifyFailure({ account: 'a', ok: false, error: 'boom', fetch_failure_kind: 'cred-resolution', fetched_at: NOW })).toBe('cred-resolution-fail');
+      expect(classifyFailure({ account: 'a', ok: false, error: 'boom', fetch_failure_kind: 'fetch-network', fetched_at: NOW })).toBe('fetch-network-fail');
+      // An HTTP-error RESPONSE (no kind set) stays 'fetch-fail' - NOT conflated with a throw.
+      expect(classifyFailure({ account: 'a', ok: false, error: 'HTTP 500', fetched_at: NOW })).toBe('fetch-fail');
+    });
+
+    it('a credential-resolution throw records cred-resolution and never reaches the fetch (D1)', async () => {
+      seedOne('keychain-capture', 'sk-ant-oat01-STALEwTOK');
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      // blobReader null -> resolveUsageToken throws "keychain credential unavailable" BEFORE any fetch.
+      const usage = await fetchAccountUsage(ctxRoot, 'acct', () => null, 0);
+      expect(usage.ok).toBe(false);
+      expect(usage.fetch_failure_kind).toBe('cred-resolution');
+      expect(classifyFailure(usage)).toBe('cred-resolution-fail');
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('a network throw records fetch-network (the credential resolved first) (D1)', async () => {
+      seedOne('keychain-capture', 'sk-ant-oat01-LIVEwTOK');
+      const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNRESET'));
+      vi.stubGlobal('fetch', fetchMock);
+      const usage = await fetchAccountUsage(ctxRoot, 'acct', goodBlob, 0);
+      expect(usage.ok).toBe(false);
+      expect(usage.fetch_failure_kind).toBe('fetch-network');
+      expect(classifyFailure(usage)).toBe('fetch-network-fail');
+      expect(usage.error).toContain('ECONNRESET');
+    });
+
+    it('a TRANSIENT single throw self-recovers via the one retry - no failure surfaced (D2)', async () => {
+      seedOne('keychain-capture', 'sk-ant-oat01-LIVEwTOK');
+      const okBody = {
+        five_hour: { utilization: 5, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 3, resets_at: '2026-06-15T00:00:00Z' },
+      };
+      const fetchMock = vi.fn()
+        .mockRejectedValueOnce(new Error('ETIMEDOUT'))                             // attempt 0 throws
+        .mockResolvedValueOnce({ ok: true, status: 200, json: async () => okBody }); // attempt 1 succeeds
+      vi.stubGlobal('fetch', fetchMock);
+      const usage = await fetchAccountUsage(ctxRoot, 'acct', goodBlob, 0);
+      expect(usage.ok).toBe(true);
+      expect(usage.fetch_failure_kind).toBeUndefined();
+      expect(usage.five_hour_pct).toBe(5);
+      expect(fetchMock).toHaveBeenCalledTimes(2); // retried exactly once
+    });
+
+    it('a PERSISTENT throw (both attempts fail) still records the now-distinguished failure (D2)', async () => {
+      seedOne('keychain-capture', 'sk-ant-oat01-LIVEwTOK');
+      const fetchMock = vi.fn().mockRejectedValue(new Error('ENETDOWN'));
+      vi.stubGlobal('fetch', fetchMock);
+      const usage = await fetchAccountUsage(ctxRoot, 'acct', goodBlob, 0);
+      expect(usage.ok).toBe(false);
+      expect(usage.fetch_failure_kind).toBe('fetch-network');
+      expect(fetchMock).toHaveBeenCalledTimes(2); // one retry, then recorded
     });
   });
 
