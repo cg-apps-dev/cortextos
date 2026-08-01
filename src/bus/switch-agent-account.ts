@@ -95,6 +95,7 @@ export interface SwitchBatchResult {
   sourceAccount: string;
   targetAccount: string;
   results: Array<{ agent: string; status: 'success' | 'failed'; error?: string; taskId?: string }>;
+  warnings: string[];
 }
 
 export interface SwitchAgentAccountOps {
@@ -229,6 +230,7 @@ export function defaultSwitchAgentAccountOps(
 export async function switchAgentAccount(options: SwitchAgentAccountOptions): Promise<SwitchAgentAccountResult> {
   validateAgentName(options.agent);
   validateAgentName(options.operatorAgent);
+  assertNotSelfSwitch(options.operatorAgent, options.agent);
   if (!options.frameworkRoot) throw new SwitchAgentAccountError('CTX_FRAMEWORK_ROOT is required', 'NO_FRAMEWORK_ROOT');
   if (!options.org) throw new SwitchAgentAccountError('CTX_ORG is required', 'NO_ORG');
 
@@ -345,14 +347,27 @@ export async function switchAgentAccount(options: SwitchAgentAccountOptions): Pr
 }
 
 export async function switchAllFrom(options: SwitchAllFromOptions): Promise<SwitchBatchResult> {
+  validateAgentName(options.operatorAgent);
   const ops = options.ops;
   const agentsDir = join(options.frameworkRoot, 'orgs', options.org, 'agents');
   const agents: string[] = [];
+  const warnings: string[] = [];
+  let skippedSelf = false;
+  const operatorAgent = normalizeAgentName(options.operatorAgent);
   for (const entry of safeReaddir(agentsDir)) {
     const agentDir = join(agentsDir, entry);
     if (!safeIsDir(agentDir)) continue;
     const r = ops.resolveAgentAccount(agentDir, options.ctxRoot);
-    if (r.label === options.sourceAccount) agents.push(entry);
+    if (r.label !== options.sourceAccount) continue;
+    if (normalizeAgentName(entry) === operatorAgent) {
+      skippedSelf = true;
+      warnings.push(`WARN: skipping self: ${options.operatorAgent} cannot switch its own account in a batch.`);
+      continue;
+    }
+    agents.push(entry);
+  }
+  if (skippedSelf && agents.length === 0) {
+    throw selfSwitchError(options.operatorAgent);
   }
   const results: SwitchBatchResult['results'] = [];
   let tokenFile = options.tokenFile;
@@ -366,7 +381,24 @@ export async function switchAllFrom(options: SwitchAllFromOptions): Promise<Swit
       break;
     }
   }
-  return { sourceAccount: options.sourceAccount, targetAccount: options.targetAccount, results };
+  return { sourceAccount: options.sourceAccount, targetAccount: options.targetAccount, results, warnings };
+}
+
+function normalizeAgentName(agent: string): string {
+  return agent.trim().toLowerCase();
+}
+
+function assertNotSelfSwitch(operatorAgent: string, agent: string): void {
+  if (normalizeAgentName(operatorAgent) === normalizeAgentName(agent)) {
+    throw selfSwitchError(operatorAgent);
+  }
+}
+
+function selfSwitchError(operatorAgent: string): SwitchAgentAccountError {
+  return new SwitchAgentAccountError(
+    `refusing self-switch: the executing agent ${operatorAgent} cannot switch its own account - the restart step kills this process mid-sequence and bricks it with no auto-recovery; run from another agent or externally`,
+    'SELF_SWITCH',
+  );
 }
 
 async function preflight(input: {

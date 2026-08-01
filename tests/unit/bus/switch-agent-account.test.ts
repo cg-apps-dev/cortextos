@@ -106,6 +106,37 @@ describe('switch-agent-account', () => {
     expect(readFileSync(envPath, 'utf-8')).toContain(OLD_TOKEN);
   });
 
+  it('rejects self-switch before any snapshot, write, or restart', async () => {
+    let statusCalls = 0;
+    ops.getStatuses = async () => {
+      statusCalls += 1;
+      return [];
+    };
+    const beforeEnv = readFileSync(envPath, 'utf-8');
+    const beforeConfig = readFileSync(configPath, 'utf-8');
+
+    await expect(runSwitch({ operatorAgent: 'worker-a', agent: 'worker-a' })).rejects.toMatchObject({
+      code: 'SELF_SWITCH',
+      rolledBack: false,
+      message: expect.stringContaining('refusing self-switch'),
+    });
+
+    expect(statusCalls).toBe(0);
+    expect(readFileSync(envPath, 'utf-8')).toBe(beforeEnv);
+    expect(readFileSync(configPath, 'utf-8')).toBe(beforeConfig);
+    expect(stopCalls).toEqual([]);
+    expect(startCalls).toEqual([]);
+  });
+
+  it('still switches a different target agent for a non-self operator', async () => {
+    const result = await runSwitch({ operatorAgent: 'worker-b', agent: 'worker-a' });
+
+    expect(result.status).toBe('success');
+    expect(readFileSync(envPath, 'utf-8')).toContain(TARGET_TOKEN);
+    expect(stopCalls).toEqual(['worker-a']);
+    expect(startCalls).toEqual(['worker-a']);
+  });
+
   it('pins the bare fingerprint method; newline hashes differently', () => {
     expect(shortTokenHash(TARGET_TOKEN)).not.toBe(shortTokenHash(`${TARGET_TOKEN}\n`));
   });
@@ -493,6 +524,64 @@ describe('switch-agent-account', () => {
     expect(result.results).toHaveLength(2);
     expect(result.results[0]).toMatchObject({ agent: 'worker-a', status: 'success' });
     expect(result.results[1]).toMatchObject({ agent: 'worker-b', status: 'failed' });
+  });
+
+  it('batch --all-from skips the operator when it is in the source account', async () => {
+    const workerB = join(frameworkRoot, 'orgs', 'clean-green-marketing', 'agents', 'worker-b');
+    mkdirSync(workerB, { recursive: true });
+    writeFileSync(join(workerB, '.env'), `CLAUDE_CODE_OAUTH_TOKEN=${OLD_TOKEN}\n`, { mode: 0o600 });
+    atomicWriteSync(join(workerB, 'config.json'), JSON.stringify({ usage_account: 'me-com-max' }, null, 2) + '\n');
+    ops.resolveAgentAccount = (dir) => {
+      const config = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8')) as { usage_account: string };
+      return { label: config.usage_account };
+    };
+
+    const result = await switchAllFrom({
+      ctxRoot,
+      frameworkRoot,
+      org: 'clean-green-marketing',
+      instanceId: 'default',
+      operatorAgent: 'worker-a',
+      sourceAccount: 'me-com-max',
+      targetAccount: 'moonlight-max',
+      ops,
+      nowMs: () => Date.parse('2026-07-09T17:00:00.000Z'),
+      sleepMs: async () => {},
+    });
+
+    expect(result.warnings).toEqual(['WARN: skipping self: worker-a cannot switch its own account in a batch.']);
+    expect(result.results).toEqual([{ agent: 'worker-b', status: 'success', taskId: 'task_sweep' }]);
+    expect(readFileSync(envPath, 'utf-8')).toContain(OLD_TOKEN);
+    expect(readFileSync(join(workerB, '.env'), 'utf-8')).toContain(TARGET_TOKEN);
+    expect(stopCalls).toEqual(['worker-b']);
+    expect(startCalls).toEqual(['worker-b']);
+  });
+
+  it('batch --all-from refuses when the operator is the only source-account agent', async () => {
+    const beforeEnv = readFileSync(envPath, 'utf-8');
+    const beforeConfig = readFileSync(configPath, 'utf-8');
+
+    await expect(switchAllFrom({
+      ctxRoot,
+      frameworkRoot,
+      org: 'clean-green-marketing',
+      instanceId: 'default',
+      operatorAgent: 'worker-a',
+      sourceAccount: 'me-com-max',
+      targetAccount: 'moonlight-max',
+      ops,
+      nowMs: () => Date.parse('2026-07-09T17:00:00.000Z'),
+      sleepMs: async () => {},
+    })).rejects.toMatchObject({
+      code: 'SELF_SWITCH',
+      rolledBack: false,
+      message: expect.stringContaining('refusing self-switch'),
+    });
+
+    expect(readFileSync(envPath, 'utf-8')).toBe(beforeEnv);
+    expect(readFileSync(configPath, 'utf-8')).toBe(beforeConfig);
+    expect(stopCalls).toEqual([]);
+    expect(startCalls).toEqual([]);
   });
 
   it('does not include token values in returned errors', async () => {
