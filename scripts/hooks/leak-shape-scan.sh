@@ -17,7 +17,15 @@ report() {
 is_code_config_path() {
   case "$1" in
     src/*|dashboard/*|templates/*|scripts/*) return 0 ;;
-    *.json|*.ts|*.sh|*.yml|*.yaml|*.toml) return 0 ;;
+    # .js/.cjs/.mjs added 2026-07-27. A root-level ecosystem.config.js matched no
+    # directory prefix here, and .js was absent from this list, so a file carrying 13
+    # committed operator home-path lines was invisible to scan_operator_paths while
+    # this scan reported "clean". Verified: identical content at probe.json and
+    # src/probe.ts was reported, at ecosystem.config.js was not.
+    # NOTE: do not write a literal operator path in this comment. The first version of
+    # this note did, and the scanner correctly flagged its own source file -- a rule
+    # whose documentation trips the rule.
+    *.json|*.ts|*.js|*.cjs|*.mjs|*.sh|*.yml|*.yaml|*.toml) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -173,14 +181,44 @@ scan_file() {
   rm -f "$tmp_file"
 }
 
+scanned_count=0
+
 if [ "${1:-}" = "--tree" ]; then
   ref="${2:-HEAD}"
   SHAPE_GUARD_TREE_REF="$ref"
+  # ENUMERATION MUST FAIL LOUDLY, added 2026-07-28 (found by claude-dev-agent).
+  # This used to be `done < <(git ls-tree ... "$ref")`. When git ls-tree FAILED - cwd
+  # outside a repo, or a ref that does not resolve - the process substitution yielded an
+  # EMPTY STREAM, the loop body never ran, `fail` stayed 0, and this printed
+  # "shape-guard: clean" and exited 0. IT SCANNED ZERO FILES AND REPORTED CLEAN.
+  # Reproduced: nonexistent ref -> rc=0 clean; outside a repo -> rc=0 clean; identical to
+  # the healthy case by exit code. That is the empty-candidate-set-versus-clean-set defect
+  # one level broader than the *.js selection bug: not "this file was not selected" but
+  # "NO file was selected". The hook feeds push refs straight to --tree, so an
+  # unresolvable ref (shallow clone, object not present locally) scanned nothing and allowed.
+  if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    echo "shape-guard: BLOCKED - not inside a git repository, cannot enumerate a tree." >&2
+    exit 1
+  fi
+  if ! tree_files="$(git ls-tree -r --name-only "$ref" 2>&1)"; then
+    echo "shape-guard: BLOCKED - could not enumerate tree for ref '$ref': $tree_files" >&2
+    exit 1
+  fi
+  if [ -z "$tree_files" ]; then
+    # An empty tree is legitimately clean AND legitimately unscannable, and the old code
+    # could not tell them apart. Decided explicitly: refuse. "I scanned nothing" must never
+    # render as "clean".
+    echo "shape-guard: BLOCKED - ref '$ref' enumerated ZERO files; refusing to report clean on an empty scan." >&2
+    exit 1
+  fi
   while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    scanned_count=$((scanned_count + 1))
     scan_file "$file"
-  done < <(git ls-tree -r --name-only "$ref")
+  done <<< "$tree_files"
 else
   for file in "$@"; do
+    scanned_count=$((scanned_count + 1))
     scan_file "$file"
   done
 fi
@@ -191,5 +229,8 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-echo "shape-guard: clean"
+# AFFIRMATIVE TOKEN: printed only after actually enumerating a non-empty set. A consumer
+# must require this token rather than infer health from a non-failing exit - "clean" used to
+# mean "nothing failed", which is not the same as "I looked".
+echo "shape-guard: clean (SHAPE-GUARD-SCANNED-OK files=$scanned_count)"
 exit 0

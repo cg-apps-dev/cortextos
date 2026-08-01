@@ -1,0 +1,49 @@
+# gitleaks config for the backup pre-push guard (security-agent).
+# Inherits default rules, then allowlists known false positives so the guard
+# only aborts on REAL secrets.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Known-benign test fixtures (not real secrets)"
+paths = [
+  '''tests/unit/pty/output-buffer\.test\.ts''',   # FAKE_JWT synthetic test fixture
+]
+regexes = [
+  # YouTube innertube public API key — widely-known, unauthenticated, ships in youtube-dl forks.
+  # Allowlisted in gitleaks-fleet.toml too; mirrored here so the backup gate matches the fleet gate
+  # and does not false-positive on the staged copy of gitleaks-fleet.toml. Public, NOT a CG secret.
+  '''AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8''',
+]
+
+# generic-api-key entropy FALSE POSITIVES in FIRST-PARTY agent PROSE docs (agent memory journals
+# + claude-dev video-tracker staging docs). The default generic-api-key rule misreads high-entropy
+# prose as keys: Google Drive file IDs (33-char [A-Za-z0-9_-], e.g. "1Mn0pVfD..2ZN9") in tracker
+# tables, and assignment-like decision prose in memory ("MECHANISM=risk"). This class BLOCKED the
+# agent-state backup gate 2026-06-26..29 (Drive IDs) and recurs as memory grows daily.
+# SCOPED to (a) the generic-api-key rule ONLY (targetRules) and (b) agent memory/ + claude-dev
+# staging .md paths ONLY. Every DEDICATED real-secret rule (anthropic-sk-ant-token, shopify-*,
+# jwt, aws, gcp, slack, etc.) stays FULLY ACTIVE in these files — so a real credential VALUE in
+# memory or staging STILL blocks the push (the load-bearing "a real secret in memory must fire"
+# property holds for every credential type agents actually handle). The fleet scan keeps
+# generic-api-key active everywhere for triage visibility. Verified no-regression (planted sk-ant
+# in a memory path still caught; generic key OUTSIDE these paths still caught).
+[[allowlists]]
+description = "generic-api-key entropy FPs in first-party agent memory + claude-dev staging prose docs"
+targetRules = ["generic-api-key"]
+paths = [
+  '''agents/claude-dev-agent/staging/.*\.md''',
+  '''agents/[^/]+/memory/.*\.md''',
+]
+
+# Anthropic sk-ant token (OAuth/API/session) — our runtime + usage creds, spend-capable.
+# NOT covered by the gitleaks default ruleset (which only matches sk-ant-api03 if at all,
+# not the sk-ant-oat01 OAuth/setup-token format the fleet runs on). Added 2026-06-18 after
+# an empirical test proved sk-ant-oat01 was undetected fleet-wide (found 4 real .env.bak leaks).
+# Requires 40+ contiguous token chars so truncated "sk-ant-oat01-u...hQAA" placeholders +
+# bare "sk-ant" prose in our docs do NOT false-positive.
+[[rules]]
+id = "anthropic-sk-ant-token"
+description = "Anthropic OAuth/API/session token (sk-ant-oat01/api03/sid01), spend-capable"
+regex = 'sk-ant-(?:oat01|api03|sid01|sk01)-[A-Za-z0-9_-]{40,}'
+keywords = ["sk-ant-"]

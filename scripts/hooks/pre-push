@@ -10,15 +10,33 @@ set -euo pipefail
 remote_name="${1:-}"
 remote_url="${2:-}"
 
+# Remote scoping, widened 2026-07-27. This previously exited 0 (ALLOW, UNSCANNED)
+# for every remote that was not the backup, so the PRIVATE backup mirror was scanned
+# and the PUBLIC fork -- the destination a PR push actually goes to -- was not. The
+# risk inverted: the copy nobody sees was guarded, the copy that publishes was not.
+# Not a bypass; by design of this filter.
 case "$remote_name$remote_url" in
   *backup*|*cg-cortextos-backup*) : ;;
+  *fork*|*cg-apps-dev*|*github.com*) : ;;
   *) exit 0 ;;
 esac
 
+# From a linked WORKTREE, --show-toplevel is the WORKTREE root, not the main repo.
+# The config path below is RELATIVE, so it resolved against the worktree, where the
+# orgs/ tree does not exist on every branch. gitleaks then died with "unable to load
+# gitleaks config" -> exit 1 -> and this hook reported "found a potential secret".
+# A path interpreted relative to something other than what the caller expects.
 repo_root="$(git rev-parse --show-toplevel)"
+# common-dir is the MAIN .git even from a worktree; its parent is the main checkout.
+common_dir="$(git rev-parse --git-common-dir)"
+case "$common_dir" in /*) ;; *) common_dir="$repo_root/$common_dir" ;; esac
+main_root="$(cd "$(dirname "$common_dir")" && pwd)"
 cd "$repo_root"
 
-cfg="orgs/clean-green-marketing/agents/security-agent/tools/gitleaks-backup.toml"
+# Config lives beside the hook and is TRACKED (committed), so a fresh clone HAS it and
+# the fail-closed "config not found" branch below cannot fire on a clean checkout. This
+# was an UNTRACKED org/agent-specific path (broke every fresh clone) - fixed 2026-08-01.
+cfg="$main_root/scripts/hooks/gitleaks-backup.toml"
 
 refs_to_scan=()
 saw_push_ref=0
@@ -37,7 +55,19 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   esac
 done < "$stdin_file"
 if [ "${#refs_to_scan[@]}" -eq 0 ] && [ "$saw_push_ref" -eq 0 ]; then
-  refs_to_scan=(HEAD)
+  # EMPTY STDIN = git is pushing NOTHING (all target refs already up to date).
+  # Under git's pre-push contract objects reach the remote ONLY via a ref update
+  # and every ref update is one stdin line, so empty stdin == nothing transfers
+  # == nothing can leak. The old fallback scanned HEAD -- a ref NOT being pushed
+  # -- which FALSE-BLOCKED a routine `git push backup main` when backup/main was
+  # up to date, by shape-scanning the contaminated checked-out branch instead of
+  # the clean main nominally "pushed". So we leave refs_to_scan EMPTY: the SHAPE
+  # scan below is skipped (its "> 0" guard is false), but we do NOT exit here --
+  # the gitleaks scan of the tree (`gitleaks git .`, below) STILL runs as the
+  # secret belt, so this is not a fail-open. Every genuinely-pushed ref still
+  # flows through refs_to_scan above and is still shape-scanned; only an UNPUSHED
+  # ref is no longer invented to scan.
+  echo "pre-push: no refs on stdin (nothing to push / all up to date); skipping shape scan, gitleaks tree scan still runs." >&2
 fi
 
 if ! command -v gitleaks >/dev/null 2>&1; then
@@ -46,18 +76,105 @@ if ! command -v gitleaks >/dev/null 2>&1; then
 fi
 
 echo "pre-push: scanning for secrets before backup push..." >&2
-if ! gitleaks git . -c "$cfg" --redact --no-banner >/dev/null 2>&1; then
-  echo "pre-push: BLOCKED - gitleaks found a potential secret. Run: gitleaks git . -c $cfg --redact" >&2
+if [ ! -f "$cfg" ]; then
+  echo "pre-push: BLOCKED - gitleaks config not found at $cfg (scanner could not run; this is NOT a secret finding)." >&2
+  exit 1
+fi
+# GUARD THE ASSIGNMENT, fixed 2026-07-28 (found by claude-dev-agent in a scratch repo).
+# This was `gl_out="$(gitleaks ...)"; gl_rc=$?` and line 8 sets -e. A command substitution
+# assignment RETURNS THE COMMAND'S STATUS, so when gitleaks exited non-zero set -e killed the
+# script AT THIS LINE: `gl_rc=$?` never ran and the entire diagnostic block below - including
+# the FAILED-TO-RUN versus FOUND-A-SECRET distinction added this morning - WAS UNREACHABLE.
+# The hook still failed CLOSED, but printed NO REASON AT ALL. A silent block is a stronger
+# invitation to --no-verify than a wrong message, which is the very failure the block exists
+# to prevent. `|| gl_rc=$?` makes the command tested, which suppresses set -e.
+gl_rc=0
+gl_out="$(gitleaks git . -c "$cfg" --redact --no-banner 2>&1)" || gl_rc=$?
+if [ "$gl_rc" -ne 0 ]; then
+  # A scanner that cannot distinguish "I failed" from "I found something" turns every
+  # outage into a false secret alarm, and a false secret alarm invites --no-verify.
+  if printf '%s' "$gl_out" | grep -qiE 'unable to load|failed to (open|load)|no such file'; then
+    echo "pre-push: BLOCKED - gitleaks FAILED TO RUN (not a secret finding): $(printf '%s' "$gl_out" | tail -1)" >&2
+  else
+    echo "pre-push: BLOCKED - gitleaks found a potential secret. Run: gitleaks git . -c $cfg --redact" >&2
+  fi
+  exit 1
+fi
+
+# CAPABILITY ASSERTION, added 2026-07-27. The scanner this hook invokes lives in the
+# WORKING TREE, and the fix that lets it see root-level .js is currently uncommitted.
+# A git checkout / reset --hard / stash reverts it, and the reverted scanner does not
+# error: it reports "shape-guard: clean" and this hook ALLOWS the push. Measured, tree
+# held constant at HEAD: working-tree scanner exit 1 (blocks), HEAD scanner exit 0
+# (allows). That is a FAIL-OPEN on the only control blocking an unpushed leak.
+# So: assert the scanner still has the capability we depend on BEFORE believing a clean
+# verdict from it, and fail CLOSED if it does not.
+shape_scanner="$main_root/scripts/hooks/leak-shape-scan.sh"
+if [ ! -f "$shape_scanner" ]; then
+  echo "pre-push: BLOCKED - leak-shape-scan.sh not found at $shape_scanner (cannot verify shapes)." >&2
+  exit 1
+fi
+# Assert EVERY extension the selection step depends on, not just the one whose absence
+# we happened to find. claude-dev-agent's review: the defect class is "the selection list
+# is missing an extension", so pinning only *.js defends the instance and not the class.
+# Measured: dropping *.cjs while keeping *.js passes a *.js-only assertion, and this repo
+# tracks 4 .cjs/.mjs files including install.mjs at ROOT - the same root-level shape that
+# caused the original miss. NOTE this is still the hook transcribing the scanner's list,
+# i.e. two copies of one fact; the durable fix is a --capabilities flag on the scanner so
+# it reports its own selection set. That is sequenced AFTER the pending atomic commit.
+missing_ext=""
+for _ext in json ts js cjs mjs sh yml yaml toml; do
+  # match the extension followed by EITHER a pipe OR the closing paren: the LAST entry
+  # in the case pattern ends "*.toml)" not "*.toml|", so a pipe-only test reported toml
+  # missing on a perfectly correct scanner and blocked EVERY push. A control that always
+  # refuses teaches people to ignore it, which is a fail-safe decaying into a fail-open.
+  # Strip full-line comments BEFORE matching. claude-dev-agent found that grepping the
+  # whole file lets an extension named in PROSE satisfy the assertion while the live case
+  # line has lost it. Verified: drop *.cjs from the classifier and add a comment writing
+  # the pattern out, and a whole-file grep passes -> fail-open. I was one formatting choice
+  # away from masking this myself, having already written a comment documenting .js/.cjs/.mjs
+  # when I made the original fix; it only missed because I wrote ".cjs" and not "*.cjs|".
+  # A grep cannot tell "extension in the live classifier" from "extension in prose about it".
+  grep -vE "^[[:space:]]*#" "$shape_scanner" | grep -qE "[*][.]${_ext}[|)]" \
+    || missing_ext="$missing_ext $_ext"
+done
+if [ -n "$missing_ext" ]; then
+  echo "pre-push: BLOCKED - leak-shape-scan.sh looks STALE: path classifier missing:$missing_ext" >&2
+  echo "pre-push:   A reverted scanner reports 'clean' instead of failing, so a clean result" >&2
+  echo "pre-push:   from it cannot be trusted. Restore the scanner fix, do not --no-verify." >&2
   exit 1
 fi
 
 if [ "${#refs_to_scan[@]}" -gt 0 ]; then
   echo "pre-push: scanning for operational leak shapes before code backup push..." >&2
   for ref in "${refs_to_scan[@]}"; do
-    if ! bash scripts/hooks/leak-shape-scan.sh --tree "$ref"; then
+    # REQUIRE THE AFFIRMATIVE TOKEN, added 2026-07-28 (claude-dev-agent's scope note).
+    # An exit-code-only consumer cannot survive a REVERT of the scanner: a reverted scanner
+    # exits 0 and this allows, which is the fail-open we started from. The scanner now emits
+    # SHAPE-GUARD-SCANNED-OK only after enumerating a non-empty tree, so requiring that token
+    # means a scanner that did not actually scan cannot produce a pass. Output is CAPTURED,
+    # not piped - pipefail is off in this shell, so a piped exit status reads the last stage.
+    # GUARDED for the same reason as the gitleaks assignment above, and I introduced the
+    # unguarded form here 20 minutes AFTER reading the report about it. Under set -e a command
+    # substitution assignment returns the command's status, so when the scanner BLOCKED the
+    # hook died AT THIS LINE - no "operational leak shape found" message, no token check.
+    # Measured: fork push of a tree carrying the real leak exited 1 with NO REASON PRINTED.
+    # A silent block on the exact case the guard exists for.
+    shape_rc=0
+    shape_out="$(bash "$main_root/scripts/hooks/leak-shape-scan.sh" --tree "$ref" 2>&1)" || shape_rc=$?
+    printf '%s\n' "$shape_out" >&2
+    if [ "$shape_rc" -ne 0 ]; then
       echo "pre-push: BLOCKED - operational leak shape found in $ref." >&2
       exit 1
     fi
+    case "$shape_out" in
+      *SHAPE-GUARD-SCANNED-OK*) : ;;
+      *)
+        echo "pre-push: BLOCKED - leak-shape-scan.sh exited 0 but produced NO scan-proof token." >&2
+        echo "pre-push:   A scanner that did not enumerate cannot be trusted to report clean." >&2
+        echo "pre-push:   Likely a reverted or stale scanner. Restore it; do not --no-verify." >&2
+        exit 1 ;;
+    esac
   done
 fi
 
