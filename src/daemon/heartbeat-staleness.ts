@@ -17,12 +17,24 @@ export interface StalenessAgentInput {
   timestamp?: string;
 }
 
-export interface StalenessAlert {
+export interface PerAgentStalenessAlert {
   agent: string;
   ageHours: number | null;
   thresholdHours: number | null;
   blocked?: string;
 }
+
+export interface FleetStalenessAlert {
+  scope: 'fleet';
+  reason: 'fleet-not-started';
+  staleSet: string[];
+  count: number;
+  ageHours: number;
+  thresholdHours: number | null;
+  dedupKey: string;
+}
+
+export type StalenessAlert = PerAgentStalenessAlert | FleetStalenessAlert;
 
 export interface StalenessScanResult {
   scannedCount: number;
@@ -51,49 +63,73 @@ export function stalenessAlerts(args: {
   agents: Record<string, StalenessAgentInput>;
   cadences: Record<string, number>;
   now: Date;
+  stopped?: string[];
 }): StalenessAlert[] {
-  const alerts: StalenessAlert[] = [];
+  const perAgentAlerts: PerAgentStalenessAlert[] = [];
+  const staleNames: string[] = [];
+  const stopped = new Set(args.stopped ?? []);
   const nowMs = args.now.getTime();
+  let blockedCount = 0;
 
   for (const [agent, heartbeat] of Object.entries(args.agents)) {
+    if (stopped.has(agent)) continue;
+
     const cadenceHours = args.cadences[agent];
     if (!Number.isFinite(cadenceHours) || cadenceHours <= 0) {
-      alerts.push({
+      perAgentAlerts.push({
         agent,
         ageHours: null,
         thresholdHours: null,
         blocked: 'no cadence known',
       });
+      blockedCount++;
       continue;
     }
 
     const heartbeatTs = heartbeat.last_heartbeat ?? heartbeat.timestamp;
     const heartbeatMs = heartbeatTs ? Date.parse(heartbeatTs) : NaN;
     if (!Number.isFinite(heartbeatMs)) {
-      alerts.push({
+      perAgentAlerts.push({
         agent,
         ageHours: null,
         thresholdHours: cadenceHours * 2 + HEARTBEAT_STALENESS_THRESHOLD_GRACE_HOURS,
         blocked: 'invalid heartbeat timestamp',
       });
+      blockedCount++;
       continue;
     }
 
     const ageHours = (nowMs - heartbeatMs) / 3_600_000;
     const thresholdHours = cadenceHours * 2 + HEARTBEAT_STALENESS_THRESHOLD_GRACE_HOURS;
     if (ageHours > thresholdHours) {
-      alerts.push({ agent, ageHours, thresholdHours });
+      perAgentAlerts.push({ agent, ageHours, thresholdHours });
+      staleNames.push(agent);
     }
   }
 
-  return alerts;
+  const runningCount = Object.keys(args.agents).filter((agent) => !stopped.has(agent)).length;
+  if (runningCount >= 2 && blockedCount === 0 && staleNames.length === runningCount) {
+    const staleSet = [...staleNames].sort();
+    return [{
+      scope: 'fleet',
+      reason: 'fleet-not-started',
+      staleSet,
+      count: runningCount,
+      ageHours: Math.max(...perAgentAlerts.map((alert) => alert.ageHours ?? 0)),
+      thresholdHours: perAgentAlerts[0]?.thresholdHours ?? null,
+      dedupKey: `fleet-stale:${staleSet.join(',')}`,
+    }];
+  }
+
+  return perAgentAlerts;
 }
 
 export function scanHeartbeatStaleness(ctxRoot: string, now = new Date()): StalenessScanResult {
   const agents = readHeartbeatAgents(ctxRoot);
   const cadences = deriveHeartbeatCadences(Object.keys(agents), ctxRoot);
-  const alerts = stalenessAlerts({ agents, cadences, now });
-  const scannedCount = Object.keys(agents).length;
+  const stopped = readStoppedAgents(ctxRoot);
+  const alerts = stalenessAlerts({ agents, cadences, now, stopped });
+  const scannedCount = Object.keys(agents).filter((agent) => !stopped.includes(agent)).length;
 
   if (scannedCount === 0) {
     return {
@@ -111,7 +147,7 @@ export function scanHeartbeatStaleness(ctxRoot: string, now = new Date()): Stale
   return {
     scannedCount,
     alerts,
-    blocked: alerts.some((alert) => Boolean(alert.blocked)),
+    blocked: alerts.some((alert) => 'blocked' in alert && Boolean(alert.blocked)),
   };
 }
 
@@ -167,8 +203,8 @@ export function createHeartbeatStalenessMonitorLoop(
     }
 
     const alertKey = JSON.stringify(result.alerts.map((alert) => [
-      alert.agent,
-      alert.blocked ?? '',
+      'scope' in alert ? alert.dedupKey : alert.agent,
+      'scope' in alert ? alert.reason : alert.blocked ?? '',
       alert.thresholdHours,
     ]));
     const nowEpochMs = now.getTime();
@@ -224,6 +260,37 @@ function readHeartbeatAgents(ctxRoot: string): Record<string, StalenessAgentInpu
   return agents;
 }
 
+function readStoppedAgents(ctxRoot: string): string[] {
+  const stopped = new Set<string>();
+  const enabledFile = join(ctxRoot, 'config', 'enabled-agents.json');
+
+  try {
+    const parsed = JSON.parse(readFileSync(enabledFile, 'utf-8')) as Record<string, { enabled?: boolean }>;
+    for (const [agentName, entry] of Object.entries(parsed)) {
+      if (entry.enabled === false) stopped.add(agentName);
+    }
+  } catch {
+    // Missing or corrupt enabled-agents.json is not enough to infer a stop.
+  }
+
+  const stateDir = join(ctxRoot, 'state');
+  try {
+    const dirs = readdirSync(stateDir, { withFileTypes: true })
+      .filter((dirent) => dirent.isDirectory())
+      .map((dirent) => dirent.name);
+    for (const agentName of dirs) {
+      const agentDir = join(stateDir, agentName);
+      if (existsSync(join(agentDir, '.user-stop')) || existsSync(join(agentDir, '.user-disable'))) {
+        stopped.add(agentName);
+      }
+    }
+  } catch {
+    // No state directory means there are no heartbeat rows either.
+  }
+
+  return [...stopped].sort();
+}
+
 function selectHeartbeatCron(crons: CronDefinition[]): CronDefinition | null {
   return crons.find((cron) => cron.enabled !== false && cron.name === 'heartbeat')
     ?? crons.find((cron) => cron.enabled !== false && /\bheartbeat\b/i.test(cron.prompt))
@@ -260,6 +327,9 @@ function cadenceMsFromSchedule(schedule: string): number {
 function formatStalenessAlert(result: StalenessScanResult): string {
   const lines = result.alerts
     .map((alert) => {
+      if ('scope' in alert) {
+        return `fleet not started: all ${alert.count} stale [${alert.staleSet.join(', ')}]`;
+      }
       if (alert.blocked) return `${alert.agent}: BLOCKED (${alert.blocked})`;
       return `${alert.agent}: ${formatHours(alert.ageHours)}h since heartbeat, threshold ${formatHours(alert.thresholdHours)}h`;
     })

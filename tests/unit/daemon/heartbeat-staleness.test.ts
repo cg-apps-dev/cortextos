@@ -145,6 +145,114 @@ describe('stalenessAlerts', () => {
       now: new Date('2026-07-30T00:00:00.000Z'),
     })).toEqual([]);
   });
+
+  it('collapses all expected-running stale agents into one roster-preserving fleet alert', () => {
+    const now = new Date('2026-07-30T00:00:00.000Z');
+    const agents = {
+      c: { last_heartbeat: isoHoursAgo(now, 20) },
+      a: { last_heartbeat: isoHoursAgo(now, 21) },
+      b: { last_heartbeat: isoHoursAgo(now, 22) },
+    };
+
+    const alerts = stalenessAlerts({
+      agents,
+      cadences: { a: 6, b: 6, c: 6 },
+      now,
+    });
+
+    expect(alerts).toEqual([{
+      scope: 'fleet',
+      reason: 'fleet-not-started',
+      staleSet: ['a', 'b', 'c'],
+      count: 3,
+      ageHours: 22,
+      thresholdHours: 12.5,
+      dedupKey: 'fleet-stale:a,b,c',
+    }]);
+  });
+
+  it('uses stale-set membership for fleet dedup keys', () => {
+    const now = new Date('2026-07-30T00:00:00.000Z');
+    const fleetA = stalenessAlerts({
+      agents: {
+        a: { last_heartbeat: isoHoursAgo(now, 20) },
+        b: { last_heartbeat: isoHoursAgo(now, 20) },
+      },
+      cadences: { a: 6, b: 6 },
+      now,
+    })[0];
+    const fleetB = stalenessAlerts({
+      agents: {
+        a: { last_heartbeat: isoHoursAgo(now, 20) },
+        c: { last_heartbeat: isoHoursAgo(now, 20) },
+      },
+      cadences: { a: 6, c: 6 },
+      now,
+    })[0];
+
+    expect(fleetA).toMatchObject({ scope: 'fleet', dedupKey: 'fleet-stale:a,b' });
+    expect(fleetB).toMatchObject({ scope: 'fleet', dedupKey: 'fleet-stale:a,c' });
+  });
+
+  it('de-escalates partial recovery back to per-agent stale alerts', () => {
+    const now = new Date('2026-07-30T00:00:00.000Z');
+    const alerts = stalenessAlerts({
+      agents: {
+        a: { last_heartbeat: isoHoursAgo(now, 0.1) },
+        b: { last_heartbeat: isoHoursAgo(now, 20) },
+        c: { last_heartbeat: isoHoursAgo(now, 21) },
+      },
+      cadences: { a: 6, b: 6, c: 6 },
+      now,
+    });
+
+    expect(alerts).toMatchObject([
+      { agent: 'b', thresholdHours: 12.5 },
+      { agent: 'c', thresholdHours: 12.5 },
+    ]);
+    expect(alerts).not.toContainEqual(expect.objectContaining({ scope: 'fleet' }));
+  });
+
+  it('does not fleet-collapse when any running agent has unknown cadence', () => {
+    const now = new Date('2026-07-30T00:00:00.000Z');
+    const alerts = stalenessAlerts({
+      agents: {
+        a: { last_heartbeat: isoHoursAgo(now, 20) },
+        b: { last_heartbeat: isoHoursAgo(now, 20) },
+      },
+      cadences: { a: 6 },
+      now,
+    });
+
+    expect(alerts).toEqual([
+      { agent: 'a', ageHours: 20, thresholdHours: 12.5 },
+      { agent: 'b', ageHours: null, thresholdHours: null, blocked: 'no cadence known' },
+    ]);
+  });
+
+  it('excludes deliberately stopped agents from stale set and count basis', () => {
+    const now = new Date('2026-07-30T00:00:00.000Z');
+    const alerts = stalenessAlerts({
+      agents: {
+        a: { last_heartbeat: isoHoursAgo(now, 20) },
+        b: { last_heartbeat: isoHoursAgo(now, 20) },
+        parked: { last_heartbeat: isoHoursAgo(now, 999) },
+      },
+      cadences: { a: 6, b: 6, parked: 6 },
+      stopped: ['parked'],
+      now,
+    });
+
+    expect(alerts).toEqual([{
+      scope: 'fleet',
+      reason: 'fleet-not-started',
+      staleSet: ['a', 'b'],
+      count: 2,
+      ageHours: 20,
+      thresholdHours: 12.5,
+      dedupKey: 'fleet-stale:a,b',
+    }]);
+  });
 });
 
 describe('scanHeartbeatStaleness', () => {
@@ -209,6 +317,25 @@ describe('scanHeartbeatStaleness', () => {
       blocked: 'no heartbeats scanned',
     }]);
   });
+
+  it('excludes disabled agents from live scan count basis', () => {
+    const now = new Date('2026-07-30T00:00:00.000Z');
+    writeHeartbeat('alice', isoHoursAgo(now, 20), '');
+    writeHeartbeat('parked', isoHoursAgo(now, 999), '');
+    writeCronsJson('alice', [makeCron('heartbeat', '6h')]);
+    writeCronsJson('parked', [makeCron('heartbeat', '6h')]);
+    const configDir = join(tmpRoot, 'config');
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      join(configDir, 'enabled-agents.json'),
+      JSON.stringify({ parked: { enabled: false } }, null, 2),
+    );
+
+    const result = scanHeartbeatStaleness(tmpRoot, now);
+
+    expect(result.scannedCount).toBe(1);
+    expect(result.alerts).toEqual([{ agent: 'alice', ageHours: 20, thresholdHours: 12.5 }]);
+  });
 });
 
 describe('createHeartbeatStalenessMonitorLoop', () => {
@@ -233,5 +360,35 @@ describe('createHeartbeatStalenessMonitorLoop', () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]).toContain('scanned_count=1');
     expect(messages[0]).toContain('alice: 18.1h since heartbeat, threshold 12.5h');
+  });
+
+  it('formats fleet-collapse alerts as one roster-preserving notification', () => {
+    const messages: string[] = [];
+    const loop = createHeartbeatStalenessMonitorLoop({
+      ctxRoot: tmpRoot,
+      frameworkRoot: '/tmp/nope',
+      nowMs: () => Date.parse('2026-07-30T00:00:00.000Z'),
+      scanner: () => ({
+        scannedCount: 2,
+        blocked: false,
+        alerts: [{
+          scope: 'fleet',
+          reason: 'fleet-not-started',
+          staleSet: ['alice', 'bob'],
+          count: 2,
+          ageHours: 20,
+          thresholdHours: 12.5,
+          dedupKey: 'fleet-stale:alice,bob',
+        }],
+      }),
+      notifier: (message) => messages.push(message),
+      logger: () => {},
+    });
+
+    loop.runOnce();
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain('alerts=1');
+    expect(messages[0]).toContain('fleet not started: all 2 stale [alice, bob]');
   });
 });
