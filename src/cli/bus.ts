@@ -22,9 +22,11 @@ import { refreshUsage, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, A
 import { captureKeychainUsageCredential, beginUsageAuth, completeUsageAuth, checkAllUsage, setAccountBenched, fingerprint as ucFingerprint, loadMultiAccountUsage, type AccountUsage } from '../bus/usage-accounts.js';
 import { isSecretKeyName, setAgentEnv, shredSucceeded } from '../bus/env-edit.js';
 import { drainEnvBackups } from '../bus/env-backup-drain.js';
+import { checkSkillDrift, formatSkillDriftReport, skillDriftExitCode } from '../bus/skill-drift.js';
 import { resolveAgentAccount } from '../daemon/cron-capacity-gate.js';
 import { resolvePaths } from '../utils/paths.js';
 import { resolveEnv } from '../utils/env.js';
+import { getRepoRoot } from '../utils/git.js';
 import { IPCClient } from '../daemon/ipc-server.js';
 import { TelegramAPI } from '../telegram/api.js';
 import { logOutboundMessage, cacheLastSent } from '../telegram/logging.js';
@@ -1273,6 +1275,29 @@ busCommand
     const frameworkRoot = env.frameworkRoot || env.projectRoot || process.cwd();
     const result = checkUpstream(frameworkRoot, { apply: opts.apply });
     console.log(JSON.stringify(result, null, 2));
+  });
+
+busCommand
+  .command('check-skill-drift')
+  .description('Compare configured tracked skill directories on main against their live runtime copies by content hash')
+  .option('--pair <name>', 'Only check one configured skill sync pair')
+  .option('--json', 'Output the full result as JSON')
+  .action((opts: { pair?: string; json?: boolean }) => {
+    const env = resolveEnv();
+    const frameworkRoot = env.frameworkRoot || env.projectRoot || process.cwd();
+    try {
+      const projectRoot = getRepoRoot(frameworkRoot);
+      const report = checkSkillDrift(projectRoot, { pair: opts.pair });
+      if (opts.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(formatSkillDriftReport(report));
+      }
+      process.exitCode = skillDriftExitCode(report);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
   });
 
 busCommand
