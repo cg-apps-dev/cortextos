@@ -109,6 +109,27 @@ describe('usage-accounts', () => {
       expect(u.extra_usage).toEqual({ is_enabled: true, used_credits: 3 });
     });
 
+    it('persists top-level spend percent and severity from the live usage shape', () => {
+      const u = parseUsageResponse('seat', {
+        five_hour: { utilization: 42, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 17, resets_at: '2026-06-15T00:00:00Z' },
+        spend: { percent: 44, severity: 'warning' },
+      }, NOW);
+      expect(u.ok).toBe(true);
+      expect(u.spend).toEqual({ percent: 44, severity: 'warning' });
+    });
+
+    it('omits spend when the usage response has no spend percent', () => {
+      const missing = parseUsageResponse('seat', {
+        five_hour: { utilization: 10, resets_at: '2026-06-11T05:00:00Z' },
+      }, NOW);
+      const severityOnly = parseUsageResponse('seat', {
+        spend: { severity: 'warning' },
+      }, NOW);
+      expect(missing.spend).toBeUndefined();
+      expect(severityOnly.spend).toBeUndefined();
+    });
+
     it('treats utilization as an already-0-100 percentage with clamping', () => {
       const u = parseUsageResponse('seat', {
         five_hour: { utilization: 0, resets_at: '2026-06-11T05:00:00Z' },
@@ -1130,6 +1151,7 @@ describe('usage-accounts', () => {
           last_good: {
             five_hour_pct: 44,
             seven_day_pct: 12,
+            spend: { percent: 55, severity: 'warning' },
             fetched_at: '2026-06-11T02:45:00.000Z',
           },
         }],
@@ -1147,6 +1169,7 @@ describe('usage-accounts', () => {
         last_good: {
           five_hour_pct: 44,
           seven_day_pct: 12,
+          spend: { percent: 55, severity: 'warning' },
           fetched_at: '2026-06-11T02:45:00.000Z',
         },
       });
@@ -1163,6 +1186,7 @@ describe('usage-accounts', () => {
       expect(row.status).toBe('benched');
       expect(row.five_hour_pct).toBeUndefined();
       expect(row.seven_day_pct).toBeUndefined();
+      expect(row.spend).toBeUndefined();
       expect(row.last_good).toBeUndefined();
     });
 
