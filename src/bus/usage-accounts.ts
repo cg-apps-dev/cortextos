@@ -59,6 +59,11 @@ export interface ExtraUsage {
   used_credits?: number;
 }
 
+export interface SpendUsage {
+  percent?: number;
+  severity?: string;
+}
+
 export interface ScopedLimit {
   model: string;
   percent: number;
@@ -73,6 +78,7 @@ export interface LastGoodUsage {
   five_hour_resets?: string;
   seven_day_resets?: string;
   extra_usage?: ExtraUsage;
+  spend?: SpendUsage;
   scoped_limits?: ScopedLimit[];
   fetched_at: string;
   credential_source?: UsageCredentialSource;
@@ -94,6 +100,7 @@ export interface AccountUsage {
   five_hour_resets?: string;
   seven_day_resets?: string;
   extra_usage?: ExtraUsage;
+  spend?: SpendUsage;
   scoped_limits?: ScopedLimit[];
   credential_source?: UsageCredentialSource;
   credential_fingerprint?: string;
@@ -510,6 +517,7 @@ export function parseUsageResponse(account: string, data: unknown, now: string):
     five_hour?: { utilization?: number; resets_at?: string | null };
     seven_day?: { utilization?: number; resets_at?: string | null };
     extra_usage?: { is_enabled?: boolean; used_credits?: number };
+    spend?: { percent?: number; severity?: string };
     limits?: Array<{
       kind?: string;
       percent?: number;
@@ -581,6 +589,12 @@ export function parseUsageResponse(account: string, data: unknown, now: string):
     usage.extra_usage = {
       is_enabled: d.extra_usage.is_enabled,
       used_credits: d.extra_usage.used_credits,
+    };
+  }
+  if (typeof d.spend?.percent === 'number') {
+    usage.spend = {
+      percent: d.spend.percent,
+      ...(d.spend.severity ? { severity: d.spend.severity } : {}),
     };
   }
   return usage;
@@ -1081,6 +1095,7 @@ function lastGoodFrom(prior: AccountUsage | undefined): LastGoodUsage | undefine
     ...(prior.five_hour_resets ? { five_hour_resets: prior.five_hour_resets } : {}),
     ...(prior.seven_day_resets ? { seven_day_resets: prior.seven_day_resets } : {}),
     ...(prior.extra_usage ? { extra_usage: prior.extra_usage } : {}),
+    ...(prior.spend ? { spend: prior.spend } : {}),
     ...(prior.scoped_limits ? { scoped_limits: prior.scoped_limits } : {}),
     fetched_at: prior.fetched_at,
     ...(prior.credential_source ? { credential_source: prior.credential_source } : {}),
