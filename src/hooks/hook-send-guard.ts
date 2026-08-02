@@ -64,6 +64,7 @@ interface ShellToken {
 export interface SendCommandInfo {
   kind: GuardedBusCommand;
   bodyArg?: ShellToken;
+  bodyArgs?: ShellToken[];
   optionAfterSeparatorArg?: ShellToken;
   bodyStatus: 'found' | 'not-found' | 'unparseable' | 'not-applicable';
 }
@@ -90,13 +91,14 @@ export function outputPreToolUseDecision(decision: SendGuardDecision): void {
 export function detectBusSendCommand(command: string): SendCommandInfo | null {
   const parsed = findGuardedBusCommand(command);
   if (!parsed) return null;
-  const bodyArg = isBodyGuardedCommand(parsed.kind)
-    ? extractGuardedBodyArg(parsed.kind, parsed.args)
+  const bodyArgs = isBodyGuardedCommand(parsed.kind)
+    ? extractGuardedBodyArgs(parsed.kind, parsed.args)
     : undefined;
 
   return {
     kind: parsed.kind,
-    bodyArg,
+    bodyArg: bodyArgs?.[0],
+    bodyArgs,
     optionAfterSeparatorArg: isOptionAfterSeparatorRiskCommand(parsed.kind)
       ? findOptionAfterSeparatorArg(parsed.args)
       : undefined,
@@ -104,7 +106,7 @@ export function detectBusSendCommand(command: string): SendCommandInfo | null {
       ? 'not-applicable'
       : parsed.args === null
         ? 'unparseable'
-        : bodyArg === undefined
+        : bodyArgs === undefined || bodyArgs.length === 0
           ? 'not-found'
           : 'found',
   };
@@ -349,31 +351,35 @@ function positionalArgs(args: string[], valueFlags: Set<string>): ShellToken[] {
   return out;
 }
 
-function extractGuardedBodyArg(kind: GuardedBusCommand, args: string[] | null): ShellToken | undefined {
+function extractGuardedBodyArgs(kind: GuardedBusCommand, args: string[] | null): ShellToken[] | undefined {
   if (!args) return undefined;
 
   switch (kind) {
     case 'send-message': {
       const positionals = positionalArgs(args, new Set(['--reply-to']));
-      return positionals[2];
+      return positionals.slice(2);
     }
     case 'send-telegram': {
       const positionals = positionalArgs(args, new Set(['--image', '--file']));
-      return positionals[1];
+      return positionals.slice(1);
     }
     case 'create-task':
-      return flagValue(args, '--desc');
+      return tokenList(flagValue(args, '--desc'));
     case 'complete-task':
-      return flagValue(args, '--result') ?? positionalArgs(args, new Set(['--result']))[1];
+      return tokenList(flagValue(args, '--result') ?? positionalArgs(args, new Set(['--result']))[1]);
     case 'log-event':
-      return flagValue(args, '--meta');
+      return tokenList(flagValue(args, '--meta'));
     case 'update-heartbeat':
-      return positionalArgs(args, new Set(['--task', '--timezone', '--interval']))[0];
+      return tokenList(positionalArgs(args, new Set(['--task', '--timezone', '--interval']))[0]);
     case 'create-approval':
-      return positionalArgs(args, new Set())[2];
+      return tokenList(positionalArgs(args, new Set())[2]);
     default:
       return undefined;
   }
+}
+
+function tokenList(token: ShellToken | undefined): ShellToken[] {
+  return token ? [token] : [];
 }
 
 function findOptionAfterSeparatorArg(args: string[] | null): ShellToken | undefined {
@@ -429,13 +435,15 @@ export function decideSendGuard(command: string, _opts?: unknown): SendGuardDeci
 
   if (busSend.bodyStatus === 'not-found') {
     logAllowAndContinue(busSend.kind, 'the guarded body argument could not be located');
-  } else if (busSend.bodyArg) {
-    if (isBareDoubleQuotedVariableReference(busSend.bodyArg.raw)) {
-      // Canonical safe call site after quoted heredoc assembly.
-    } else if (isUnquotedVariableReference(busSend.bodyArg.raw)) {
-      return { permissionDecision: 'deny', permissionDecisionReason: UNQUOTED_BODY_DENY_REASON };
-    } else if (hasShellExpansionSyntax(busSend.bodyArg.expansionRegion)) {
-      return { permissionDecision: 'deny', permissionDecisionReason: SHELL_EXPANSION_DENY_REASON };
+  } else if (busSend.bodyArgs) {
+    for (const bodyArg of busSend.bodyArgs) {
+      if (isBareDoubleQuotedVariableReference(bodyArg.raw)) {
+        // Canonical safe call site after quoted heredoc assembly.
+      } else if (isUnquotedVariableReference(bodyArg.raw)) {
+        return { permissionDecision: 'deny', permissionDecisionReason: UNQUOTED_BODY_DENY_REASON };
+      } else if (hasShellExpansionSyntax(bodyArg.expansionRegion)) {
+        return { permissionDecision: 'deny', permissionDecisionReason: SHELL_EXPANSION_DENY_REASON };
+      }
     }
   }
 
