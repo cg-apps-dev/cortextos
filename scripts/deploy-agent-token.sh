@@ -102,8 +102,19 @@ deploy_one() {
   cp "$env_file" "$env_file.bak-$ts"
   chmod 600 "$env_file.bak-$ts"
 
+  # STRIP-ON-SWAP (ANTHROPIC guard, 2026-07-27 incident): a token rotation must not leave a
+  # stale ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY behind - the SDK reads those and they take
+  # PRECEDENCE over CLAUDE_CODE_OAUTH_TOKEN, silently redirecting auth/billing to the wrong
+  # account. Drop them (active OR commented) as we write the new bearer.
+  local override_re='^[[:space:]]*#?[[:space:]]*(export[[:space:]]+)?(ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY)[[:space:]]*='
+  local stripped
+  stripped=$(grep -cE "$override_re" "$env_file" 2>/dev/null || true)
+
   tmp=$(mktemp)
-  awk -v tok="$token" 'BEGIN{done=0} /^CLAUDE_CODE_OAUTH_TOKEN=/{if(!done){print "CLAUDE_CODE_OAUTH_TOKEN=" tok; done=1; next}} {print}' "$env_file" > "$tmp"
+  awk -v tok="$token" 'BEGIN{done=0}
+    /^CLAUDE_CODE_OAUTH_TOKEN=/{if(!done){print "CLAUDE_CODE_OAUTH_TOKEN=" tok; done=1; next}}
+    /^[[:space:]]*#?[[:space:]]*(export[[:space:]]+)?(ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY)[[:space:]]*=/{next}
+    {print}' "$env_file" > "$tmp"
   mv "$tmp" "$env_file"
   chmod 600 "$env_file"
 
@@ -112,10 +123,16 @@ deploy_one() {
     echo "ABORT: post-write token verification failed for $agent."
     exit 1
   fi
+  # FAIL-CLOSED: the override must be GONE after the swap, else the redirect survives silently.
+  if grep -qE "$override_re" "$env_file"; then
+    echo "ABORT: an ANTHROPIC auth-override survived the swap in $agent .env (strip failed)."
+    exit 1
+  fi
 
   echo "deployed to $agent:"
   echo "  old: $(fingerprint "$old")"
   echo "  new: $(fingerprint "$token")"
+  [[ "${stripped:-0}" -gt 0 ]] && echo "  stripped $stripped stale ANTHROPIC auth-override line(s) (07-27 billing-redirect guard)"
   echo "  backup: $env_file.bak-$ts"
 }
 
@@ -129,6 +146,10 @@ if [[ "${1:-}" == "--verify-all" ]]; then
     cred_flag=""
     if [[ -f "$home/.credentials.json" ]]; then
       cred_flag=" STRAY_CREDENTIALS($home/.credentials.json)"
+      fail=1
+    fi
+    if grep -qE '^[[:space:]]*(export[[:space:]]+)?(ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY)[[:space:]]*=' "$env"; then
+      echo "  $ag: !! LIVE ANTHROPIC AUTH-OVERRIDE present (07-27 silent billing-redirect risk)"
       fail=1
     fi
     if [[ -z "$tok" ]]; then echo "  $ag: <no bearer token - login mode>$cred_flag"; continue; fi
