@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import io
 import json
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -24,6 +26,36 @@ def presence(verdict="", launch_state=rc.DORMANT, row=12):
 
 def zero_counts():
     return {"MISSING_cards": 0, "ACTIVE_UNSCANNED": 0, "AMBIGUOUS_UNSCANNED": 0}
+
+
+def adverse_instance(**overrides):
+    inst = {
+        "tab": "IMAGES (Flower)",
+        "row": 12,
+        "account": "E-0930",
+        "account_state_tag": "account Adam-killed 2026-07-16, verified dead",
+        "token": "with_issues",
+        "ad_id": "1234567890",
+        "verdict_token": "PASS",
+        "verdict_class": "PASS",
+        "asset_fileids": ["file-a"],
+        "error_code": rc.POLICY_ERROR_CODE,
+        "verdict_surfaces": ["static-image+ocr"],
+        "creative_question_open": False,
+        "pass_freshness": "stale_or_predates",
+        "non_creative_inference": "rescan_required",
+    }
+    inst.update(overrides)
+    return inst
+
+
+def adverse_scan(instances=None, unverified=None):
+    return {
+        "instances": instances or [],
+        "unverified": unverified or [],
+        "filtered_delivery": 0,
+        "blank_adverse": 0,
+    }
 
 
 class ReconcileCompletedTests(unittest.TestCase):
@@ -347,8 +379,17 @@ class ReconcileCompletedTests(unittest.TestCase):
         self.assertEqual(index["file-a"][0], rc.SheetPresence("VIDEOS (Flower)", 2, "", rc.ACTIVE))
 
     def test_resolve_launch_cols_contiguous_run(self):
-        headers = {"ADMANAGE": 2, "E-0681 | Flower 2": 3, "E-0930 | Flower 2": 4, "Variant #": 5, "Writer": 6}
+        headers = {"ADMANAGE": 2, "E-0645 | Flower 2": 3, "E-0650 | Flower 2": 4, "Variant #": 5, "Writer": 6}
         self.assertEqual(rc._resolve_launch_cols(headers), [3, 4])
+
+    def test_resolve_launch_cols_excludes_dead_accounts(self):
+        # E-0842 is in DEAD_ACCOUNTS - its col is skipped but the run stays contiguous.
+        headers = {"ADMANAGE": 2, "E-0842 | Flower 2": 3, "E-0645 | Flower 2": 4, "Variant #": 5}
+        self.assertEqual(rc._resolve_launch_cols(headers), [4])
+
+    def test_spending_accounts_are_not_dead_accounts(self):
+        self.assertNotIn("E-0681", rc.DEAD_ACCOUNTS)
+        self.assertNotIn("E-0828", rc.DEAD_ACCOUNTS)
 
     def test_sheet_index_halts_without_account_columns(self):
         # ADMANAGE present but the column after it is a content header (no ' | ' signature).
@@ -363,6 +404,94 @@ class ReconcileCompletedTests(unittest.TestCase):
         rendered = rc.render_markdown(result)
         self.assertIn("raw 1 -> excluded [partial_card:0", rendered)
         self.assertIn("NEW gaps: 1 MISSING-cards", rendered)
+
+    def test_apply_adverse_state_dedups_by_resolution_hash_until_changed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "adverse-state.json")
+            first = rc.apply_adverse_state(adverse_scan([adverse_instance()]), state_path=state_path, now=1000)
+            self.assertEqual(len(first["new"]), 1)
+            self.assertEqual(first["outstanding"], [])
+
+            second = rc.apply_adverse_state(adverse_scan([adverse_instance()]), state_path=state_path, now=1000 + 86400)
+            self.assertEqual(second["new"], [])
+            self.assertEqual(len(second["outstanding"]), 1)
+            self.assertEqual(second["outstanding"][0]["age_days"], 1.0)
+
+            moved = rc.apply_adverse_state(
+                adverse_scan([adverse_instance(asset_fileids=["file-b"])]),
+                state_path=state_path,
+                now=1000 + 2 * 86400,
+            )
+            self.assertEqual(moved["new"], [])
+            self.assertEqual(moved["outstanding"], [])
+            with open(state_path, encoding="utf-8") as fh:
+                state = json.load(fh)
+            rec = state["instances"][rc._instance_key(adverse_instance())]
+            self.assertTrue(rec["resolved"])
+
+            reopened = rc.apply_adverse_state(
+                adverse_scan([adverse_instance(asset_fileids=["file-c"])]),
+                state_path=state_path,
+                now=1000 + 3 * 86400,
+            )
+            self.assertEqual(len(reopened["new"]), 1)
+
+    def test_apply_adverse_state_trips_unverified_threshold_and_resets_counter(self):
+        calls = []
+
+        class Proc:
+            returncode = 0
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(cmd)
+            return Proc()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "adverse-state.json")
+            with open(state_path, "w", encoding="utf-8") as fh:
+                json.dump({"instances": {}, "unverified_consec": 9}, fh)
+            result = rc.apply_adverse_state(
+                adverse_scan(unverified=[adverse_instance(error_code="fetch-failed")]),
+                state_path=state_path,
+                now=2000,
+                unverified_tripwire_threshold=10,
+                alert_runner=fake_run,
+            )
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0][:5], ["cortextos", "bus", "log-event", "error", "meta_intake_adverse_unverified_tripwire"])
+            self.assertEqual(calls[1][:4], ["cortextos", "bus", "notify-agent", "the-orchestrator"])
+            self.assertEqual(result["unverified_consec"], 0)
+            self.assertIn("unverified tripwire", result["unverified_tripwire"]["message"])
+            with open(state_path, encoding="utf-8") as fh:
+                state = json.load(fh)
+            self.assertEqual(state["unverified_consec"], 0)
+            self.assertIn("unverified_tripwire_last_fired", state)
+
+    def test_apply_adverse_state_suppressed_unverified_does_not_trip_counter(self):
+        calls = []
+        inst = adverse_instance(error_code="fetch-failed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "adverse-state.json")
+            with open(state_path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "instances": {
+                            rc._instance_key(inst): {"suppressed_reason": "dead account out of adsread index"},
+                        },
+                        "unverified_consec": 9,
+                    },
+                    fh,
+                )
+            result = rc.apply_adverse_state(
+                adverse_scan(unverified=[inst]),
+                state_path=state_path,
+                now=2000,
+                unverified_tripwire_threshold=10,
+                alert_runner=lambda cmd, **_kwargs: calls.append(cmd),
+            )
+            self.assertEqual(calls, [])
+            self.assertEqual(result["unverified_consec"], 0)
+            self.assertIsNone(result["unverified_tripwire"])
 
 
 if __name__ == "__main__":

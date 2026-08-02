@@ -10,13 +10,17 @@ ClickUp Card ID as the authoritative already-intaken fallback for re-exports:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import subprocess
+import sys
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable
 
 import engine
 import resolve_cards
@@ -26,7 +30,25 @@ COMPLIANCE_HEADER = "Meta Compliance Agent"
 ADMANAGE_HEADER = "ADMANAGE"
 CARD_ID_HEADER = "ClickUp Card ID"
 ACCOUNT_HEADER_SIGNATURE = " | "  # every per-account launch header is 'ShortName | descriptor'
+# DEAD / RETIRED per-account launch columns: Adam deliberately killed these
+# accounts, so stale historical "Active" stamps must not drive launch-state
+# classification. Existing stamps stay historical; real reactivation should be
+# handled by removing the account from this set.
+# E-0496 retired 2026-06-27; E-0842/E-0930 killed 2026-07-16.
+DEAD_ACCOUNTS = {"E-0496", "E-0842", "E-0930"}
 DEFAULT_BASELINE_PATH = os.path.expanduser("~/.cortextos/default/state/meta-ads-agent/reconcile-baseline.json")
+ADVERSE_STATE_PATH = os.path.expanduser("~/.cortextos/default/state/meta-ads-agent/adverse-requeue-state.json")
+ADVERSE_DIRECT_TOKENS = {"rejected", "disapproved"}
+POLICY_ERROR_CODE = 2490468  # "Cannot enable ad with ad review rejected"
+AD_ID_RE = re.compile(r"Ad ID:\s*(\d+)")
+META_ADSREAD_PATH = "/Users/adamfolker/cortextos/integrations/meta-adsread/meta_adsread.py"
+ACCOUNT_ALIASES = {"JCG1 - Flow": "JCG1", "JCG2 - Flow": "JCG2"}
+ACCOUNT_STATE_TAGS = {
+    "E-0496": "account retired 2026-06-27",
+    "E-0930": "account Adam-killed 2026-07-16, verified dead",
+    "AliCG3": "account DISABLED at account level",
+}
+UNVERIFIED_TRIPWIRE_THRESHOLD = 10
 NON_AD_FOLDER_RE = re.compile(r"b-?roll|raw|selects?|project files?|working|archive", re.I)
 EXCLUDED_KEYS = (
     "partial_card",
@@ -170,6 +192,303 @@ def _assert_not_truncated(tab: str, values: list[list[str]], limit: int, consume
             f"{limit}-row range cap - population may be truncated; raise the cap before "
             f"trusting any result"
         )
+
+
+def _fetch_issue_codes(account: str, timeout_s: int = 180) -> dict[str, list[int]] | None:
+    """Return {ad_id: [issues_info error_codes]}, or None on any fetch failure."""
+    key = ACCOUNT_ALIASES.get(account, account)
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                META_ADSREAD_PATH,
+                "--account",
+                key,
+                "--endpoint",
+                "ads",
+                "--fields",
+                "id,effective_status,issues_info",
+                "--all",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+        if proc.returncode != 0:
+            return None
+        data = json.loads(proc.stdout)
+        ads = data.get("data", data) if isinstance(data, dict) else data
+        out: dict[str, list[int]] = {}
+        for ad in ads:
+            codes = [int(issue.get("error_code") or 0) for issue in (ad.get("issues_info") or [])]
+            out[str(ad.get("id") or "")] = codes
+        return out
+    except Exception:
+        return None
+
+
+def scan_adverse_since_pass(
+    tabs: Iterable[str | SheetTarget] = DEFAULT_SHEET_TABS,
+    fetch: Callable[[str], dict[str, list[int]] | None] = _fetch_issue_codes,
+) -> dict[str, object]:
+    """Find PASS or unresolved rows with a later adverse Meta launch state."""
+    instances: list[dict[str, object]] = []
+    unverified: list[dict[str, object]] = []
+    filtered_delivery = 0
+    blank_adverse = 0
+    pending: dict[str, list[dict[str, object]]] = {}
+    for target in _normalize_sheet_targets(tabs):
+        headers = _headers_target(target)
+        if COMPLIANCE_HEADER not in headers or ADMANAGE_HEADER not in headers:
+            continue
+        cols_all = _resolve_launch_cols_all(headers)
+        if not cols_all:
+            continue
+        asset_cols = [headers[name] for name in ("1x1", "4x5", "9x16") if name in headers]
+        max_col = max([headers[COMPLIANCE_HEADER], *[c for c, _acct, _dead in cols_all], *asset_cols])
+        values = _read_target(target, f"A1:{engine._col_letter(max_col)}5000")
+        _assert_not_truncated(
+            target.label,
+            values,
+            5000,
+            [headers[COMPLIANCE_HEADER], *[c for c, _acct, _dead in cols_all], *asset_cols],
+        )
+        for offset, row in enumerate(values[1:], start=2):
+            verdict = row[headers[COMPLIANCE_HEADER]].strip() if len(row) > headers[COMPLIANCE_HEADER] else ""
+            verdict_upper = verdict.upper()
+            if verdict_upper.startswith("FAIL"):
+                continue
+            if not verdict:
+                verdict_class = "BLANK"
+            elif verdict_upper.startswith("PASS"):
+                verdict_class = "PASS"
+            else:
+                verdict_class = "UNRESOLVED"
+            fids = sorted({fid for col in asset_cols if len(row) > col for fid in [engine._fid(row[col])] if fid})
+            surfaces, question_open = _verdict_surfaces(verdict, target.tab)
+            verdict_word = "PASS" if verdict_class == "PASS" else (verdict.split()[0].rstrip("-:") if verdict else "BLANK")
+            for col, acct, _dead in cols_all:
+                cell = (row[col] if len(row) > col else "").strip()
+                if not cell:
+                    continue
+                token = cell.split(" - ", 1)[0].strip().lower()
+                if token not in ADVERSE_DIRECT_TOKENS and token != "with_issues":
+                    continue
+                if verdict_class == "BLANK":
+                    blank_adverse += 1
+                    continue
+                match = AD_ID_RE.search(cell)
+                inst = {
+                    "tab": target.label,
+                    "row": offset,
+                    "account": acct,
+                    "account_state_tag": ACCOUNT_STATE_TAGS.get(acct, ""),
+                    "token": token,
+                    "ad_id": match.group(1) if match else "",
+                    "verdict_token": verdict_word,
+                    "verdict_class": verdict_class,
+                    "asset_fileids": fids,
+                    "error_code": None,
+                    "verdict_surfaces": surfaces,
+                    "creative_question_open": question_open,
+                    "pass_freshness": _pass_freshness(verdict, cell),
+                }
+                if verdict_class != "PASS" or inst["pass_freshness"] != "fresh_after_adverse":
+                    inst["non_creative_inference"] = "rescan_required"
+                elif question_open:
+                    inst["non_creative_inference"] = "open"
+                else:
+                    inst["non_creative_inference"] = "earned"
+                if token in ADVERSE_DIRECT_TOKENS:
+                    instances.append(inst)
+                else:
+                    pending.setdefault(acct, []).append(inst)
+    for acct, insts in pending.items():
+        codes_by_ad = fetch(acct)
+        if codes_by_ad is None:
+            for inst in insts:
+                inst["error_code"] = "fetch-failed"
+                unverified.append(inst)
+            continue
+        for inst in insts:
+            codes = codes_by_ad.get(str(inst["ad_id"]))
+            if codes is None:
+                inst["error_code"] = "ad-not-in-account-pull"
+                unverified.append(inst)
+            elif POLICY_ERROR_CODE in codes:
+                inst["error_code"] = POLICY_ERROR_CODE
+                instances.append(inst)
+            else:
+                filtered_delivery += 1
+    return {
+        "instances": instances,
+        "unverified": unverified,
+        "filtered_delivery": filtered_delivery,
+        "blank_adverse": blank_adverse,
+    }
+
+
+def _verdict_surfaces(verdict_cell: str, tab: str) -> tuple[list[str], bool]:
+    lower = (verdict_cell or "").lower()
+    surfaces: list[str] = []
+    if re.search(r"whisper|vo audio|vo transcript|creative/vo", lower):
+        surfaces.append("VO")
+    if re.search(r"frames|phase 1-v|1fps", lower):
+        surfaces.append("video-frames")
+    if re.search(r"\(image\)|vision pass|ocr|tiled|re-scan.*1x1|creative scan v2", lower):
+        surfaces.append("static-image+ocr")
+    if not surfaces:
+        surfaces = ["unstated"]
+    question_open = tab.upper().startswith("VIDEOS") or surfaces == ["unstated"]
+    return surfaces, question_open
+
+
+_SCAN_DATE_RE = re.compile(r"(?:scanned|\[re-scan|eyeball-(?:confirmed|corrected))\s*:?\s*(\d{4}-\d{2}-\d{2})")
+_STAMP_DATE_RE = re.compile(r"(\d{2})/(\d{2})/(\d{4})")
+
+
+def _pass_freshness(verdict_cell: str, launch_cell: str) -> str:
+    scan_m = _SCAN_DATE_RE.search(verdict_cell or "")
+    if not scan_m:
+        return "unknown"
+    stamp_m = _STAMP_DATE_RE.search(launch_cell or "")
+    if not stamp_m:
+        return "unknown"
+    scan_date = scan_m.group(1)
+    mm, dd, yyyy = stamp_m.groups()
+    stamp_date = f"{yyyy}-{mm}-{dd}"
+    return "fresh_after_adverse" if scan_date >= stamp_date else "stale_or_predates"
+
+
+def _resolution_hash(verdict_token: str, asset_fileids: list[str]) -> str:
+    return hashlib.sha256((verdict_token + "|" + ",".join(sorted(asset_fileids))).encode("utf-8")).hexdigest()
+
+
+def _instance_key(inst: dict[str, object]) -> str:
+    return f"{inst['tab']}|{inst['row']}|{inst['ad_id'] or inst['account']}|{inst['token']}"
+
+
+def _emit_unverified_tripwire(
+    active_unverified: list[dict[str, object]],
+    consec: int,
+    state_path: str,
+    now: int,
+    run: Callable[..., object] = subprocess.run,
+) -> dict[str, object]:
+    keys = sorted(_instance_key(inst) for inst in active_unverified)
+    message = (
+        "meta-intake adverse-state unverified tripwire: "
+        f"{len(active_unverified)} active unverified instances for {consec} consecutive runs "
+        f"(state={state_path})"
+    )
+    meta = {
+        "agent": os.environ.get("CTX_AGENT_NAME", "meta-ads-agent"),
+        "state_path": state_path,
+        "unverified_consec": consec,
+        "active_unverified": len(active_unverified),
+        "keys": keys,
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+    }
+    commands = [
+        ["cortextos", "bus", "log-event", "error", "meta_intake_adverse_unverified_tripwire", "warning", "--meta", json.dumps(meta, sort_keys=True)],
+        ["cortextos", "bus", "notify-agent", os.environ.get("CTX_ORCHESTRATOR_AGENT", "the-orchestrator"), message],
+    ]
+    results: list[dict[str, object]] = []
+    for cmd in commands:
+        try:
+            proc = run(cmd, capture_output=True, text=True, timeout=30)
+            results.append({"cmd": cmd[:4], "returncode": int(getattr(proc, "returncode", 0))})
+        except Exception as exc:
+            results.append({"cmd": cmd[:4], "error": str(exc)})
+    return {"message": message, "keys": keys, "results": results}
+
+
+def apply_adverse_state(
+    scan: dict[str, object],
+    state_path: str = ADVERSE_STATE_PATH,
+    now: int | None = None,
+    *,
+    unverified_tripwire_threshold: int = UNVERIFIED_TRIPWIRE_THRESHOLD,
+    alert_runner: Callable[..., object] = subprocess.run,
+) -> dict[str, object]:
+    """Resolution-keyed dedup plus a fail-loud tripwire for repeated unverified fetches."""
+    now = int(time.time() if now is None else now)
+    try:
+        with open(state_path, encoding="utf-8") as fh:
+            state = json.load(fh)
+        if not isinstance(state, dict):
+            state = {}
+    except Exception:
+        state = {}
+    inst_state: dict[str, dict[str, object]] = state.setdefault("instances", {})
+    new: list[dict[str, object]] = []
+    outstanding: list[dict[str, object]] = []
+    for inst in scan["instances"]:
+        key = _instance_key(inst)
+        current_hash = _resolution_hash(str(inst["verdict_token"]), list(inst["asset_fileids"]))
+        rec = inst_state.get(key)
+        if rec is None:
+            inst_state[key] = {"first_seen": now, "last_seen": now, "resolution_hash": current_hash, "resolved": False}
+            new.append(inst)
+        elif rec.get("suppressed_reason"):
+            continue
+        elif rec.get("signed_off"):
+            continue
+        elif rec.get("resolved"):
+            if rec.get("resolution_hash") != current_hash:
+                inst_state[key] = {"first_seen": now, "last_seen": now, "resolution_hash": current_hash, "resolved": False}
+                new.append(inst)
+        elif rec.get("resolution_hash") != current_hash:
+            rec["resolved"] = True
+            rec["resolution_hash"] = current_hash
+            rec["resolved_ts"] = now
+        else:
+            rec["last_seen"] = now
+            inst["age_days"] = round((now - int(rec.get("first_seen", now))) / 86400, 1)
+            outstanding.append(inst)
+    active_unverified = [
+        u for u in scan["unverified"]
+        if not (inst_state.get(_instance_key(u)) or {}).get("suppressed_reason")
+    ]
+    state["unverified_consec"] = int(state.get("unverified_consec", 0)) + 1 if active_unverified else 0
+    tripwire_alert: dict[str, object] | None = None
+    if active_unverified and state["unverified_consec"] >= unverified_tripwire_threshold:
+        tripwire_alert = _emit_unverified_tripwire(
+            active_unverified,
+            int(state["unverified_consec"]),
+            state_path,
+            now,
+            alert_runner,
+        )
+        state["unverified_tripwire_last_fired"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        state["unverified_consec"] = 0
+    if "baseline" not in state:
+        state["baseline"] = {
+            "recorded_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            "count": len(new) + len(outstanding),
+            "keys": sorted(_instance_key(i) for i in [*new, *outstanding]),
+        }
+    if "baseline_v2_unresolved" not in state and any(i.get("verdict_class") == "UNRESOLVED" for i in [*new, *outstanding]):
+        state["baseline_v2_unresolved"] = {
+            "recorded_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            "count_total": len(new) + len(outstanding),
+            "count_unresolved_added": sum(1 for i in [*new, *outstanding] if i.get("verdict_class") == "UNRESOLVED"),
+        }
+    tmp = state_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=1, sort_keys=True)
+    os.replace(tmp, state_path)
+    return {
+        "new": new,
+        "outstanding": outstanding,
+        "unverified": scan["unverified"],
+        "filtered_delivery": scan["filtered_delivery"],
+        "blank_adverse": scan.get("blank_adverse", 0),
+        "suppressed": sum(1 for _key, rec in inst_state.items() if rec.get("suppressed_reason")),
+        "unverified_consec": state["unverified_consec"],
+        "unverified_tripwire": tripwire_alert,
+        "baseline": state["baseline"],
+    }
 
 
 def _default_sheet_targets() -> tuple[SheetTarget, ...]:
@@ -387,13 +706,23 @@ def _resolve_launch_cols(headers: dict[str, int]) -> list[int]:
     The RIGHT boundary varies by tab (Code on IMAGES, 'Variant #' on VIDEOS), so detect
     by the account-header signature, never a fixed end-header. Drift-tolerant: a new
     account header carries the ' | ' signature; content columns never do."""
+    return [col for col, _acct, dead in _resolve_launch_cols_all(headers) if not dead]
+
+
+def _resolve_launch_cols_all(headers: dict[str, int]) -> list[tuple[int, str, bool]]:
+    """Full contiguous account run as (col, account, is_dead), including dead accounts.
+
+    Launch-state reconciliation skips dead accounts, but adverse-state requeue
+    still needs the full run because a dead account can be a tagged trigger.
+    """
     col_to_header = {col: name for name, col in headers.items()}
-    launch_cols: list[int] = []
+    out: list[tuple[int, str, bool]] = []
     col = headers[ADMANAGE_HEADER] + 1
     while col in col_to_header and ACCOUNT_HEADER_SIGNATURE in col_to_header[col]:
-        launch_cols.append(col)
+        acct = col_to_header[col].split(ACCOUNT_HEADER_SIGNATURE, 1)[0].strip()
+        out.append((col, acct, acct in DEAD_ACCOUNTS))
         col += 1
-    return launch_cols
+    return out
 
 
 def build_sheet_indexes(
@@ -631,6 +960,33 @@ def render_markdown(result: dict[str, object]) -> str:
         lines.extend(["", "## Pending Cards", "", "| Card | Reason |", "|---|---|"])
         for card in pending:
             lines.append(f"| {card['card_id']} | {card['reason']} |")
+    adverse = result.get("adverse_since_pass")
+    if isinstance(adverse, dict):
+        lines.extend(["", "## Adverse State Since PASS", ""])
+        if adverse.get("error"):
+            lines.append(f"- Error: {adverse['error']}")
+        else:
+            lines.append(
+                f"- New: {len(adverse.get('new') or [])}; "
+                f"Outstanding: {len(adverse.get('outstanding') or [])}; "
+                f"Unverified: {len(adverse.get('unverified') or [])}; "
+                f"Suppressed: {adverse.get('suppressed', 0)}; "
+                f"Filtered delivery: {adverse.get('filtered_delivery', 0)}; "
+                f"Blank adverse: {adverse.get('blank_adverse', 0)}; "
+                f"Unverified consecutive runs: {adverse.get('unverified_consec', 0)}"
+            )
+            if adverse.get("unverified_tripwire"):
+                lines.append(f"- Tripwire: {adverse['unverified_tripwire'].get('message')}")
+            rows = [*list(adverse.get("new") or []), *list(adverse.get("outstanding") or [])]
+            if rows:
+                lines.extend(["", "| Status | Tab | Row | Account | Token | Ad ID | Inference | Account state |", "|---|---|---:|---|---|---|---|---|"])
+                for inst in rows:
+                    status = "new" if inst in (adverse.get("new") or []) else "outstanding"
+                    lines.append(
+                        f"| {status} | {inst.get('tab')} | {inst.get('row')} | "
+                        f"{inst.get('account')} | {inst.get('token')} | {inst.get('ad_id')} | "
+                        f"{inst.get('non_creative_inference')} | {inst.get('account_state_tag', '')} |"
+                    )
     return "\n".join(lines)
 
 
@@ -641,6 +997,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--list", action="append", dest="lists", default=[], help="ClickUp list ID to sweep")
     parser.add_argument("--tab", action="append", default=[], help="sheet tab to scan")
     parser.add_argument("--no-baseline", action="store_true", help="run full reconcile without applying baseline exclusions")
+    parser.add_argument("--no-adverse", action="store_true", help="skip the adverse-drift-since-PASS requeue scan")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of markdown")
     args = parser.parse_args(argv)
 
@@ -656,6 +1013,11 @@ def main(argv: list[str] | None = None) -> int:
     baseline = None if args.no_baseline else load_baseline()
     sheet_index, sheet_card_index = build_sheet_indexes(tabs)
     result = reconcile(cards, sheet_index, baseline=baseline, sheet_card_index=sheet_card_index)
+    if not args.card and not args.no_adverse:
+        try:
+            result["adverse_since_pass"] = apply_adverse_state(scan_adverse_since_pass(tabs or DEFAULT_SHEET_TARGETS))
+        except Exception as exc:
+            result["adverse_since_pass"] = {"error": f"adverse-scan failed: {exc}"}
     if args.json:
         print(json.dumps(result, indent=2))
     else:
