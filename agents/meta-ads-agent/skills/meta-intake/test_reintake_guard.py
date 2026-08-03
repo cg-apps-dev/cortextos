@@ -13,6 +13,7 @@ IMAGE_HEADERS = {
     "ClickUp Card ID": 5,
     "1x1": 6,
     "9x16": 7,
+    "Ad Name": 8,
 }
 
 VIDEO_HEADERS = {
@@ -24,6 +25,7 @@ VIDEO_HEADERS = {
     "ClickUp Card ID": 6,
     "4x5": 7,
     "9x16": 8,
+    "Ad Name": 9,
 }
 
 
@@ -66,6 +68,13 @@ def video_pair(stem, actor, variant=1, hook=1, modified="2026-06-01T00:00:00.000
 
 def sheet_url(fid):
     return f"https://drive.google.com/file/d/{fid}/view?usp=drive_link"
+
+
+def sheet_row(headers, values):
+    row = [""] * (max(headers.values()) + 1)
+    for key, value in values.items():
+        row[headers[key]] = value
+    return row
 
 
 class FinishedFolderTests(unittest.TestCase):
@@ -278,6 +287,60 @@ class ReintakeGuardTests(unittest.TestCase):
         self.assertTrue(result["already_complete"])
         self.assertEqual(result["present_file_ids"], [])
 
+    def test_retargets_ad_name_formula_cell_rows_only(self):
+        formula = '=Y10&" - "&Z10&" fixed 10"&$AA$10&TEXT(TODAY(),"MM-DD-YYYY")'
+        self.assertEqual(
+            engine._retarget_formula_row(formula, 10, 11),
+            '=Y11&" - "&Z11&" fixed 10"&$AA$11&TEXT(TODAY(),"MM-DD-YYYY")',
+        )
+
+    def test_image_append_writes_ad_name_formula_and_gates_readback(self):
+        formula_neighbors = [[] for _ in range(8)] + [['=B10&" - "&F10']]
+        readback = [sheet_row(IMAGE_HEADERS, {
+            "Code": "IMG_100_V2",
+            "1x1": sheet_url("new-1x1"),
+            "9x16": sheet_url("new-9x16"),
+            "Ad Name": "IMG 100 - ID=card-a",
+        })]
+        with patch.object(engine, "_headers", return_value=IMAGE_HEADERS), \
+             patch.object(engine, "_list_folder", return_value=image_files()[2:]), \
+             patch.object(engine, "_ids_on_tab", return_value=set()), \
+             patch.object(engine, "_posted_to_sheet_status", return_value=False), \
+             patch.object(engine, "_max_nonempty", return_value=10), \
+             patch.object(engine, "_preflight_empty", return_value=(True, "ok")), \
+             patch.object(engine, "_read_formula", return_value=formula_neighbors), \
+             patch.object(engine, "_read", return_value=readback), \
+             patch.object(engine, "_write_multi") as write_multi, \
+             patch.object(engine, "_share", return_value=(2, 2)), \
+             patch.object(engine, "_thumbs", return_value=[True]):
+            result = engine.intake_image_card("card-a", "folder", "IMAGES", "WR", "DS", "desc", dry_run=False)
+        self.assertTrue(result["all_ok"])
+        blocks = dict(write_multi.call_args.args[1])
+        self.assertEqual(blocks["I11"], [['=B11&" - "&F11']])
+
+    def test_image_readback_requires_ad_name_ok(self):
+        formula_neighbors = [[] for _ in range(8)] + [['=B10&" - "&F10']]
+        readback = [sheet_row(IMAGE_HEADERS, {
+            "Code": "IMG_100_V2",
+            "1x1": sheet_url("new-1x1"),
+            "9x16": sheet_url("new-9x16"),
+            "Ad Name": "",
+        })]
+        with patch.object(engine, "_headers", return_value=IMAGE_HEADERS), \
+             patch.object(engine, "_list_folder", return_value=image_files()[2:]), \
+             patch.object(engine, "_ids_on_tab", return_value=set()), \
+             patch.object(engine, "_posted_to_sheet_status", return_value=False), \
+             patch.object(engine, "_max_nonempty", return_value=10), \
+             patch.object(engine, "_preflight_empty", return_value=(True, "ok")), \
+             patch.object(engine, "_read_formula", return_value=formula_neighbors), \
+             patch.object(engine, "_read", return_value=readback), \
+             patch.object(engine, "_write_multi"), \
+             patch.object(engine, "_share", return_value=(2, 2)), \
+             patch.object(engine, "_thumbs", return_value=[True]):
+            result = engine.intake_image_card("card-a", "folder", "IMAGES", "WR", "DS", "desc", dry_run=False)
+        self.assertFalse(result["all_ok"])
+        self.assertFalse(result["readback"][0]["adname_ok"])
+
     def test_video_partial_present_new_variant_returns_guard_without_confirm(self):
         with patch.object(engine, "_headers", return_value=VIDEO_HEADERS), \
              patch.object(engine, "_find_finished_folder", return_value=("finished", "Finished")), \
@@ -305,6 +368,55 @@ class ReintakeGuardTests(unittest.TestCase):
         self.assertEqual(result["status"], "READY")
         self.assertEqual(result["rows"][0]["variant"], "V02")
         self.assertEqual(result["dup_skipped"], ["V1H1"])
+
+    def test_video_append_writes_ad_name_formula_and_gates_readback(self):
+        formula_neighbors = [[] for _ in range(8)] + [['=B10&" - "&F10']]
+        readback = [sheet_row(VIDEO_HEADERS, {
+            "Variant #": "V02",
+            "4x5": sheet_url("new-4x5"),
+            "9x16": sheet_url("new-9x16"),
+            "Ad Name": "V02 - Helen - ID=card-v",
+        })]
+        with patch.object(engine, "_headers", return_value=VIDEO_HEADERS), \
+             patch.object(engine, "_find_finished_folder", return_value=("finished", "Finished")), \
+             patch.object(engine, "_list_folder", return_value=video_files()[2:]), \
+             patch.object(engine, "_ids_on_tab", return_value=set()), \
+             patch.object(engine, "_posted_to_sheet_status", return_value=False), \
+             patch.object(engine, "_max_nonempty", return_value=10), \
+             patch.object(engine, "_preflight_empty", return_value=(True, "ok")), \
+             patch.object(engine, "_read_formula", return_value=formula_neighbors), \
+             patch.object(engine, "_read", return_value=readback), \
+             patch.object(engine, "_write_multi") as write_multi, \
+             patch.object(engine, "_share", return_value=(2, 2)), \
+             patch.object(engine, "_thumbs", return_value=[True]):
+            result = engine.intake_video_card("card-v", "folder", "VIDEOS", "WR", "DS", dry_run=False)
+        self.assertTrue(result["all_ok"])
+        blocks = dict(write_multi.call_args.args[1])
+        self.assertEqual(blocks["J11"], [['=B11&" - "&F11']])
+
+    def test_video_readback_requires_ad_name_ok(self):
+        formula_neighbors = [[] for _ in range(8)] + [['=B10&" - "&F10']]
+        readback = [sheet_row(VIDEO_HEADERS, {
+            "Variant #": "V02",
+            "4x5": sheet_url("new-4x5"),
+            "9x16": sheet_url("new-9x16"),
+            "Ad Name": "",
+        })]
+        with patch.object(engine, "_headers", return_value=VIDEO_HEADERS), \
+             patch.object(engine, "_find_finished_folder", return_value=("finished", "Finished")), \
+             patch.object(engine, "_list_folder", return_value=video_files()[2:]), \
+             patch.object(engine, "_ids_on_tab", return_value=set()), \
+             patch.object(engine, "_posted_to_sheet_status", return_value=False), \
+             patch.object(engine, "_max_nonempty", return_value=10), \
+             patch.object(engine, "_preflight_empty", return_value=(True, "ok")), \
+             patch.object(engine, "_read_formula", return_value=formula_neighbors), \
+             patch.object(engine, "_read", return_value=readback), \
+             patch.object(engine, "_write_multi"), \
+             patch.object(engine, "_share", return_value=(2, 2)), \
+             patch.object(engine, "_thumbs", return_value=[True]):
+            result = engine.intake_video_card("card-v", "folder", "VIDEOS", "WR", "DS", dry_run=False)
+        self.assertFalse(result["all_ok"])
+        self.assertFalse(result["readback"][0]["adname_ok"])
 
     def test_video_axon_subfolder_inside_picked_folder_skipped_during_collection(self):
         folders = {

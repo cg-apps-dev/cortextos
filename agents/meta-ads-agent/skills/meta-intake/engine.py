@@ -65,6 +65,36 @@ def _read(tab, a1):
     r = _rc(["sheets", "get", SHEET_ID, _sheet_range(tab, a1), "--render", "FORMATTED_VALUE"])
     return r.get("values", [])
 
+def _read_formula(tab, a1):
+    r = _rc(["sheets", "get", SHEET_ID, _sheet_range(tab, a1), "--render", "FORMULA"])
+    return r.get("values", [])
+
+CELL_ROW_RE = re.compile(r'(?<![A-Za-z0-9_])(\$?[A-Z]{1,3}\$?)(\d+)(?!\d)')
+
+def _retarget_formula_row(formula, source_row, target_row):
+    source = str(source_row)
+    target = str(target_row)
+    return CELL_ROW_RE.sub(lambda m: f"{m.group(1)}{target}" if m.group(2) == source else m.group(0), formula)
+
+def _ad_name_formulas(tab, H, start, n):
+    col = _col_letter(H["Ad Name"])
+    before_start = max(2, start - 25)
+    before = _read_formula(tab, f"{col}{before_start}:{col}{start - 1}") if start > 2 else []
+    candidates = []
+    for i, row in enumerate(before, before_start):
+        if row and str(row[0]).strip().startswith("="):
+            candidates.append((i, str(row[0]).strip()))
+    if not candidates:
+        after = _read_formula(tab, f"{col}{start + n}:{col}{start + n + 24}")
+        for i, row in enumerate(after, start + n):
+            if row and str(row[0]).strip().startswith("="):
+                candidates.append((i, str(row[0]).strip()))
+                break
+    if not candidates:
+        raise RuntimeError(f"missing Ad Name neighbor formula on {tab} near row {start}")
+    source_row, source_formula = candidates[-1]
+    return [[_retarget_formula_row(source_formula, source_row, start + i)] for i in range(n)]
+
 def _headers(tab):
     """Live header map name->idx (0-based). Flags duplicate headers."""
     hdr = _read(tab, "A1:BZ1")  # widened from AZ (2026-07-06): the E-0828/E-0750 col insert pushed VIDEOS (Flower)'s Actor Age Bracket/Gender past AZ, making them invisible to _headers (set_actor_vision failed). BZ = 78 cols headroom.
@@ -263,7 +293,7 @@ def intake_image_card(card_id, folder_id, tab, writer, designer, description, dr
     """One image card -> rows (one per variant, 1x1+9x16). Returns a plan/result dict. dry_run=True => compute only, NO writes."""
     description = _flow_rebrand(description)
     H = _headers(tab)
-    need = ["Code","Description","Writer","Designer","ClickUp Card ID","1x1","9x16"]
+    need = ["Code","Description","Writer","Designer","ClickUp Card ID","Ad Name","1x1","9x16"]
     for k in need:
         if k not in H: raise RuntimeError(f"missing header '{k}' on {tab}")
     files = _list_folder(folder_id)
@@ -326,7 +356,7 @@ def intake_image_card(card_id, folder_id, tab, writer, designer, description, dr
             "dup_skipped": dup, "unparsed": unparsed}
     if dry_run:
         return plan
-    # BUILD cell blocks (col A preview = 1x1 thumbnail; skip Ad Name formula col)
+    # BUILD cell blocks (col A preview = 1x1 thumbnail; Ad Name formula copied from a neighboring row)
     clickurl = f"https://app.clickup.com/t/{card_id}"
     colA = [[f'=IMAGE("https://drive.google.com/thumbnail?id={r["p1"]}&sz=w1000")'] for r in fresh]
     # contiguous data Code..ClickUp Card ID
@@ -335,6 +365,7 @@ def intake_image_card(card_id, folder_id, tab, writer, designer, description, dr
     # assets: 1x1 and 9x16 (write each col separately to be safe re: 4x5 gap)
     blocks = [("A%d" % start, colA),
               ("%s%d" % (_col_letter(c0), start), data),
+              ("%s%d" % (_col_letter(H["Ad Name"]), start), _ad_name_formulas(tab, H, start, n)),
               ("%s%d" % (_col_letter(H["1x1"]), start), [[r["p1"] and f'https://drive.google.com/file/d/{r["p1"]}/view?usp=drive_link'] for r in fresh]),
               ("%s%d" % (_col_letter(H["9x16"]), start), [[f'https://drive.google.com/file/d/{r["p9"]}/view?usp=drive_link'] for r in fresh])]
     # "Added to Sheet" intake timestamp (col B as of 2026-06-04) - set-once: engine only ever writes
@@ -349,19 +380,18 @@ def intake_image_card(card_id, folder_id, tab, writer, designer, description, dr
     shared, total = _share([x for r in fresh for x in (r["p1"], r["p9"])])
     plan["shared"] = f"{shared}/{total}"
     # READ-BACK mapping check
-    maxL = _col_letter(H["9x16"])
+    maxL = _col_letter(max(H["9x16"], H["Ad Name"]))
     vb = _read(tab, f"A{start}:{maxL}{start+n-1}")
-    adn = H.get("Ad Name")
     rb = []
     for i, r in enumerate(fresh):
         row = vb[i] if i < len(vb) else []
         g = lambda c: (row[c] if len(row) > c else "")
         code_ok = g(H["Code"]).strip() == r["code"]
         a1_ok = bool(g(H["1x1"])); a9_ok = bool(g(H["9x16"]))
-        adn_ok = (adn is None) or (r["code"].split("_V")[0].replace("IMG_","") in g(adn) or card_id in g(adn))
+        adn_ok = (r["code"].split("_V")[0].replace("IMG_","") in g(H["Ad Name"]) or card_id in g(H["Ad Name"]))
         rb.append({"row": start+i, "code_ok": code_ok, "1x1": a1_ok, "9x16": a9_ok, "adname_ok": adn_ok})
     plan["readback"] = rb
-    plan["all_ok"] = all(x["code_ok"] and x["1x1"] and x["9x16"] for x in rb)
+    plan["all_ok"] = all(x["code_ok"] and x["1x1"] and x["9x16"] and x["adname_ok"] for x in rb)
     # RENDER-GATE
     th = _thumbs([r["p1"] for r in fresh])
     plan["rendered"] = (sum(th) == len(th))
@@ -469,7 +499,7 @@ def intake_video_card(card_id, folder_id, tab, writer, designer, video_script=""
     Mirrors intake_image_card gates for the VIDEOS tabs."""
     video_script = _flow_rebrand(video_script)
     H = _headers(tab)
-    need = ["Variant #", "Actor", "Hook #", "Writer", "Designer", "ClickUp Card ID", "4x5", "9x16"]
+    need = ["Variant #", "Actor", "Hook #", "Writer", "Designer", "ClickUp Card ID", "Ad Name", "4x5", "9x16"]
     for k in need:
         if k not in H: raise RuntimeError(f"missing header '{k}' on {tab}")
     fin_id, fin_name = _find_finished_folder(folder_id)
@@ -562,6 +592,7 @@ def intake_video_card(card_id, folder_id, tab, writer, designer, video_script=""
     blocks.append(colvals("Writer", [writer for _ in fresh]))
     blocks.append(colvals("Designer", [designer for _ in fresh]))
     blocks.append(colvals("ClickUp Card ID", [clickurl for _ in fresh]))
+    blocks.append(colvals("Ad Name", [row[0] for row in _ad_name_formulas(tab, H, start, n)]))
     blocks.append(colvals("4x5", [f'https://drive.google.com/file/d/{r["p4"]}/view?usp=drive_link' for r in fresh]))
     blocks.append(colvals("9x16", [f'https://drive.google.com/file/d/{r["p9"]}/view?usp=drive_link' for r in fresh]))
     if "Video Script" in H and video_script:
@@ -573,15 +604,15 @@ def intake_video_card(card_id, folder_id, tab, writer, designer, video_script=""
     shared, total = _share([x for r in fresh for x in (r["p4"], r["p9"])])
     plan["shared"] = f"{shared}/{total}"
     # READ-BACK
-    maxL = _col_letter(max(H["4x5"], H["9x16"], H["Variant #"]))
+    maxL = _col_letter(max(H["4x5"], H["9x16"], H["Variant #"], H["Ad Name"]))
     vb = _read(tab, f"A{start}:{maxL}{start + n - 1}")
     rb = []
     for i, r in enumerate(fresh):
         row = vb[i] if i < len(vb) else []
         g = lambda c: (row[c] if len(row) > c else "")
-        rb.append({"row": start + i, "variant_ok": bool(g(H["Variant #"])), "4x5": bool(g(H["4x5"])), "9x16": bool(g(H["9x16"]))})
+        rb.append({"row": start + i, "variant_ok": bool(g(H["Variant #"])), "4x5": bool(g(H["4x5"])), "9x16": bool(g(H["9x16"])), "adname_ok": bool(g(H["Ad Name"]))})
     plan["readback"] = rb
-    plan["all_ok"] = all(x["variant_ok"] and x["4x5"] and x["9x16"] for x in rb)
+    plan["all_ok"] = all(x["variant_ok"] and x["4x5"] and x["9x16"] and x["adname_ok"] for x in rb)
     # RENDER-GATE on the 9x16 (video poster builds async on Drive - gate on thumbnailLink present)
     th = _thumbs([r["p9"] for r in fresh])
     plan["rendered"] = (sum(th) == len(th))
