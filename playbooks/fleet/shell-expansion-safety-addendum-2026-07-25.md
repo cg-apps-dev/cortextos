@@ -733,6 +733,8 @@ execute it — not a slogan, the single most repeatedly demonstrated finding of
 the night. **Current coverage is zero, and stays written that way until
 something mechanical ships**, not when the fleet has been told.
 
+> **The condition above was MET on 2026-08-03 (the-sop-keeper).** "Something mechanical" shipped: Fix A landed (commits `f9170fe1` + `4039d794`, live in `dist`) and is unit-tested against `decideSendGuard` directly — 42 passing tests in `tests/unit/hooks/send-guard.test.ts`, including the `$(...)`-deny and quoted-heredoc-allow cases whose absence was the "coverage is zero" basis. This paragraph's incident-time claim stands as the record; the guard is no longer at zero coverage. Current guidance: `standing-rules.md` → "`hook-send-guard` is now a working backstop" and this addendum's parent file `shell-expansion-safety.md` § "The send-guard: Fix A landed + verified."
+
 ## Attribution correction: the bypass finding is structural, not incidental
 
 Earlier framing credited the `$(...)`-bypass discovery as "one common practice

@@ -130,18 +130,22 @@ Auditing agent-message corruption in the *Telegram* log produced five under-clai
 
 ---
 
-## The send-guard is not a backstop (treat it as absent)
+## The send-guard: Fix A landed + verified — now a working backstop (was: treat it as absent)
 
-`cortextos bus hook-send-guard` is a `PreToolUse` hook on Bash fleet-wide and self-describes as blocking unsafe sends. As of this incident it denies **only a literal backtick**, and **only** when the command matches its send pattern — so it is **inverted on the case that matters**:
+> **UPDATE 2026-08-03 (the-sop-keeper): Fix A has LANDED and is VERIFIED. The guard is no longer inverted.** What follows records the incident state (the inversion) and then the resolution; the guard is now safe to treat as a real backstop, with the caveat that it stays a backstop, not a substitute for the quoted-heredoc composition rule.
+
+**Incident state (2026-07-25, now fixed).** `cortextos bus hook-send-guard` is a `PreToolUse` hook on Bash fleet-wide and self-describes as blocking unsafe sends. As of the incident it denied **only a literal backtick**, and **only** when the command matched its send pattern — so it was **inverted on the case that matters**:
 
 - a *safe* quoted heredoc whose relayed content contains a backtick → **DENIED**
 - an *unsafe* inline body using `$(...)` → **ALLOWED**
 
-Its deny text (`remove the backticks (use plain text)`) names the instance rather than the class, so it **actively teaches the too-narrow rule** and pushes agents toward the vulnerable path — three agents independently banked "backticks are the problem" from it. A control can be the source of the misconception it exists to prevent.
+Its deny text (`remove the backticks (use plain text)`) named the instance rather than the class, so it **actively taught the too-narrow rule** and pushed agents toward the vulnerable path — three agents independently banked "backticks are the problem" from it. A control can be the source of the misconception it exists to prevent.
 
-**Fix A** (routed 2026-07-25): test the **body argument region**, not the command string — a naive whole-command widening would deny the sanctioned pattern, which itself contains `$(...)` twice. Narrow high-confidence rule, **allow-and-log** when the argument cannot be located (this hook fires on every Bash call; fail-closed has an outage shape), and the deny text must name the class. Acceptance test: **probe the believed scope** — seed `$(...)` and `${...}` and confirm they now deny; a probe that only tests what the source already says is a tautology check.
+**Fix A — LANDED and VERIFIED 2026-08-03** (commits `f9170fe1` all-tokens inspection + `4039d794` prose-command-position detection, on `main`, built into `dist` 2026-08-02; hooks load from `dist` per-invocation so it is live without a daemon restart). It does exactly what Fix A specified: it tests the **body argument region** at genuine command positions (an `isCommandPosition` check, so it no longer fires on prose that merely says "cortextos bus send-message …"), inspects **every** body token not just the first, **allow-and-logs** when the argument cannot be confidently located (this hook fires on every Bash call; fail-closed has an outage shape), and its deny reason names the class. **The acceptance test this section demanded — "probe the believed scope: seed `$(...)` and `${...}` and confirm they now deny" — is met and is now a regression test:** `tests/unit/hooks/send-guard.test.ts` (42 tests, all passing) asserts `$(...)`/`${...}`/backtick/arithmetic/process-substitution in a body are DENIED, the mandated `CG_HEREDOC_7f3a91c4_END` quoted-heredoc form is ALLOWED, and prose-about-a-send is allowed while the same text AS a real command is denied (a paired positive/negative control, not a one-sided probe). This is the "unit-tested against `decideSendGuard` directly, not deployed to find out" bar the standing-rules entry set — met.
 
-**Fix B** (queued): `stdin` / `--body-file` input, so a body never transits a command line at all — immune to the execution *and* corruption modes at once. A sanitiser *inside* `send-message` is structurally impossible: substitution completes in the caller's shell before the tool has argv.
+**But it is a BACKSTOP, not a substitute for composing safely.** The quoted-heredoc rule stays primary: compose the body correctly *and* let the guard catch a slip — defense in depth. A backstop relied on as the primary defense is one refactor from a gap, and this guard was inverted once already; **if it is rebuilt again, re-verify against the 42-test floor rather than assuming it stays correct.**
+
+**Fix B** (still queued): `stdin` / `--body-file` input, so a body never transits a command line at all — immune to the execution *and* corruption modes at once. A sanitiser *inside* `send-message` is structurally impossible: substitution completes in the caller's shell before the tool has argv. (Fix A closes the guard's inversion; Fix B would close the underlying command-line-transit exposure — different layers, both still worth having.)
 
 ---
 
