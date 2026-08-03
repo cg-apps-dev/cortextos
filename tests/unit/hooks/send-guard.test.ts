@@ -92,6 +92,37 @@ describe('hook-send-guard command checks', () => {
     }
   });
 
+  it('allows prose or arguments that mention a guarded send with expansion-looking text', () => {
+    const cases = [
+      'echo cortextos bus send-message a low hello `whoami`',
+      'relaying: cortextos bus send-message a low see `code` here',
+      'echo Reply using: cortextos bus send-message a low `x`',
+      'echo see `code` cortextos bus send-message a low `x`',
+      'relaying `foo` cortextos bus send-message a low `x`',
+    ];
+
+    for (const command of cases) {
+      expect(decideSendGuard(command)).toEqual({ permissionDecision: 'allow' });
+      expect(detectBusSendCommand(command)).toBeNull();
+    }
+  });
+
+  it('still denies the same body text when the send is in command position', () => {
+    const cases = [
+      'cortextos bus send-message a low hello `whoami`',
+      'echo done; cortextos bus send-message a low hello `whoami`',
+      '(cortextos bus send-message a low `whoami`)',
+      'OUT=`cortextos bus send-message a low hello `whoami``',
+    ];
+
+    for (const command of cases) {
+      expect(decideSendGuard(command)).toEqual({
+        permissionDecision: 'deny',
+        permissionDecisionReason: SHELL_EXPANSION_DENY_REASON,
+      });
+    }
+  });
+
   it('allows a quoted heredoc body passed as a double-quoted variable reference', () => {
     const command = `BODY=$(cat <<'CG_HEREDOC_7f3a91c4_END'
 customer copy with \`backticks\`

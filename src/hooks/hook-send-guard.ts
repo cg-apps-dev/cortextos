@@ -268,7 +268,7 @@ function findGuardedCommandStart(command: string): { kind: GuardedBusCommand; in
       continue;
     }
     if (quote || !command.startsWith('cortextos', i)) continue;
-    if (i > 0 && /[A-Za-z0-9_-]/.test(command[i - 1])) continue;
+    if (!isCommandPosition(command, i)) continue;
 
     const match = command.slice(i).match(/^cortextos\s+bus\s+([A-Za-z0-9-]+)/);
     if (match && isGuardedBusCommand(match[1])) {
@@ -276,6 +276,17 @@ function findGuardedCommandStart(command: string): { kind: GuardedBusCommand; in
     }
   }
   return null;
+}
+
+function isCommandPosition(command: string, index: number): boolean {
+  let j = index - 1;
+  while (j >= 0 && /[ \t\r]/.test(command[j])) j--;
+  if (j < 0) return true;
+  const ch = command[j];
+  if (ch === '\n' || ch === ';' || ch === '|' || ch === '&' || ch === '(') return true;
+  if (ch === '!') return true;
+  if (ch === '`') return j === index - 1;
+  return ch === '(' && j > 0 && command[j - 1] === '$';
 }
 
 function hasShellOperatorAfterCommand(command: string): boolean {
