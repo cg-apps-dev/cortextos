@@ -6,6 +6,9 @@
 import { existsSync, readFileSync } from 'fs';
 import { basename } from 'path';
 import { execFile } from 'child_process';
+import { request as httpsRequest } from 'node:https';
+import { URL } from 'node:url';
+import { resilientLookup } from '../utils/resilient-lookup.js';
 
 // CHOKE-POINT (2026-07-16 Adam-comms class-fix, item 3): the send-layer backstop so operational/error
 // alerts cannot reach a user (Adam) chat regardless of source. CONTENT-specific operational patterns
@@ -14,6 +17,10 @@ import { execFile } from 'child_process';
 // explicit operational tag for those + this belt for the obvious operational-specific strings.
 const OPERATIONAL_CONTENT = /AUTHORITY FAILURE|FLEET (?:HEALTH|AUTH)|auth-dead|silent[- ]death|^Severity:\s|Traceback \(most recent call last\)|retry[- ]storm|unhandled exception/im;
 export type TelegramMessageClass = 'operational' | 'human';
+
+type JsonRequest = (url: string, body: object, timeoutMs: number) => Promise<any>;
+
+let jsonRequest: JsonRequest = telegramJsonRequest;
 
 /**
  * Result of TelegramAPI.validateCredentials. Tagged union so callers can
@@ -87,6 +94,59 @@ export function formatValidateError(result: Extract<ValidateCredentialsResult, {
     case 'rate_limited':
       return `Telegram API rate-limited the validation probe (${result.detail}). Retry in a few seconds.`;
   }
+}
+
+function telegramJsonRequest(url: string, body: object, timeoutMs: number): Promise<any> {
+  const endpoint = new URL(url);
+  const payload = JSON.stringify(body);
+
+  return new Promise((resolve, reject) => {
+    const req = httpsRequest(
+      {
+        protocol: endpoint.protocol,
+        hostname: endpoint.hostname,
+        port: endpoint.port || 443,
+        path: `${endpoint.pathname}${endpoint.search}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        },
+        lookup: resilientLookup,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          try {
+            resolve(text.length > 0 ? JSON.parse(text) : {});
+          } catch (err) {
+            reject(new Error(`Telegram API returned invalid JSON: ${err}`));
+          }
+        });
+      },
+    );
+
+    req.setTimeout(timeoutMs, () => {
+      const err = new Error(`Telegram API request timed out after ${Math.round(timeoutMs / 1000)}s`);
+      err.name = 'TimeoutError';
+      req.destroy(err);
+    });
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+export function setTelegramJsonRequestForTest(requestImpl: JsonRequest): void {
+  jsonRequest = requestImpl;
+}
+
+export function resetTelegramJsonRequestForTest(): void {
+  jsonRequest = telegramJsonRequest;
 }
 
 export class TelegramAPI {
@@ -660,13 +720,7 @@ export class TelegramAPI {
    */
   private async post(method: string, data: object): Promise<any> {
     try {
-      const response = await fetch(`${this.baseUrl}/${method}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-        signal: AbortSignal.timeout(15000),
-      });
-      const result = await response.json() as any;
+      const result = await jsonRequest(`${this.baseUrl}/${method}`, data, 15_000);
       if (!result.ok) {
         throw new Error(`Telegram API error: ${result.description || 'Unknown error'}`);
       }

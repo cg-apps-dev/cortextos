@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { TelegramAPI } from '../../../src/telegram/api';
+import {
+  TelegramAPI,
+  resetTelegramJsonRequestForTest,
+  setTelegramJsonRequestForTest,
+} from '../../../src/telegram/api';
 
-// Shared fetch-stub infrastructure. Each test queues responses; the stub
-// records call details so we can assert on payload shapes and call counts.
+// Shared JSON transport stub infrastructure. Each test queues responses; the
+// stub records call details so we can assert on payload shapes and call counts.
 type MockResponse = { status: number; body: any } | { throws: Error };
 
 let responseQueue: MockResponse[] = [];
@@ -25,8 +29,9 @@ beforeEach(() => {
 
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (url: string, init: RequestInit) => {
-      const body = init?.body ? JSON.parse(String(init.body)) : {};
+    vi.fn(),
+  );
+  setTelegramJsonRequestForTest(async (url: string, body: object) => {
       callLog.push({ url, body });
       const next = responseQueue.shift();
       if (!next) {
@@ -35,17 +40,13 @@ beforeEach(() => {
       if ('throws' in next) {
         throw next.throws;
       }
-      return {
-        ok: next.status === 200,
-        status: next.status,
-        json: async () => next.body,
-      } as any;
-    }),
-  );
+      return next.body;
+    });
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  resetTelegramJsonRequestForTest();
   console.warn = originalWarn;
 });
 

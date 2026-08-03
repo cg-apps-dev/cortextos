@@ -1,40 +1,33 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { TelegramAPI, formatValidateError } from '../../../src/telegram/api';
+import {
+  TelegramAPI,
+  formatValidateError,
+  resetTelegramJsonRequestForTest,
+  setTelegramJsonRequestForTest,
+} from '../../../src/telegram/api';
 
 // ---------------------------------------------------------------------------
-// Fetch timeout tests (from main — pre-existing)
+// JSON transport timeout tests.
 // ---------------------------------------------------------------------------
-describe('TelegramAPI fetch timeout', () => {
-  const originalFetch = globalThis.fetch;
-
+describe('TelegramAPI JSON transport timeout', () => {
   afterEach(() => {
-    globalThis.fetch = originalFetch;
+    resetTelegramJsonRequestForTest();
     vi.restoreAllMocks();
   });
 
-  it('throws a timeout error when fetch hangs indefinitely', async () => {
-    globalThis.fetch = vi.fn(
-      (_input: any, init?: any) =>
-        new Promise((_resolve, reject) => {
-          init?.signal?.addEventListener('abort', () => {
-            const err = new Error('aborted');
-            err.name = 'AbortError';
-            reject(err);
-          });
-        }),
-    ) as any;
+  it('throws a timeout error when the JSON transport times out', async () => {
+    setTelegramJsonRequestForTest(async () => {
+      const err = new Error('transport timeout');
+      err.name = 'TimeoutError';
+      throw err;
+    });
 
     const api = new TelegramAPI('123:TEST');
     await expect(api.getUpdates(0, 1)).rejects.toThrow(/timed out after 15s/);
-  }, 20000);
+  });
 
-  it('succeeds on normal fetch response', async () => {
-    globalThis.fetch = vi.fn(async () =>
-      new Response(JSON.stringify({ ok: true, result: [] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    ) as any;
+  it('succeeds on normal JSON transport response', async () => {
+    setTelegramJsonRequestForTest(async () => ({ ok: true, result: [] }));
 
     const api = new TelegramAPI('123:TEST');
     const res = await api.getUpdates(0, 1);
@@ -60,8 +53,7 @@ describe('TelegramAPI.validateCredentials', () => {
   beforeEach(() => {
     responseQueue = [];
     callLog = [];
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
-      const body = init?.body ? JSON.parse(String(init.body)) : {};
+    setTelegramJsonRequestForTest(async (url: string, body: object) => {
       callLog.push({ url, body });
       const next = responseQueue.shift();
       if (!next) {
@@ -70,16 +62,12 @@ describe('TelegramAPI.validateCredentials', () => {
       if ('throws' in next) {
         throw next.throws;
       }
-      return {
-        ok: next.status === 200,
-        status: next.status,
-        json: async () => next.body,
-      } as any;
-    }));
+      return next.body;
+    });
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    resetTelegramJsonRequestForTest();
   });
 
   it('happy path: valid token + reachable user chat returns ok=true', async () => {
@@ -238,8 +226,7 @@ describe('TelegramAPI.validateCredentials', () => {
     // and assert the validator bails with network_error.
     vi.useFakeTimers();
     try {
-      // Override the stubbed fetch to return a never-resolving promise.
-      vi.stubGlobal('fetch', vi.fn(() => new Promise(() => { /* never resolves */ })));
+      setTelegramJsonRequestForTest(() => new Promise(() => { /* never resolves */ }));
 
       const api = new TelegramAPI('111:AAA');
       const pending = api.validateCredentials('222');
