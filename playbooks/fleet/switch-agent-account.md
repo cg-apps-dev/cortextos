@@ -33,7 +33,16 @@ Runtime setup-tokens live in the vault: `~/.cortextos/default/state/oauth/setup-
 
 - **Ingest** (new mint, HUMAN GATE - Adam mints AS the target account in a clean browser context): deliver as a file -> fingerprint (bare method, below) -> write to vault -> SHRED the delivery file. Tokens last ~1yr; no routine re-minting.
 - **Fingerprint standard**: bare-value sha256 (`printf '%s' | shasum -a 256`-class, never `echo` piped - the trailing newline yields a different hash for the same secret). State the method with every fingerprint you report.
-- **Rollback source**: the vault RETAINS the prior account's token after a move - rollback never depends on scavenging an old `.env`.
+- **Rollback source**: the vault RETAINS the prior account's token after a move - rollback never depends on scavenging an old `.env`. CAVEAT: this holds for a SWITCH (the prior account's token is still valid, so it is a real rollback source). It does NOT hold for a RE-MINT after a REVOCATION - see the re-mint rule below: a revoked prior token is not a rollback source, and leaving it under the live `<account>.token` name turns the vault into a recovery-trap.
+
+## Re-mint (rotation / post-revocation) - bank-to-store is mandatory, and reconcile
+
+A SWITCH moves an agent between accounts whose tokens already sit in the vault. A RE-MINT is different: the same account's token is replaced (revocation, rotation, or leak response), Adam mints a fresh one, and the fleet redeploys. The failure mode this section prevents: the redeploy flips `.env` (both halves) but never updates the vault, so the vault silently drifts from what agents actually run.
+
+- **Bank BEFORE (or as part of) the redeploy, never after.** A fresh mint is written to the vault as `<account>.token` (0600) BEFORE it lands in any agent `.env`. The `.env` redeploy is a COPY-FROM-VAULT, never a direct paste that skips the vault. An incident redeploy under time pressure is exactly when this is skipped - so it is a hard step, not a cleanup.
+- **A revoked prior token is DEAD, not a rollback source.** On a post-revocation re-mint, rename the prior vault file to `<account>.token.revoked-<YYYY-MM-DD>` (rename, never delete - audit + containment; the `.revoked-*` suffix does not match the `*.token` glob, so tooling will not pick it up). The fresh token becomes the canonical `<account>.token`. Leaving the revoked token under the live name means a restore-from-vault silently deploys a dead token = a 401 across every agent on that account, discovered only at the next restart.
+- **Reconciliation assert (the missing guard).** After ANY mint/redeploy, and periodically as a standing sweep: for each account, assert `vault <account>.token` bare-method fingerprint == the live `.env` `CLAUDE_CODE_OAUTH_TOKEN` fingerprint of EVERY agent attributed to that account (attribution via `cortextos bus list-agent-accounts`). A mismatch = the vault is stale/wrong for a LIVE account - fix before it becomes a recovery-trap. DONE-WHEN: every in-use account's vault fingerprint equals its agents' live-`.env` fingerprint. (Dormant vault accounts with zero agents are exempt - no live token to match.)
+- **Incident of record (2026-07-29 -> caught 2026-08-03):** the shared me.com setup-token was revoked; a fresh one was minted and redeployed to 10 agents' `.env`, but the vault kept the revoked Jul-9 token under `me-com-max.token` for 5 days. No leak (the working token had 10 live `.env` copies) but a live recovery-trap: a restore-from-vault would have deployed the revoked token to all 10. Surfaced by a live-`.env`-vs-vault fingerprint sweep, reconciled (current token banked, revoked token renamed `.revoked-2026-07-29`). Root cause = a redeploy that skipped the vault. This subsection is the prevention.
 
 ## Preconditions (all must hold before touching anything)
 
@@ -152,5 +161,5 @@ Do NOT document this flag in: the switch tool's refusal message, any agent skill
 ## Related
 
 - [standing-rules.md](standing-rules.md) - migration-drops-a-side-path class (step 5), fingerprint-method class (the bare-value standard), fresh+ok+impossible-value class (the dead-scan rules in step 4); the 2026-07-10/11 fleet auth cascade's 3 root-cause classes (shared-claude-home cascade, truncated-token, tier-scoped-429-misread) - the incident this SOP's per-agent isolation and exact-108 checks exist to prevent recurring
-- [zero-model-monitors.md](zero-model-monitors.md) - the usage/monitor layer that watches the accounts
+- [zero-model-monitors.md](zero-model-monitors.md) - the usage/monitor layer that watches the accounts; the vault-live reconciliation assert (Re-mint section) belongs in this standing-sweep layer
 - [README.md](README.md) - fleet playbook index
