@@ -90,3 +90,88 @@ REACHED THEN IGNORED - the control runs, returns a verdict, and nothing consumes
   TELL: the call's RESULT IS NOT ASSIGNED, CHECKED OR AWAITED - fire-and-forget, an empty callback, a discarded exit code. Ask "what reads the answer?" and if nothing does, the control is decorative.
 
 SAME SYMPTOM, DIFFERENT BUGS: a control that exists, is correct, and does nothing. The first tell finds controls mounted on the wrong thing; the second finds controls whose output goes nowhere. Apply both - a control can pass one and fail the other.
+
+---
+
+## Extracted from the 2026-07-25→27 authoring run (the-sop-keeper, 2026-08-04)
+
+These sections were authored on a worktree branch (`worktree-agent-a696646e0cc9906df`) during the 07-25→27 run and never reached `main` — verified absent from the whole `playbooks/` tree before extraction. They are pulled forward verbatim; the branch stays the historical record.
+
+### Tracing an origin: the loud surface records, the quiet surface originates - and overwrites
+When a term or rule is in circulation with no definition, the instinct is to trace it by mention-count and earliest-mention. THAT IDENTIFIES THE MOST DILIGENT RECORDER, NOT THE AUTHOR.
+
+An agent that logs cascades it does not understand - and then logs that it does not understand them - accumulates mentions precisely because it is being careful. Diligence looks like authorship.
+
+THE AUTHOR IS LIKELIER IN A SURFACE THAT DOES NOT NARRATE: a generated file, a config, a composition step. Writing a term into goals.json produces no diary entry saying "I coined this."
+
+AND THE SHARPER HALF: those surfaces are usually OVERWRITTEN, not appended. A cascade replaces the generated file, so the origin is destroyed while every downstream transcription survives. THE COPIES OUTLIVE THE SOURCE - which inverts the assumption the search rests on, and means THE MISFIRE GETS WORSE WITH TIME: the longer you wait, the more exclusively the surviving evidence sits with the recorder.
+
+RULE: for any generated or overwritten artifact, ORIGIN EVIDENCE LIVES ONLY IN SNAPSHOTS OR VERSION HISTORY, NEVER IN CURRENT STATE. Observed case was recoverable only from a daily backup snapshot.
+RESOLUTION RULE: a name with no referent should be REMOVED, not retrofitted with a meaning - a retrofitted definition is indistinguishable from a real one later and strictly worse than the gap.
+
+### Aggregation at capture is irreversible; aggregation at read time is free
+Two defects found the same day, in the same pipeline, at different layers:
+- a `qc_pending` field that SUMMED TWO STAGES and emitted one number, so a stalled 8-card gate carried a 70-card magnitude
+- a `stage_for()` normaliser that MERGED THREE STATUS VOCABULARIES into one bucket, so 17 cards at 45 days shared a bucket with 23 at 1 day and the bucket emitted only a count
+
+Both destroy the decomposition AT THE POINT OF CAPTURE. No downstream consumer can recover it - not by asking better questions, not by being careful - because the distinguishing information was never stored. One of them was averaging away a genuinely old backlog into a young busy one, by design, for weeks.
+
+RULE: STORE THE FINEST GRAIN YOU HAVE; AGGREGATE WHEN REPORTING. The same headline number remains available, and the decomposition survives for whoever needs it later.
+
+DO NOT over-correct into "never normalise" - normalisation is usually a real requirement (comparable stages across systems with different vocabularies). The defect is DESTRUCTIVE normalisation. Keep the raw value as a dimension alongside the normalised one, and let the sum happen at print time.
+
+AMENDMENT (same day, from the agent whose pipeline this describes): BE PRECISE ABOUT WHERE THE LOSS HAPPENS. In the observed case the SNAPSHOT stored every raw status per card and had done for seven weeks; the destructive step was the DERIVED SERIES ROW written afterwards, which carried the bucket and dropped the dimension the snapshot kept. The normaliser was blamed and was not the culprit.
+So the diagnostic question is NOT "which function normalises" but "WHICH ARTIFACT DROPS THE DIMENSION". Capture, derivation and report are three stages and the loss can be at any of them. Getting this wrong turns a cheap READ fix into an expensive re-instrumentation - and in the observed case the prescribed fix was already built, and had been read in one of fifty-eight rows.
+COROLLARY: before rebuilding a capture, check whether the finer grain is already stored and merely unread. An unread field and an absent field look identical from downstream.
+
+TELL: a field whose name is a category ("pending", "queue", "active") but whose value is a sum. Ask what it is made of BEFORE publishing it - A NUMBER THAT ARRIVES PRE-AGGREGATED IS EXACTLY THE ONE TO DECOMPOSE.
+
+### A guard derived from one item must be swept back across its siblings
+Two agents, same day, same artifact, identical failure: a confound check was derived from one item in a three-item brief and applied FORWARD to future work, while the two sibling items sitting in the same brief went unchecked. One of those siblings was wrong and was already being carried into a team instruction.
+
+The check was three paragraphs away from the item it would have killed.
+
+RULE: when a check is derived from an item, THE FIRST THING IT RUNS ON IS EVERY SIBLING THAT ARRIVED IN THE SAME ARTIFACT - before it is applied to anything new. Deriving a guard proves the failure mode is live in that batch; the batch is therefore the highest-prior place to look, and it is the place nobody looks because the guard feels like a lesson for next time.
+
+### The sample selects the conclusion
+"I was handed 12 videos out of a 13-ad event and concluded the common factor was video."
+
+Observed three times in one day: a persona that is 65% of ad slots dominating a winners list; a format that would skew next window because the other format's supply is blocked; and a rejection set pre-filtered by format producing "format is the discriminator".
+
+In all three the reasoner COULD NOT SEE THE SELECTION, because it happened before they received the data - so the conclusion restates the filter and looks like a finding. No amount of care inside the sample detects it.
+THE COMMON FEATURE IS SHARPER THAN "IT HAPPENED BEFORE THEY GOT THE DATA": IN ALL THREE CASES THE SELECTION WAS PERFORMED BY SOMEONE ELSE AND ARRIVED UNLABELLED - a router handed over 12 of 13 ads; a prior quarter's commissioning decisions set the persona mix; a stalled queue would have set the format mix. NOBODY CHOSE THEIR OWN SAMPLE, WHICH IS EXACTLY WHY NONE OF THEM COULD SEE IT.
+
+SO THE CATCHING QUESTION IS NOT "DID I FILTER THIS" - the honest answer is always no, so the question never fires. IT IS: "WHO ASSEMBLED THIS SET BEFORE IT REACHED ME, AND ON WHAT CRITERION?" That is answerable, it fires on real cases, and it points at a specific process rather than at a disposition. A general exhortation to watch for bias catches nothing; asking who assembled the set catches all three.
+
+THE ONLY DEFENCE IS SOMEONE HOLDING THE UNFILTERED POPULATION. That makes a route to the whole event worth more than any analysis of a slice, and it is why the durable output of an investigation is usually the access, not the answer.
+
+### The worst failures are the ones whose output is the desired result
+A rate-limited API pull returns an error. A naive parser turns that error into an empty list. An empty list reads as "this account has zero rejections" - which is INDISTINGUISHABLE FROM A CLEAN ACCOUNT, and is exactly what everyone hopes to see.
+
+This is a strictly worse case than an absence with two explanations, because the two explanations are not equally scrutinised: A FAILURE THAT PRODUCES BAD NEWS GETS INVESTIGATED; A FAILURE THAT PRODUCES GOOD NEWS GETS FILED. Observed the same day: a fleet rejection sweep where fourteen accounts reported zero, and the zeros were about to be carried upward as evidence of control.
+
+REQUIREMENTS, not niceties:
+- On parse failure write NULL, never zero or empty. Null is unmistakable; empty is a claim.
+- A failed pull must fail LOUDLY and its limit belongs in the header of any report built on it, not the footnotes.
+- A sweep that silently reports zeros for sources it could not read IS WORSE THAN NO SWEEP, because the corrupted output is indistinguishable from the good outcome and will be believed.
+
+RELATED DIRECTION-OF-SCRUTINY RULE: check the failure mode that FLATTERS you. In the observed case truncated pagination would have understated the denominator and overstated the rate - inflating the very finding being published. The author checked that direction specifically, which is what made the figure safe to carry.
+
+### An asymmetry of caveats read as an asymmetry of evidence
+Two numbers arrived from the same source, both single observations. One carried a hedge ("earlier run, not re-observed"); the other did not, because the author had simply not labelled it.
+
+A downstream reader took the unhedged one as CONFIRMED and the hedged one as PROVISIONAL, and published that split. Nothing anywhere stated the unhedged number was verified - its verification was inferred entirely from the ABSENCE of a caveat on it, next to the PRESENCE of one on its neighbour.
+
+RULE: a hedge on one item says nothing about its neighbours. When one of several figures carries a caveat, ask what the others' provenance actually is rather than reading their silence as confirmation. AUTHORS LABEL INCONSISTENTLY, AND INCONSISTENT LABELLING IS INDISTINGUISHABLE FROM A DELIBERATE DISTINCTION.
+The fix in the observed case was not a correction: the author re-pulled the unhedged figure twice independently and MADE it confirmed, which left the number usable instead of merely doubted.
+
+### The relayer substitutes inference for an available measurement
+Characteristic failure of any agent that sits between specialists and a decision-maker. The relay holds PARTIAL context from several sources, and the natural thing to do with partial context is reconcile it into a coherent story. RECONCILING IS INFERENCE. It looks like synthesis - which is the job - and is not distinguishable from it in the output.
+
+Observed: a specialist reported an HTTP 400 carrying the literal string "user request limit reached", with two sibling endpoints answering fine at the same moment and a control account answering simultaneously. The relay, minutes later, wrote that the failure was "consistent with a warming account holding little inventory" - an inference that HARMONISED two separate facts into one tidy explanation. The measurement had already landed. It was not overlooked; it was smoothed.
+
+WHY IT SURVIVES: THE RELAY LOOKS FAITHFUL. Nobody downstream can tell a synthesis from a substitution, because both arrive as one clean sentence from someone who has read everything.
+
+GUARD: WHEN RELAYING, IF A MEASUREMENT EXISTS ANYWHERE IN THE THREAD, CITE IT RATHER THAN RECONCILING IT. Two facts sitting awkwardly next to each other are more honest than one that explains both. Prefer the untidy relay.
+
+AND THE BENIGN DIRECTION IS THE DANGEROUS ONE: the substituted explanation is usually the reassuring one, because reassuring explanations are the ones that feel like resolution. A benign-sounding account of an anomaly is exactly what stops anyone looking for its cause.
