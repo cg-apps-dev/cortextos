@@ -9,7 +9,11 @@ import {
   cacheLastSent,
   readLastSent,
 } from '../../../src/telegram/logging';
-import { TelegramAPI } from '../../../src/telegram/api';
+import {
+  resetTelegramMultipartRequestForTest,
+  setTelegramMultipartRequestForTest,
+  TelegramAPI,
+} from '../../../src/telegram/api';
 import type { BusPaths, TelegramMessage } from '../../../src/types';
 
 describe('Telegram Logging', () => {
@@ -211,6 +215,7 @@ describe('TelegramAPI.sendPhoto', () => {
 
   afterEach(() => {
     rmSync(testDir, { recursive: true, force: true });
+    resetTelegramMultipartRequestForTest();
     vi.restoreAllMocks();
   });
 
@@ -228,11 +233,8 @@ describe('TelegramAPI.sendPhoto', () => {
 
     const api = new TelegramAPI('test-token');
 
-    // Mock fetch
-    const mockFetch = vi.fn().mockResolvedValue({
-      json: async () => ({ ok: true, result: { message_id: 55 } }),
-    });
-    vi.stubGlobal('fetch', mockFetch);
+    const mockMultipart = vi.fn(async () => ({ ok: true, result: { message_id: 55 } }));
+    setTelegramMultipartRequestForTest(mockMultipart);
 
     const result = await api.sendPhoto('123', imagePath, 'My caption', {
       inline_keyboard: [[{ text: 'OK', callback_data: 'ok' }]],
@@ -241,23 +243,23 @@ describe('TelegramAPI.sendPhoto', () => {
     expect(result.ok).toBe(true);
     expect(result.result.message_id).toBe(55);
 
-    // Verify fetch was called with correct URL and FormData
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [url, options] = mockFetch.mock.calls[0];
+    expect(mockMultipart).toHaveBeenCalledTimes(1);
+    const [url, fields, file, timeoutMs] = mockMultipart.mock.calls[0];
     expect(url).toBe('https://api.telegram.org/bottest-token/sendPhoto');
-    expect(options.method).toBe('POST');
-
-    // Verify it's a FormData body
-    const body = options.body;
-    expect(body).toBeInstanceOf(FormData);
-    expect(body.get('chat_id')).toBe('123');
-    expect(body.get('caption')).toBe('My caption');
-    expect(body.get('reply_markup')).toBe(
-      JSON.stringify({ inline_keyboard: [[{ text: 'OK', callback_data: 'ok' }]] }),
-    );
-    // photo should be a Blob
-    const photo = body.get('photo');
-    expect(photo).toBeInstanceOf(Blob);
+    expect(fields).toEqual([
+      { name: 'chat_id', value: '123' },
+      { name: 'caption', value: 'My caption' },
+      {
+        name: 'reply_markup',
+        value: JSON.stringify({ inline_keyboard: [[{ text: 'OK', callback_data: 'ok' }]] }),
+      },
+    ]);
+    expect(file).toEqual({
+      field: 'photo',
+      filename: 'test.jpg',
+      bytes: Buffer.from('fake-image-data'),
+    });
+    expect(timeoutMs).toBe(60000);
   });
 
   it('sends without optional fields when not provided', async () => {
@@ -265,17 +267,17 @@ describe('TelegramAPI.sendPhoto', () => {
     writeFileSync(imagePath, 'png-data');
 
     const api = new TelegramAPI('test-token');
-    const mockFetch = vi.fn().mockResolvedValue({
-      json: async () => ({ ok: true, result: { message_id: 56 } }),
-    });
-    vi.stubGlobal('fetch', mockFetch);
+    const mockMultipart = vi.fn(async () => ({ ok: true, result: { message_id: 56 } }));
+    setTelegramMultipartRequestForTest(mockMultipart);
 
     await api.sendPhoto('456', imagePath);
 
-    const body = mockFetch.mock.calls[0][1].body as FormData;
-    expect(body.get('chat_id')).toBe('456');
-    expect(body.get('photo')).toBeInstanceOf(Blob);
-    expect(body.get('caption')).toBeNull();
-    expect(body.get('reply_markup')).toBeNull();
+    const [, fields, file] = mockMultipart.mock.calls[0];
+    expect(fields).toEqual([{ name: 'chat_id', value: '456' }]);
+    expect(file).toEqual({
+      field: 'photo',
+      filename: 'test.png',
+      bytes: Buffer.from('png-data'),
+    });
   });
 });

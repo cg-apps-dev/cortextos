@@ -45,6 +45,8 @@ export const CRASH_LOOP_THRESHOLD = 3;                  // 3 crashes trips the a
 export const CRASH_LOOP_COOLDOWN_MS = 30 * 60 * 1000;   // 30 min between alerts
 const TELEGRAM_SEND_TIMEOUT_MS = 3000;           // bounded — we're crashing
 
+type SpawnSyncLike = typeof spawnSync;
+
 export function crashHistoryPath(ctxRoot: string): string {
   return join(ctxRoot, 'state', '.daemon-crash-history.json');
 }
@@ -156,6 +158,61 @@ function getOperatorChatCreds(frameworkRoot: string): { chatId: string; botToken
   return null;
 }
 
+export function resolveTelegramIpv4ForCurl(spawn: SpawnSyncLike = spawnSync): string | null {
+  const r = spawn('dig', [
+    '+short',
+    '+time=2',
+    '+tries=1',
+    '@1.1.1.1',
+    'api.telegram.org',
+    'A',
+  ], { timeout: TELEGRAM_SEND_TIMEOUT_MS, stdio: 'pipe' });
+  if (r.status !== 0) return null;
+
+  const stdout = Buffer.isBuffer(r.stdout) ? r.stdout.toString('utf8') : String(r.stdout ?? '');
+  const firstIpv4 = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /^(?:\d{1,3}\.){3}\d{1,3}$/.test(line));
+  return firstIpv4 ?? null;
+}
+
+function buildOperatorDirectCurlArgs(
+  creds: { chatId: string; botToken: string },
+  message: string,
+  resolvedIp?: string,
+): string[] {
+  return [
+    '-s', '--max-time', '3',
+    ...(resolvedIp ? ['--resolve', `api.telegram.org:443:${resolvedIp}`] : []),
+    '-X', 'POST',
+    `https://api.telegram.org/bot${creds.botToken}/sendMessage`,
+    '-d', `chat_id=${creds.chatId}`,
+    '--data-urlencode', `text=${message}`,
+  ];
+}
+
+export function sendOperatorDirectTelegramWithCurl(
+  creds: { chatId: string; botToken: string },
+  message: string,
+  spawn: SpawnSyncLike = spawnSync,
+): boolean {
+  const resolvedIp = resolveTelegramIpv4ForCurl(spawn);
+  if (resolvedIp) {
+    const resolved = spawn('curl', buildOperatorDirectCurlArgs(creds, message, resolvedIp), {
+      timeout: TELEGRAM_SEND_TIMEOUT_MS,
+      stdio: 'pipe',
+    });
+    if (resolved.status === 0) return true;
+  }
+
+  const plain = spawn('curl', buildOperatorDirectCurlArgs(creds, message), {
+    timeout: TELEGRAM_SEND_TIMEOUT_MS,
+    stdio: 'pipe',
+  });
+  return plain.status === 0;
+}
+
 function sendCrashLoopAlertBestEffort(
   frameworkRoot: string,
   crashCount: number,
@@ -192,14 +249,7 @@ function sendCrashLoopAlertBestEffort(
     // on a fleet-death is the safe direction). NOT fired unconditionally (that would be operator-noise
     // on every crash-loop).
     console.error('[daemon] Crash-loop ops-route failed/timed-out -> last-resort operator-direct fallback');
-    const r = spawnSync('curl', [
-      '-s', '--max-time', '3',
-      '-X', 'POST',
-      `https://api.telegram.org/bot${creds.botToken}/sendMessage`,
-      '-d', `chat_id=${creds.chatId}`,
-      '--data-urlencode', `text=${message}`,
-    ], { timeout: TELEGRAM_SEND_TIMEOUT_MS, stdio: 'pipe' });
-    if (r.status === 0) {
+    if (sendOperatorDirectTelegramWithCurl(creds, message)) {
       console.error('[daemon] Crash-loop last-resort operator-direct sent');
       return true;
     }

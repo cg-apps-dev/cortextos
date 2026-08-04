@@ -10,6 +10,7 @@ import {
   shouldSendCrashLoopAlert,
   countRecentCrashes,
   writeDaemonCrashedMarkers,
+  sendOperatorDirectTelegramWithCurl,
   CRASH_HISTORY_MAX,
   CRASH_LOOP_THRESHOLD,
   CRASH_LOOP_COOLDOWN_MS,
@@ -179,5 +180,73 @@ describe('writeDaemonCrashedMarkers', () => {
     const content = readFileSync(join(ctxRoot, 'state', 'boris', '.daemon-crashed'), 'utf-8');
     expect(content).not.toBe('OLD');
     expect(content).toMatch(/\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+describe('operator-direct crash-loop curl DNS hardening', () => {
+  it('uses dig result with curl --resolve before the Telegram sendMessage URL', () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawn: any = (command: string, args: string[]) => {
+      calls.push({ command, args });
+      if (command === 'dig') {
+        return { status: 0, stdout: Buffer.from('149.154.167.220\n') };
+      }
+      return { status: 0, stdout: Buffer.from('') };
+    };
+
+    expect(sendOperatorDirectTelegramWithCurl(
+      { chatId: '123', botToken: '111:AAA' },
+      'daemon down',
+      spawn,
+    )).toBe(true);
+
+    expect(calls[0].command).toBe('dig');
+    expect(calls[0].args).toContain('api.telegram.org');
+    expect(calls[1].command).toBe('curl');
+    expect(calls[1].args).toContain('--resolve');
+    expect(calls[1].args).toContain('api.telegram.org:443:149.154.167.220');
+    expect(calls[1].args).toContain('https://api.telegram.org/bot111:AAA/sendMessage');
+  });
+
+  it('falls back to plain curl when dig returns no IPv4', () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawn: any = (command: string, args: string[]) => {
+      calls.push({ command, args });
+      if (command === 'dig') {
+        return { status: 0, stdout: Buffer.from('not-an-ip\n') };
+      }
+      return { status: 0, stdout: Buffer.from('') };
+    };
+
+    expect(sendOperatorDirectTelegramWithCurl(
+      { chatId: '123', botToken: '111:AAA' },
+      'daemon down',
+      spawn,
+    )).toBe(true);
+
+    expect(calls.map((call) => call.command)).toEqual(['dig', 'curl']);
+    expect(calls[1].args).not.toContain('--resolve');
+    expect(calls[1].args).toContain('https://api.telegram.org/bot111:AAA/sendMessage');
+  });
+
+  it('falls back to plain curl when curl --resolve fails', () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawn: any = (command: string, args: string[]) => {
+      calls.push({ command, args });
+      if (command === 'dig') {
+        return { status: 0, stdout: Buffer.from('149.154.167.220\n') };
+      }
+      return { status: calls.length === 2 ? 7 : 0, stdout: Buffer.from('') };
+    };
+
+    expect(sendOperatorDirectTelegramWithCurl(
+      { chatId: '123', botToken: '111:AAA' },
+      'daemon down',
+      spawn,
+    )).toBe(true);
+
+    expect(calls.map((call) => call.command)).toEqual(['dig', 'curl', 'curl']);
+    expect(calls[1].args).toContain('--resolve');
+    expect(calls[2].args).not.toContain('--resolve');
   });
 });

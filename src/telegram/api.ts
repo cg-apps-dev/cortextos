@@ -1,5 +1,5 @@
 /**
- * Telegram Bot API client using built-in fetch (Node.js 20+).
+ * Telegram Bot API client using built-in Node.js APIs.
  * No external dependencies.
  */
 
@@ -19,8 +19,21 @@ const OPERATIONAL_CONTENT = /AUTHORITY FAILURE|FLEET (?:HEALTH|AUTH)|auth-dead|s
 export type TelegramMessageClass = 'operational' | 'human';
 
 type JsonRequest = (url: string, body: object, timeoutMs: number) => Promise<any>;
+type BinaryGetRequest = (url: string, timeoutMs: number) => Promise<Buffer>;
+
+export type MultipartField = { name: string; value: string };
+export type MultipartFile = { field: string; filename: string; bytes: Buffer };
+type MultipartRequest = (
+  url: string,
+  fields: MultipartField[],
+  file: MultipartFile,
+  timeoutMs: number,
+) => Promise<any>;
 
 let jsonRequest: JsonRequest = telegramJsonRequest;
+let binaryGetRequest: BinaryGetRequest = telegramBinaryGet;
+let multipartRequest: MultipartRequest = telegramMultipartRequest;
+let multipartBoundaryCounter = 0;
 
 /**
  * Result of TelegramAPI.validateCredentials. Tagged union so callers can
@@ -141,12 +154,152 @@ function telegramJsonRequest(url: string, body: object, timeoutMs: number): Prom
   });
 }
 
+function telegramBinaryGet(url: string, timeoutMs: number): Promise<Buffer> {
+  const endpoint = new URL(url);
+
+  return new Promise((resolve, reject) => {
+    const req = httpsRequest(
+      {
+        protocol: endpoint.protocol,
+        hostname: endpoint.hostname,
+        port: endpoint.port || 443,
+        path: `${endpoint.pathname}${endpoint.search}`,
+        method: 'GET',
+        lookup: resilientLookup,
+      },
+      (res) => {
+        if (res.statusCode === undefined || res.statusCode < 200 || res.statusCode >= 300) {
+          res.resume();
+          reject(new Error(`Failed to download file: ${res.statusCode ?? 'unknown'}`));
+          return;
+        }
+
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        res.on('end', () => {
+          resolve(Buffer.concat(chunks));
+        });
+      },
+    );
+
+    req.setTimeout(timeoutMs, () => {
+      const err = new Error(`Telegram API request timed out after ${Math.round(timeoutMs / 1000)}s`);
+      err.name = 'TimeoutError';
+      req.destroy(err);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function escapeMultipartQuoted(value: string): string {
+  if (/[\r\n]/.test(value)) {
+    throw new Error('Multipart header values must not contain CR or LF');
+  }
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+export function buildTelegramMultipartBody(
+  fields: MultipartField[],
+  file: MultipartFile,
+  boundary = `----cortextos-telegram-${++multipartBoundaryCounter}`,
+): { boundary: string; body: Buffer } {
+  const chunks: Buffer[] = [];
+  const pushText = (text: string) => chunks.push(Buffer.from(text, 'utf8'));
+
+  for (const field of fields) {
+    pushText(`--${boundary}\r\n`);
+    pushText(`Content-Disposition: form-data; name="${escapeMultipartQuoted(field.name)}"\r\n\r\n`);
+    pushText(`${field.value}\r\n`);
+  }
+
+  pushText(`--${boundary}\r\n`);
+  pushText(
+    `Content-Disposition: form-data; name="${escapeMultipartQuoted(file.field)}"; ` +
+    `filename="${escapeMultipartQuoted(file.filename)}"\r\n`,
+  );
+  pushText('Content-Type: application/octet-stream\r\n\r\n');
+  chunks.push(file.bytes);
+  pushText('\r\n');
+  pushText(`--${boundary}--\r\n`);
+
+  return { boundary, body: Buffer.concat(chunks) };
+}
+
+function telegramMultipartRequest(
+  url: string,
+  fields: MultipartField[],
+  file: MultipartFile,
+  timeoutMs: number,
+): Promise<any> {
+  const endpoint = new URL(url);
+  const { boundary, body } = buildTelegramMultipartBody(fields, file);
+
+  return new Promise((resolve, reject) => {
+    const req = httpsRequest(
+      {
+        protocol: endpoint.protocol,
+        hostname: endpoint.hostname,
+        port: endpoint.port || 443,
+        path: `${endpoint.pathname}${endpoint.search}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': body.length,
+        },
+        lookup: resilientLookup,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          try {
+            resolve(text.length > 0 ? JSON.parse(text) : {});
+          } catch (err) {
+            reject(new Error(`Telegram API returned invalid JSON: ${err}`));
+          }
+        });
+      },
+    );
+
+    req.setTimeout(timeoutMs, () => {
+      const err = new Error(`Telegram API request timed out after ${Math.round(timeoutMs / 1000)}s`);
+      err.name = 'TimeoutError';
+      req.destroy(err);
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 export function setTelegramJsonRequestForTest(requestImpl: JsonRequest): void {
   jsonRequest = requestImpl;
 }
 
 export function resetTelegramJsonRequestForTest(): void {
   jsonRequest = telegramJsonRequest;
+}
+
+export function setTelegramBinaryGetForTest(requestImpl: BinaryGetRequest): void {
+  binaryGetRequest = requestImpl;
+}
+
+export function resetTelegramBinaryGetForTest(): void {
+  binaryGetRequest = telegramBinaryGet;
+}
+
+export function setTelegramMultipartRequestForTest(requestImpl: MultipartRequest): void {
+  multipartRequest = requestImpl;
+}
+
+export function resetTelegramMultipartRequestForTest(): void {
+  multipartRequest = telegramMultipartRequest;
 }
 
 export class TelegramAPI {
@@ -384,24 +537,20 @@ export class TelegramAPI {
     const fileData = readFileSync(imagePath);
     const fileName = basename(imagePath);
 
-    // Build multipart form data using built-in FormData + Blob
-    const formData = new FormData();
-    formData.append('chat_id', String(chatId));
-    formData.append('photo', new Blob([fileData]), fileName);
+    const fields: MultipartField[] = [{ name: 'chat_id', value: String(chatId) }];
     if (caption) {
-      formData.append('caption', caption);
+      fields.push({ name: 'caption', value: caption });
     }
     if (replyMarkup) {
-      formData.append('reply_markup', JSON.stringify(replyMarkup));
+      fields.push({ name: 'reply_markup', value: JSON.stringify(replyMarkup) });
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/sendPhoto`, {
-        method: 'POST',
-        body: formData,
-        signal: AbortSignal.timeout(60000),
-      });
-      const result = await response.json() as any;
+      const result = await multipartRequest(`${this.baseUrl}/sendPhoto`, fields, {
+        field: 'photo',
+        filename: fileName,
+        bytes: fileData,
+      }, 60000);
       if (!result.ok) {
         throw new Error(`Telegram API error: ${result.description || 'Unknown error'}`);
       }
@@ -436,23 +585,20 @@ export class TelegramAPI {
     const fileData = readFileSync(filePath);
     const fileName = basename(filePath);
 
-    const formData = new FormData();
-    formData.append('chat_id', String(chatId));
-    formData.append('document', new Blob([fileData]), fileName);
+    const fields: MultipartField[] = [{ name: 'chat_id', value: String(chatId) }];
     if (caption) {
-      formData.append('caption', caption);
+      fields.push({ name: 'caption', value: caption });
     }
     if (replyMarkup) {
-      formData.append('reply_markup', JSON.stringify(replyMarkup));
+      fields.push({ name: 'reply_markup', value: JSON.stringify(replyMarkup) });
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/sendDocument`, {
-        method: 'POST',
-        body: formData,
-        signal: AbortSignal.timeout(60000),
-      });
-      const result = await response.json() as any;
+      const result = await multipartRequest(`${this.baseUrl}/sendDocument`, fields, {
+        field: 'document',
+        filename: fileName,
+        bytes: fileData,
+      }, 60000);
       if (!result.ok) {
         throw new Error(`Telegram API error: ${result.description || 'Unknown error'}`);
       }
@@ -700,12 +846,7 @@ export class TelegramAPI {
    */
   async downloadFile(filePath: string): Promise<Buffer> {
     const url = `https://api.telegram.org/file/bot${this.getToken()}/${filePath}`;
-    const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
-    if (!response.ok) {
-      throw new Error(`Failed to download file: ${response.status}`);
-    }
-    const arrayBuffer = await response.arrayBuffer();
-    return Buffer.from(arrayBuffer);
+    return binaryGetRequest(url, 30000);
   }
 
   /**
