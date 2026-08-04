@@ -5,11 +5,13 @@ import json
 import os
 import subprocess
 import datetime
+import time
 from concurrent.futures import ThreadPoolExecutor
 import resolve_cards
 SHEET_ID = "1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME"
 GOG_BIN = os.environ.get("GOG_BIN", "gog")
 GOG_ACCOUNT = os.environ.get("GOG_ACCOUNT", "adam@cleangreen.com")
+DEFAULT_MAX_ATTEMPTS = 3
 # Per-file sharing is ON BY DEFAULT - the col-A =IMAGE preview and the sheet asset
 # links require each Drive file to be anyone-with-link readable, or the sheet renders
 # blank/access-page. Opt OUT only via an explicit off value (the Composio->gog port had
@@ -20,16 +22,36 @@ def _now_iso():
     """UTC ISO-8601 timestamp for the 'Added to Sheet' column (matches ADMANAGE col format)."""
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-def _rc(args):
-    cmd = [GOG_BIN, "-a", GOG_ACCOUNT, *args, "-j"]
-    p = subprocess.run(cmd, text=True, capture_output=True)
-    if p.returncode:
-        msg = (p.stderr or p.stdout or "").strip()
-        raise RuntimeError(f"{' '.join(cmd[:4])}: {msg}")
+def _max_attempts():
     try:
-        return json.loads(p.stdout or "{}")
-    except json.JSONDecodeError as ex:
-        raise RuntimeError(f"{' '.join(cmd[:4])}: invalid JSON: {ex}")
+        return max(1, int(os.environ.get("META_INTAKE_MAX_ATTEMPTS", str(DEFAULT_MAX_ATTEMPTS))))
+    except ValueError:
+        return DEFAULT_MAX_ATTEMPTS
+
+def _rc(args, validate=None):
+    # Retry is safe for current gog write callers: batch-update writes fixed ranges and
+    # drive share uses --force. Future non-idempotent writes must not use this wrapper.
+    cmd = [GOG_BIN, "-a", GOG_ACCOUNT, *args, "-j"]
+    attempts = _max_attempts()
+    last_msg = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            p = subprocess.run(cmd, text=True, capture_output=True)
+            if p.returncode:
+                msg = (p.stderr or p.stdout or "").strip()
+                raise RuntimeError(msg or f"exit {p.returncode}")
+            try:
+                data = json.loads(p.stdout or "{}")
+            except json.JSONDecodeError as ex:
+                raise RuntimeError(f"invalid JSON: {ex}") from ex
+            if validate:
+                validate(data)
+            return data
+        except RuntimeError as ex:
+            last_msg = str(ex)
+            if attempt >= attempts:
+                raise RuntimeError(f"{' '.join(cmd[:4])}: FAILED after {attempts} attempts: {last_msg}") from ex
+            time.sleep(0.5 * (4 ** (attempt - 1)))
 
 def _sheet_range(tab, a1):
     return f"'{tab.replace(chr(39), chr(39) + chr(39))}'!{a1}"
@@ -52,7 +74,11 @@ def _flow_rebrand(text):
 def precondition():
     """Probe Sheets+Drive. Returns (ok, detail)."""
     try:
-        _rc(["sheets", "get", SHEET_ID, _sheet_range("VIDEOS (Flower)", "A1:A1"), "--render", "FORMATTED_VALUE"])
+        probe = _rc(["sheets", "get", SHEET_ID, _sheet_range("VIDEOS (Flower)", "A1:A1"), "--render", "FORMATTED_VALUE"])
+        values = probe.get("values") or []
+        first = values[0][0] if values and values[0] else ""
+        if not str(first or "").strip():
+            return False, "SHEETS_BLANK_RENDER: A1 empty on 200"
     except Exception as ex:
         return False, f"SHEETS_FAIL:{ex}"
     try:
@@ -62,7 +88,13 @@ def precondition():
     return True, "ok"
 
 def _read(tab, a1):
-    r = _rc(["sheets", "get", SHEET_ID, _sheet_range(tab, a1), "--render", "FORMATTED_VALUE"])
+    def validate_header(data):
+        values = data.get("values") or []
+        if not values or not any(str(cell or "").strip() for row in values for cell in row):
+            raise RuntimeError(f"EMPTY_HEADER_READ {tab} - transient blank/auth render, not a schema change")
+
+    validate = validate_header if a1 == "A1:BZ1" else None
+    r = _rc(["sheets", "get", SHEET_ID, _sheet_range(tab, a1), "--render", "FORMATTED_VALUE"], validate=validate)
     return r.get("values", [])
 
 def _read_formula(tab, a1):
@@ -450,7 +482,7 @@ def _is_axon_or_dnu(name):
     return bool(AXON_RE.search(n) or DNU_RE.search(n) or DISCLAIMER_RE.search(n))
 
 def _find_finished_folder(folder_id):
-    """Locate the nested finished/exports subfolder by newest PARSEABLE deliverable. Returns (id, name) or (None, None).
+    """Locate all nested finished/exports subfolders with PARSEABLE deliverables. Returns [(id, name), ...].
     EXCLUDES Do-Not-Use folders/files (DNU_RE) AND Axon-named folders/files (AXON_RE) - Axon = the AXON platform,
     NOT Meta (Adam hard-rule 2026-06-25); Meta-intake selects ONLY non-Axon, non-DNU Meta finished deliverables."""
     subs = [
@@ -472,27 +504,19 @@ def _find_finished_folder(folder_id):
                 out.append(f)
         return out
 
-    winner, winner_modified = None, None
+    found = []
     for sub in subs:
         files = parseable_files(sub["id"])
         if not files:
             continue
-        newest = max((f.get("modifiedTime") or "") for f in files)
-        if winner_modified is None or newest > winner_modified:
-            winner, winner_modified = sub, newest
-    if winner:
-        return winner["id"], winner["name"]
+        found.append((sub["id"], sub["name"]))
+    if found:
+        return found
 
     fin = [f for f in subs if FINISHED_RE.search(f.get("name", ""))]
-    if len(fin) == 1:
-        return fin[0]["id"], fin[0]["name"]
-    if len(fin) > 1:
-        # prefer a 'finish/final/upload' folder over a bare 'export' when several match
-        for f in fin:
-            if re.search(r'finish|final|upload', f["name"], re.I):
-                return f["id"], f["name"]
-        return fin[0]["id"], fin[0]["name"]
-    return None, None
+    if fin:
+        return [(f["id"], f["name"]) for f in fin]
+    return []
 
 def intake_video_card(card_id, folder_id, tab, writer, designer, video_script="", dry_run=True, confirm_reintake=False):
     """One video card -> rows (one per variant+hook, 4x5+9x16). dry_run=True => plan only, NO writes.
@@ -502,9 +526,9 @@ def intake_video_card(card_id, folder_id, tab, writer, designer, video_script=""
     need = ["Variant #", "Actor", "Hook #", "Writer", "Designer", "ClickUp Card ID", "Ad Name", "4x5", "9x16"]
     for k in need:
         if k not in H: raise RuntimeError(f"missing header '{k}' on {tab}")
-    fin_id, fin_name = _find_finished_folder(folder_id)
-    if not fin_id:
-        fin_id, fin_name = folder_id, "(root)"   # no finished subfolder - try the root itself
+    finished = _find_finished_folder(folder_id)
+    if not finished:
+        finished = [(folder_id, "(root)")]   # no finished subfolder - try the root itself
     # RECURSE: finished exports are frequently in per-actor subfolders (Thomas/Mia/Sofia/Helen…)
     # INSIDE the finished folder. A flat list of the finished folder sees only those subfolders (no
     # files) and would false-flag EMPTY. Collect files from the finished folder AND nested subfolders.
@@ -521,8 +545,14 @@ def intake_video_card(card_id, folder_id, tab, writer, designer, video_script=""
                     continue
                 out.append(f)
         return out
-    files = _collect_files(fin_id)
+    files = []
+    source_folders = {}
+    for fin_id, fin_name in finished:
+        for f in _collect_files(fin_id):
+            files.append(f)
+            source_folders[f["id"]] = {"id": fin_id, "name": fin_name}
     variants, unparsed = {}, []
+    slot_sources, collisions, collision_seen, ambiguous = {}, [], set(), set()
     for f in files:
         if f.get("mimeType", "").startswith("application/vnd.google-apps.folder"): continue
         m = VID_RE.search(f["name"])
@@ -531,29 +561,63 @@ def intake_video_card(card_id, folder_id, tab, writer, designer, video_script=""
         v, actor, hook, ratio = int(m.group(1)), (m.group(2).strip() if m.group(2) is not None else "AI"), int(m.group(3)), m.group(4).lower()
         # KEY by (actor, v, hook): multi-actor cards (Tom/Mia, Thomas/Helen/Sofia) reuse the same V##/Hook##
         # numbers per actor, so keying by (v, hook) alone collides and drops every actor but one.
-        d = variants.setdefault((actor, v, hook), {"actor": actor})
+        variant_key = (actor, v, hook)
+        slot = (actor, v, hook, ratio)
+        source = source_folders.get(f["id"], {"id": None, "name": None})
+        prior = slot_sources.get(slot)
+        if prior:
+            if prior["file_id"] == f["id"]:
+                continue
+            if prior["folder_id"] != source["id"]:
+                collision_key = (slot, prior["file_id"], f["id"], prior["folder_id"], source["id"])
+                if collision_key not in collision_seen:
+                    collisions.append({
+                        "actor": actor,
+                        "variant": f"V{v:02d}",
+                        "hook": f"H{hook}",
+                        "ratio": ratio,
+                        "first_file_id": prior["file_id"],
+                        "first_folder_id": prior["folder_id"],
+                        "first_folder": prior["folder_name"],
+                        "second_file_id": f["id"],
+                        "second_folder_id": source["id"],
+                        "second_folder": source["name"],
+                    })
+                    collision_seen.add(collision_key)
+                ambiguous.add(variant_key)
+            continue
+        slot_sources[slot] = {"file_id": f["id"], "folder_id": source["id"], "folder_name": source["name"]}
+        d = variants.setdefault(variant_key, {"actor": actor})
         d.setdefault("p4" if ratio == "4x5" else "p9", f["id"])   # dedup intra-folder: first wins
     rows = []
     for key in sorted(variants):
         actor, v, hook = key
+        if key in ambiguous:
+            continue
         d = variants[key]
         if "p4" not in d or "p9" not in d:
             unparsed.append(f"{actor} V{v} Hook{hook} missing 4x5 or 9x16"); continue
         rows.append({"v": v, "hook": hook, "actor": actor, "p4": d["p4"], "p9": d["p9"]})
+    finished_names = [name for _, name in finished]
     if not rows:
+        if collisions:
+            return {"card": card_id, "status": "COLLISION",
+                    "reason": "cross-folder video slot collisions require review before intake.",
+                    "finished_folders": finished_names, "collisions": collisions, "unparsed": unparsed}
         nonfolder = [f["name"] for f in files if not f.get("mimeType", "").startswith("application/vnd.google-apps.folder")]
         if not nonfolder:
             return {"card": card_id, "status": "EMPTY_FOLDER",
-                    "reason": f"finished folder '{fin_name}' empty - add finished 4x5/9x16 assets or remove from Ready-to-Post."}
+                    "reason": f"finished folder(s) {finished_names} empty - add finished 4x5/9x16 assets or remove from Ready-to-Post.",
+                    "collisions": []}
         return {"card": card_id, "status": "FILES_PRESENT_UNPARSEABLE",
-                "reason": f"finished folder '{fin_name}' HAS files but NONE parse as 'V<vv> - <Actor> - Hook <h> - <ratio>' - naming/rename issue, needs review.",
-                "finished_folder": fin_name, "files_present": nonfolder, "unparsed": unparsed}
+                "reason": f"finished folder(s) {finished_names} HAVE files but NONE parse as 'V<vv> - <Actor> - Hook <h> - <ratio>' - naming/rename issue, needs review.",
+                "finished_folders": finished_names, "files_present": nonfolder, "unparsed": unparsed, "collisions": collisions}
     # FILE-ID DEDUP vs the tab
     present = _ids_on_tab(tab, [H["4x5"], H["9x16"]])
     fresh = [r for r in rows if r["p4"] not in present and r["p9"] not in present]
     dup = [f"V{r['v']}H{r['hook']}" for r in rows if r not in fresh]
     if not fresh:
-        return {"card": card_id, "status": "ALL_DUP", "dup": dup}
+        return {"card": card_id, "status": "ALL_DUP", "dup": dup, "collisions": collisions}
     guard = _reintake_guard(
         card_id,
         rows,
@@ -566,6 +630,7 @@ def intake_video_card(card_id, folder_id, tab, writer, designer, video_script=""
         asset_idxs=[H["4x5"], H["9x16"]],
     )
     if guard and not confirm_reintake:
+        guard["collisions"] = collisions
         return guard
     # ANTI-CLOBBER append (key col = Variant #) + preflight. Like the image path, compute start from
     # max over the key col AND the asset cols so a Variant-less-but-asset-present row is never clobbered. (fix 2026-06-10)
@@ -574,10 +639,10 @@ def intake_video_card(card_id, folder_id, tab, writer, designer, video_script=""
     input_idxs = [H["Variant #"], H["Actor"], H["Hook #"], H["Writer"], H["Designer"], H["ClickUp Card ID"], H["4x5"], H["9x16"], 0]
     ok, why = _preflight_empty(tab, start, n, input_idxs)
     if not ok:
-        return {"card": card_id, "status": "PREFLIGHT_FAIL", "why": why, "would_start": start}
-    plan = {"card": card_id, "status": "READY", "tab": tab, "finished_folder": fin_name, "start": start, "end": start + n - 1,
+        return {"card": card_id, "status": "PREFLIGHT_FAIL", "why": why, "would_start": start, "collisions": collisions}
+    plan = {"card": card_id, "status": "READY", "tab": tab, "finished_folders": finished_names, "start": start, "end": start + n - 1,
             "rows": [{"row": start + i, "variant": f"V{r['v']:02d}", "hook": f"H{r['hook']}", "actor": r["actor"]} for i, r in enumerate(fresh)],
-            "dup_skipped": dup, "unparsed": unparsed}
+            "dup_skipped": dup, "unparsed": unparsed, "collisions": collisions}
     if dry_run:
         return plan
     # BUILD cell blocks. col-A preview = 9x16 thumbnail (video). Per-column writes (VIDEOS layout is

@@ -66,6 +66,14 @@ def video_pair(stem, actor, variant=1, hook=1, modified="2026-06-01T00:00:00.000
     ]
 
 
+def video_actor_set(stem, actor, modified="2026-06-01T00:00:00.000Z", prefix="UGC-1"):
+    files = []
+    for variant in range(1, 4):
+        for hook in range(1, 3):
+            files.extend(video_pair(f"{stem}-v{variant}-h{hook}", actor, variant=variant, hook=hook, modified=modified, prefix=prefix))
+    return files
+
+
 def sheet_url(fid):
     return f"https://drive.google.com/file/d/{fid}/view?usp=drive_link"
 
@@ -85,7 +93,7 @@ class FinishedFolderTests(unittest.TestCase):
             "new": [vid("new", "UGC-1 - V01 - Helen - Hook 1 - 9x16.mp4", "2026-06-20T00:00:00.000Z")],
         }
         with patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])):
-            self.assertEqual(engine._find_finished_folder("root"), ("new", "NEW Product Re-edit"))
+            self.assertEqual(engine._find_finished_folder("root"), [("finished", "Finished"), ("new", "NEW Product Re-edit")])
 
     def test_dnu_subfolders_and_files_are_excluded(self):
         folders = {
@@ -95,7 +103,7 @@ class FinishedFolderTests(unittest.TestCase):
             "new": [vid("unused", "unused UGC-1 - V01 - Helen - Hook 1 - 9x16.mp4", "2026-06-24T00:00:00.000Z")],
         }
         with patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])):
-            self.assertEqual(engine._find_finished_folder("root"), ("finished", "Finished"))
+            self.assertEqual(engine._find_finished_folder("root"), [("finished", "Finished")])
 
     def test_recent_raw_clip_does_not_hijack_parseable_selection(self):
         folders = {
@@ -104,7 +112,7 @@ class FinishedFolderTests(unittest.TestCase):
             "new": [vid("raw", "Hook raw camera clip.mov", "2026-06-25T00:00:00.000Z")],
         }
         with patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])):
-            self.assertEqual(engine._find_finished_folder("root"), ("finished", "Finished"))
+            self.assertEqual(engine._find_finished_folder("root"), [("finished", "Finished")])
 
     def test_finished_wins_when_new_folder_has_only_non_parseable_names(self):
         folders = {
@@ -113,7 +121,7 @@ class FinishedFolderTests(unittest.TestCase):
             "new": [vid("bad", "BrandonM3 export 9x16.mp4", "2026-06-25T00:00:00.000Z")],
         }
         with patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])):
-            self.assertEqual(engine._find_finished_folder("root"), ("finished", "Finished"))
+            self.assertEqual(engine._find_finished_folder("root"), [("finished", "Finished")])
 
     def test_no_parseable_files_falls_back_to_finished_keyword(self):
         folders = {
@@ -122,7 +130,7 @@ class FinishedFolderTests(unittest.TestCase):
             "new": [vid("bad2", "Raw camera clip.mov", "2026-06-25T00:00:00.000Z")],
         }
         with patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])):
-            self.assertEqual(engine._find_finished_folder("root"), ("finished", "Finished"))
+            self.assertEqual(engine._find_finished_folder("root"), [("finished", "Finished")])
 
     def test_no_parseable_files_and_no_keyword_returns_none(self):
         folders = {
@@ -130,7 +138,7 @@ class FinishedFolderTests(unittest.TestCase):
             "new": [vid("bad", "Raw camera clip.mov", "2026-06-25T00:00:00.000Z")],
         }
         with patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])):
-            self.assertEqual(engine._find_finished_folder("root"), (None, None))
+            self.assertEqual(engine._find_finished_folder("root"), [])
 
     # --- v1.2.1: Axon-folder exclusion (Adam hard-rule 2026-06-25) ---
     def test_axon_subfolders_are_excluded_even_when_newest(self):
@@ -142,7 +150,7 @@ class FinishedFolderTests(unittest.TestCase):
             "axon2": [vid("a2", "UGC-1 - V01 - Helen - Hook 1 - 9x16.mp4", "2026-06-24T00:00:00.000Z")],
         }
         with patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])):
-            self.assertEqual(engine._find_finished_folder("root"), ("finished", "Finished"))
+            self.assertEqual(engine._find_finished_folder("root"), [("finished", "Finished")])
 
     def test_axon_named_file_is_excluded_from_parseable_set(self):
         # an Axon-named FILE is dropped even inside a kept folder -> a clean (older) folder wins.
@@ -152,7 +160,7 @@ class FinishedFolderTests(unittest.TestCase):
             "other": [vid("ok", "UGC-1 - V01 - Helen - Hook 1 - 9x16.mp4", "2026-06-01T00:00:00.000Z")],
         }
         with patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])):
-            self.assertEqual(engine._find_finished_folder("root"), ("other", "Exports"))
+            self.assertEqual(engine._find_finished_folder("root"), [("other", "Exports")])
 
     def test_axon_does_not_false_drop_midword_actor_names(self):
         # "Saxon" contains "axon" mid-word (not at a word-start) -> NOT excluded; it wins over a newer real Axon folder.
@@ -162,7 +170,7 @@ class FinishedFolderTests(unittest.TestCase):
             "axon": [vid("a", "UGC-1 - V01 - Helen - Hook 1 - 9x16.mp4", "2026-06-25T00:00:00.000Z")],
         }
         with patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])):
-            self.assertEqual(engine._find_finished_folder("root"), ("saxon", "Saxon"))
+            self.assertEqual(engine._find_finished_folder("root"), [("saxon", "Saxon")])
 
     def test_axon_only_deliverable_returns_none(self):
         # if the ONLY parseable deliverable lives in an Axon folder -> None (intake then flags not-ready), never picked.
@@ -171,7 +179,7 @@ class FinishedFolderTests(unittest.TestCase):
             "axon": [vid("a", "UGC-1 - V01 - Helen - Hook 1 - 9x16.mp4", "2026-06-25T00:00:00.000Z")],
         }
         with patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])):
-            self.assertEqual(engine._find_finished_folder("root"), (None, None))
+            self.assertEqual(engine._find_finished_folder("root"), [])
 
     def test_picks_newest_plain_folder_over_old_and_disclaimer(self):
         # Adam 2026-06-26: Meta = the NEWEST PLAIN cut, NOT old re-edit, NOT disclaimer.
@@ -183,7 +191,7 @@ class FinishedFolderTests(unittest.TestCase):
             "disc": [vid("d", "UGC-1 - V01 - Helen - Hook 1 - 9x16 - Disclaimer.mp4", "2026-06-26T00:00:00.000Z")],
         }
         with patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])):
-            self.assertEqual(engine._find_finished_folder("root"), ("new", "Finished New"))
+            self.assertEqual(engine._find_finished_folder("root"), [("old", "Finished Old"), ("new", "Finished New")])
 
 
 class ReintakeGuardTests(unittest.TestCase):
@@ -343,7 +351,7 @@ class ReintakeGuardTests(unittest.TestCase):
 
     def test_video_partial_present_new_variant_returns_guard_without_confirm(self):
         with patch.object(engine, "_headers", return_value=VIDEO_HEADERS), \
-             patch.object(engine, "_find_finished_folder", return_value=("finished", "Finished")), \
+             patch.object(engine, "_find_finished_folder", return_value=[("finished", "Finished")]), \
              patch.object(engine, "_list_folder", return_value=video_files()), \
              patch.object(engine, "_ids_on_tab", return_value={"old-4x5"}), \
              patch.object(engine, "_posted_to_sheet_status", return_value=False), \
@@ -356,7 +364,7 @@ class ReintakeGuardTests(unittest.TestCase):
 
     def test_video_confirm_reintake_allows_ready_plan(self):
         with patch.object(engine, "_headers", return_value=VIDEO_HEADERS), \
-             patch.object(engine, "_find_finished_folder", return_value=("finished", "Finished")), \
+             patch.object(engine, "_find_finished_folder", return_value=[("finished", "Finished")]), \
              patch.object(engine, "_list_folder", return_value=video_files()), \
              patch.object(engine, "_ids_on_tab", return_value={"old-4x5"}), \
              patch.object(engine, "_posted_to_sheet_status", return_value=False), \
@@ -378,7 +386,7 @@ class ReintakeGuardTests(unittest.TestCase):
             "Ad Name": "V02 - Helen - ID=card-v",
         })]
         with patch.object(engine, "_headers", return_value=VIDEO_HEADERS), \
-             patch.object(engine, "_find_finished_folder", return_value=("finished", "Finished")), \
+             patch.object(engine, "_find_finished_folder", return_value=[("finished", "Finished")]), \
              patch.object(engine, "_list_folder", return_value=video_files()[2:]), \
              patch.object(engine, "_ids_on_tab", return_value=set()), \
              patch.object(engine, "_posted_to_sheet_status", return_value=False), \
@@ -403,7 +411,7 @@ class ReintakeGuardTests(unittest.TestCase):
             "Ad Name": "",
         })]
         with patch.object(engine, "_headers", return_value=VIDEO_HEADERS), \
-             patch.object(engine, "_find_finished_folder", return_value=("finished", "Finished")), \
+             patch.object(engine, "_find_finished_folder", return_value=[("finished", "Finished")]), \
              patch.object(engine, "_list_folder", return_value=video_files()[2:]), \
              patch.object(engine, "_ids_on_tab", return_value=set()), \
              patch.object(engine, "_posted_to_sheet_status", return_value=False), \
@@ -431,7 +439,7 @@ class ReintakeGuardTests(unittest.TestCase):
              patch.object(engine, "_read", return_value=[[]]), \
              patch.object(engine, "_max_nonempty", return_value=10), \
              patch.object(engine, "_preflight_empty", return_value=(True, "ok")):
-            self.assertEqual(engine._find_finished_folder("root"), ("finished", "Finished"))
+            self.assertEqual(engine._find_finished_folder("root"), [("finished", "Finished")])
             result = engine.intake_video_card("card-v", "root", "VIDEOS", "WR", "DS")
         self.assertEqual(result["status"], "READY")
         self.assertEqual([(row["actor"], row["variant"], row["hook"]) for row in result["rows"]], [("Helen", "V01", "H1")])
@@ -577,6 +585,141 @@ class ReintakeGuardTests(unittest.TestCase):
             result = engine.intake_video_card("card-v", "root", "VIDEOS", "WR", "DS")
         self.assertEqual(result["status"], "READY")
         self.assertEqual([(row["actor"], row["variant"], row["hook"]) for row in result["rows"]], [("Sofia", "V02", "H3")])
+
+    def test_video_unions_multiple_top_level_meta_finished_folders_and_excludes_axon(self):
+        folders = {
+            "root": [
+                folder("meta-tanya", "META UGC #70775 - Tanya - Finished"),
+                folder("axon-tanya", "AXON UGC #70775 - Tanya - Finished"),
+                folder("axon-todd", "AXON UGC #70775 - Todd - Finished"),
+                folder("meta-todd", "META UGC #70775 - Todd - Finished"),
+            ],
+            "meta-tanya": video_actor_set("tanya", "Tanya"),
+            "meta-todd": video_actor_set("todd", "Todd"),
+            "axon-tanya": video_actor_set("axon-tanya", "Tanya", modified="2026-06-25T00:00:00.000Z"),
+            "axon-todd": video_actor_set("axon-todd", "Todd", modified="2026-06-25T00:00:00.000Z"),
+        }
+        with patch.object(engine, "_headers", return_value=VIDEO_HEADERS), \
+             patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])), \
+             patch.object(engine, "_ids_on_tab", return_value=set()), \
+             patch.object(engine, "_posted_to_sheet_status", return_value=False), \
+             patch.object(engine, "_read", return_value=[[]]), \
+             patch.object(engine, "_max_nonempty", return_value=10), \
+             patch.object(engine, "_preflight_empty", return_value=(True, "ok")):
+            self.assertEqual(
+                engine._find_finished_folder("root"),
+                [
+                    ("meta-tanya", "META UGC #70775 - Tanya - Finished"),
+                    ("meta-todd", "META UGC #70775 - Todd - Finished"),
+                ],
+            )
+            result = engine.intake_video_card("card-v", "root", "VIDEOS", "WR", "DS")
+        self.assertEqual(result["status"], "READY")
+        self.assertEqual(result["collisions"], [])
+        self.assertEqual(len(result["rows"]), 12)
+        self.assertEqual(
+            {row["actor"] for row in result["rows"]},
+            {"Tanya", "Todd"},
+        )
+
+    def test_video_actor_identity_comes_from_filename_not_mislabeled_folder(self):
+        folders = {
+            "root": [
+                folder("meta-todd-label", "Meta - Todd - Finished"),
+                folder("meta-tanya-label", "Meta - Tanya - Finished"),
+                folder("axon-todd", "Axon - Todd - Finished"),
+                folder("axon-tanya", "Axon - Tanya - Finished"),
+            ],
+            "meta-todd-label": video_actor_set("actually-tanya", "Tanya"),
+            "meta-tanya-label": video_actor_set("actually-todd", "Todd"),
+            "axon-todd": video_actor_set("axon-todd", "Todd"),
+            "axon-tanya": video_actor_set("axon-tanya", "Tanya"),
+        }
+        with patch.object(engine, "_headers", return_value=VIDEO_HEADERS), \
+             patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])), \
+             patch.object(engine, "_ids_on_tab", return_value=set()), \
+             patch.object(engine, "_posted_to_sheet_status", return_value=False), \
+             patch.object(engine, "_read", return_value=[[]]), \
+             patch.object(engine, "_max_nonempty", return_value=10), \
+             patch.object(engine, "_preflight_empty", return_value=(True, "ok")):
+            result = engine.intake_video_card("card-v", "root", "VIDEOS", "WR", "DS")
+        self.assertEqual(result["status"], "READY")
+        self.assertEqual(len(result["rows"]), 12)
+        by_actor = {actor: 0 for actor in ("Tanya", "Todd")}
+        for row in result["rows"]:
+            by_actor[row["actor"]] += 1
+        self.assertEqual(by_actor, {"Tanya": 6, "Todd": 6})
+
+    def test_video_cross_folder_collision_is_surfaced_and_variant_skipped(self):
+        folders = {
+            "root": [folder("finished-a", "META A Finished"), folder("finished-b", "META B Finished")],
+            "finished-a": [
+                *video_pair("a-collide", "Tanya", variant=1, hook=1),
+                *video_pair("a-ok", "Todd", variant=2, hook=1),
+            ],
+            "finished-b": [
+                vid("b-collide-4x5", "UGC-1 - V01 - Tanya - Hook 1 - 4x5.mp4", "2026-06-02T00:00:00.000Z"),
+                vid("b-collide-9x16", "UGC-1 - V01 - Tanya - Hook 1 - 9x16.mp4", "2026-06-02T00:00:00.000Z"),
+            ],
+        }
+        with patch.object(engine, "_headers", return_value=VIDEO_HEADERS), \
+             patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])), \
+             patch.object(engine, "_ids_on_tab", return_value=set()), \
+             patch.object(engine, "_posted_to_sheet_status", return_value=False), \
+             patch.object(engine, "_read", return_value=[[]]), \
+             patch.object(engine, "_max_nonempty", return_value=10), \
+             patch.object(engine, "_preflight_empty", return_value=(True, "ok")):
+            result = engine.intake_video_card("card-v", "root", "VIDEOS", "WR", "DS")
+        self.assertEqual(result["status"], "READY")
+        self.assertEqual([(row["actor"], row["variant"], row["hook"]) for row in result["rows"]], [("Todd", "V02", "H1")])
+        self.assertEqual(len(result["collisions"]), 2)
+        self.assertEqual({c["ratio"] for c in result["collisions"]}, {"4x5", "9x16"})
+        self.assertEqual(result["collisions"][0]["actor"], "Tanya")
+        self.assertEqual(result["collisions"][0]["first_folder_id"], "finished-a")
+        self.assertEqual(result["collisions"][0]["second_folder_id"], "finished-b")
+
+    def test_video_cross_folder_collision_without_unambiguous_rows_fails_loud(self):
+        folders = {
+            "root": [folder("finished-a", "META A Finished"), folder("finished-b", "META B Finished")],
+            "finished-a": video_pair("a-collide", "Tanya", variant=1, hook=1),
+            "finished-b": video_pair("b-collide", "Tanya", variant=1, hook=1),
+        }
+        with patch.object(engine, "_headers", return_value=VIDEO_HEADERS), \
+             patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])):
+            result = engine.intake_video_card("card-v", "root", "VIDEOS", "WR", "DS")
+        self.assertEqual(result["status"], "COLLISION")
+        self.assertEqual(len(result["collisions"]), 2)
+
+    def test_video_intra_folder_dupe_keeps_first_wins_without_collision(self):
+        folders = {
+            "root": [folder("finished", "Finished")],
+            "finished": [
+                vid("first-4x5", "UGC-1 - V01 - Tanya - Hook 1 - 4x5.mp4", "2026-06-01T00:00:00.000Z"),
+                vid("second-4x5", "UGC-1 - V01 - Tanya - Hook 1 - 4x5.mp4", "2026-06-02T00:00:00.000Z"),
+                vid("only-9x16", "UGC-1 - V01 - Tanya - Hook 1 - 9x16.mp4", "2026-06-01T00:00:00.000Z"),
+            ],
+        }
+        with patch.object(engine, "_headers", return_value=VIDEO_HEADERS), \
+             patch.object(engine, "_list_folder", side_effect=lambda fid: folders.get(fid, [])), \
+             patch.object(engine, "_ids_on_tab", return_value=set()), \
+             patch.object(engine, "_posted_to_sheet_status", return_value=False), \
+             patch.object(engine, "_read", return_value=[sheet_row(VIDEO_HEADERS, {
+                 "Variant #": "V01",
+                 "4x5": sheet_url("first-4x5"),
+                 "9x16": sheet_url("only-9x16"),
+                 "Ad Name": "ok",
+             })]), \
+             patch.object(engine, "_read_formula", return_value=[["=B11"]]), \
+             patch.object(engine, "_write_multi") as write_multi, \
+             patch.object(engine, "_share", return_value=(2, 2)), \
+             patch.object(engine, "_thumbs", return_value=[True]), \
+             patch.object(engine, "_max_nonempty", return_value=10), \
+             patch.object(engine, "_preflight_empty", return_value=(True, "ok")):
+            result = engine.intake_video_card("card-v", "root", "VIDEOS", "WR", "DS", dry_run=False)
+        self.assertTrue(result["all_ok"])
+        self.assertEqual(result["collisions"], [])
+        blocks = dict(write_multi.call_args.args[1])
+        self.assertEqual(blocks["H11"], [[sheet_url("first-4x5")]])
 
     def test_image_axon_and_dnu_named_files_leave_missing_variants_unparsed(self):
         files = [
