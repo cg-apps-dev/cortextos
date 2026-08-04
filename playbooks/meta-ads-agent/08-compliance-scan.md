@@ -40,7 +40,7 @@ Derived from: the creative-compliance-scan skill - committed source in this repo
 6. **Deterministic grep -> preliminary verdict** per row - no guessing; then the semantic adjudication layer.
 7. **Cross-check Meta's own verdict** where the ad already ran (free ground truth).
 8. **Write col B** (clobber-guarded, evidence attached), verify by re-read, backfill misses. DONE-WHEN: every in-scope row's col B re-reads non-blank (PASS / FAIL / UNCLEAR with evidence) - rows-in-scope = rows stamped, zero empties left.
-9. **Report** the verdict distribution; rejection-class findings follow the standing alert rule (any DISAPPROVED ad -> stamp + ping Adam immediately).
+9. **The col-B stamp is the complete compliance output - no report-out.** Do NOT report the compliance verdict distribution (PASS/FAIL/UNCLEAR counts) to Adam, and do NOT post it as a ClickUp comment - compliance is a **sheet-only silent record** (Adam, 2026-08-04): the verdict lives ONLY in col B, no Telegram follow-up, no ClickUp comment, routine or baked-in-creative editorial alike. A FAIL that goes live anyway is Adam's deliberate choice, never flagged as an anomaly. (The 2026-07-03 Meta-DISAPPROVED alert - stamp + immediate Adam ping on any ad Meta *itself* rejects while live - is a separate standing rule tracked in [06-launch-tracking.md](06-launch-tracking.md); whether the 08-04 silent-record change extends to that operational alert is an open owner-boundary question, not resolved here.)
 
 ## Failure modes this design guards
 
