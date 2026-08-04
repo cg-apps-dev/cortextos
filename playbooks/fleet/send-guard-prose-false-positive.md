@@ -95,10 +95,38 @@ Because the hook loads from `dist` per-invocation, step 2 (signatures present in
 authoritative "is it live" check — not the commit date, not a summary. If `dist` is ever rebuilt from a
 branch that lacks these commits, the guard silently reverts; re-run step 2 after any `dist` rebuild.
 
+## Pass-case behavior is load-bearing (and an open RTK interaction)
+
+**Verified from source (the-sop-keeper, 2026-08-04; derivation credit: claude-dev-agent).** The guard
+returns `permissionDecision: 'allow'` on **every** non-hazard path — non-bus commands (l.419), non-guarded
+sends (l.423), the clean pass (l.442), and the not-confidently-inspectable fallbacks (l.449/459) — and
+`deny` only on the three hazard branches. A PreToolUse `allow` **short-circuits the permission prompt**, so
+this pass-case allow is not incidental: it auto-authorizes bus commands and removes permission friction.
+**Any change that makes the guard "go silent" (return no decision) on the pass case would fall back to the
+normal permission flow and reintroduce prompts.** Treat the auto-allow as a feature, not noise.
+
+**Open interaction — HYPOTHESIS, not proven — tracked in `task_1785812468129`.** A separate investigation
+into why the sibling `rtk` PreToolUse hook (same Bash-matcher entry) does not engage has a well-evidenced
+*but unconfirmed* leading hypothesis: because multiple hooks in one matcher run in parallel, this guard's
+blanket `permissionDecision:'allow'` may authorize the *original* command and suppress `rtk`'s
+`hookSpecificOutput.updatedInput` rewrite. **Claude Code's precedence for a parallel `allow` vs a sibling's
+`updatedInput` is undocumented**, so this is not established. **Do NOT edit the live send-guard on inference**
+— a controlled confirmation test (single-hook / non-allowing-guard session + bare-injection probe) is
+required first; the guard is a live safety belt.
+
+**Fix-design caveat for whoever eventually acts on `task_1785812468129`:** the fix cannot be a naive "stop
+allowing / go silent on pass." It must do **both** — free a sibling hook's rewrite **and** preserve this
+guard's auto-allow (prompt suppression). Dropping the allow to free the rewrite trades one regression
+(reintroduced permission prompts) for the fix. (The RTK-side findings live in claude-dev-agent's agent-local
+notes; they are under the `orgs/**` gitignore, so this tracked runbook intentionally links the durable bus
+**task handle** rather than that path — a fresh clone would dangle on the file path.)
+
 ## Regression signals
 
 - **False positives return** (legitimate sends blocked whose body only *mentions* a guarded command) →
   `isCommandPosition` was weakened or bypassed. Check the delimiter set above is intact.
+- **Permission prompts return for bus commands** → the pass-case `permissionDecision:'allow'` was removed or
+  made conditional. That allow is load-bearing (see the section above); restore it.
 - **False negatives return** (a corrupting body slips through) → the all-tokens loop
   (`for (const bodyArg of busSend.bodyArgs)` / `tokenList`) regressed to single-token extraction.
 - Either way the two prose tests above should fail first — keep them green.
