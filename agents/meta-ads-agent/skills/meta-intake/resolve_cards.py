@@ -114,6 +114,38 @@ def get_task(cid):
     req = urllib.request.Request(f"https://api.clickup.com/api/v2/task/{cid}?include_subtasks=true", headers=H)
     return json.load(urllib.request.urlopen(req, timeout=30))
 
+PRODUCT_FIELD_NAME_SUBSTR = "Product"
+
+def resolve_product_field(cf_list):
+    """Read the '📦 Product' drop_down custom field (live options, order-index resolved -
+    NEVER hardcode the index->label map, it can reorder like every other drop_down here).
+    Returns 'Flower' / 'Sleep Gummies' / '' (field absent/unset - fall back to the text/name
+    heuristic). This is the AUTHORITATIVE source when present, same precedence as the
+    Customer Avatar labels field - discovered 2026-08-04: the Video Ads list carries a real
+    '📦 Product' field (options 'Real Flower' / 'Deep Sleep Gummies') that this resolver never
+    read, so two genuinely-tagged cards (product field=0='Real Flower' on both) fell through
+    to AMBIGUOUS via the PRODUCT:-line/name-token guess only. Emoji-agnostic name match, id
+    not pinned (only one instance seen so far)."""
+    products = set()
+    for cf in cf_list:
+        if PRODUCT_FIELD_NAME_SUBSTR not in cf.get("name", "") or cf.get("type") != "drop_down":
+            continue
+        v = cf.get("value")
+        if v is None:
+            continue
+        opts = cf.get("type_config", {}).get("options", [])
+        label = ""
+        for o in opts:
+            if o.get("orderindex") == v or o.get("id") == v:
+                label = (o.get("name") or "").lower()
+                break
+        if "gumm" in label or "sleep" in label:
+            products.add("Sleep Gummies")
+        elif "flower" in label:
+            products.add("Flower")
+        # unrecognized option label - skip it so decoy Product fields do not block the real field
+    return next(iter(products)) if len(products) == 1 else ""
+
 def resolve(cid):
     t = get_task(cid)
     name = t.get("name", "")
@@ -137,15 +169,19 @@ def resolve(cid):
     for cf in t.get("custom_fields", []):
         if "Drive Folder" in cf.get("name", "") and isinstance(cf.get("value"), str):
             m = re.search(r"/folders/([A-Za-z0-9_-]+)", cf["value"]); folder = m.group(1) if m else cf["value"]
-    # Product (PRODUCT line + name token), tab
-    m = re.search(r"PRODUCT\s*:\s*([^\n]+)", txt, re.I)
-    pl = (m.group(1).strip() if m else "").lower()
-    nm = name.lower()
-    # Pod UGC cards carry the product in the NAME (e.g. "Shelby Sims 2 - Sleep Gummies - 4-15-26"),
-    # not a PRODUCT: line - so detect gummies/flower from the name too (2026-06-04 Pod-board fix).
-    sleep = any(k in pl for k in ("gumm", "sleep", "seep")) or any(k in nm for k in ("deepsleep", "deep sleep", "gummies", "gummy"))
-    flower = "flower" in pl or "flower" in nm
-    product = "Sleep Gummies" if sleep and not flower else ("Flower" if flower and not sleep else "AMBIGUOUS")
+    # Product - AUTHORITATIVE source is the '📦 Product' drop_down custom field when present
+    # (live option-label resolved, see resolve_product_field). Fall back to the PRODUCT: line /
+    # name-token heuristic only when the field is absent or unset - never guess over a real field.
+    product = resolve_product_field(cf_list)
+    if not product:
+        m = re.search(r"PRODUCT\s*:\s*([^\n]+)", txt, re.I)
+        pl = (m.group(1).strip() if m else "").lower()
+        nm = name.lower()
+        # Pod UGC cards carry the product in the NAME (e.g. "Shelby Sims 2 - Sleep Gummies - 4-15-26"),
+        # not a PRODUCT: line - so detect gummies/flower from the name too (2026-06-04 Pod-board fix).
+        sleep = any(k in pl for k in ("gumm", "sleep", "seep")) or any(k in nm for k in ("deepsleep", "deep sleep", "gummies", "gummy"))
+        flower = "flower" in pl or "flower" in nm
+        product = "Sleep Gummies" if sleep and not flower else ("Flower" if flower and not sleep else "AMBIGUOUS")
     # Description = card name minus 'MB_CG_IMG_<n> - ' prefix
     desc = re.sub(r"^MB_CG_IMG_\d+\s*-\s*", "", name).strip()
     if desc == name: desc = ""  # bare name -> blank
