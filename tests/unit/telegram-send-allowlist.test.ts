@@ -43,6 +43,13 @@ const ALLOWLIST: Record<string, string> = {
  * node_modules/dist/.git/tests and src/telegram/api.ts (that IS the in-process belt — the one legitimate
  * choke-point every belted send routes through; it is not a bypass).
  */
+// Paths EXCLUDED from the sender scan: build artifacts, tests, and LOCAL git-worktree copies.
+// Worktree copies (.claude/worktrees/, cortextos-worktrees/) are gitignored DUPLICATES of tracked
+// files, not NEW senders — the drift-lock catches new senders in the CANONICAL tree; a worktree copy
+// would false-positive AND could MASK a real new sender in the noise. (src/telegram/api.ts = the belt
+// itself, excluded separately in the raw-send axis only.)
+const EXCLUDE_PATH_RE = /node_modules|\/dist\/|\.git\/|(?:^|\/)\.claude\/worktrees\/|(?:^|\/)cortextos-worktrees\/|(?:^|\/)tests\/|\.test\.|test_/;
+
 function rawSendMessageSenders(): string[] {
   let candidates: string[] = [];
   try {
@@ -54,7 +61,7 @@ function rawSendMessageSenders(): string[] {
     candidates = []; // grep exits non-zero when there are no matches
   }
   return candidates
-    .filter((f) => !/node_modules|\/dist\/|\.git\/|(?:^|\/)tests\/|\.test\.|test_|^src\/telegram\/api\.ts$/.test(f))
+    .filter((f) => !EXCLUDE_PATH_RE.test(f) && f !== 'src/telegram/api.ts')
     .filter((f) => {
       try {
         return readFileSync(join(REPO, f), 'utf-8').includes('/sendMessage');
@@ -88,7 +95,7 @@ function wrapperCallers(): string[] {
     candidates = [];
   }
   return candidates
-    .filter((f) => !/node_modules|\/dist\/|\.git\/|(?:^|\/)tests\/|\.test\.|test_/.test(f))
+    .filter((f) => !EXCLUDE_PATH_RE.test(f))
     .sort();
 }
 
@@ -129,6 +136,21 @@ describe('telegram raw-sendMessage enumeration-allowlist-guard (goal-3)', () => 
       const body = readFileSync(join(REPO, f), 'utf-8');
       expect(body, `${f} lost its GOAL-3-ALLOWLIST-DORMANT annotation`).toContain('GOAL-3-ALLOWLIST-DORMANT');
     }
+  });
+
+  it('excludes local git-worktree copies from the scan (kills false-positives WITHOUT over-matching real senders)', () => {
+    // A worktree COPY of a real sender must be excluded — it is a gitignored duplicate, not a new sender.
+    expect(EXCLUDE_PATH_RE.test('.claude/worktrees/agent-x/scripts/self-healing/agent-recover.sh')).toBe(true);
+    expect(EXCLUDE_PATH_RE.test('cortextos-worktrees/foo/src/daemon/index.ts')).toBe(true);
+    // ...but a REAL canonical-tree sender must STILL be scanned — the exclusion must not over-match.
+    expect(EXCLUDE_PATH_RE.test('scripts/self-healing/agent-recover.sh')).toBe(false);
+    expect(EXCLUDE_PATH_RE.test('src/daemon/index.ts')).toBe(false);
+    expect(EXCLUDE_PATH_RE.test('bus/_telegram-curl.sh')).toBe(false);
+    // LEFT-ANCHORED: a non-boundary substring must NOT be excluded (would mask a real sender).
+    expect(EXCLUDE_PATH_RE.test('my-cortextos-worktrees/x.sh')).toBe(false);
+    expect(EXCLUDE_PATH_RE.test('foo.claude/worktrees/x.sh')).toBe(false);
+    // ...and the real repo-root worktree dirs (with a leading path boundary) still ARE excluded.
+    expect(EXCLUDE_PATH_RE.test('src/x/.claude/worktrees/w/foo.sh')).toBe(true);
   });
 
   it('the fixed hooks no longer raw-send (crash-alert -> ops, compact -> suppress+log)', () => {
