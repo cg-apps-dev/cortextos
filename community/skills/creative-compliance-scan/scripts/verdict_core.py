@@ -55,6 +55,7 @@ class _Authority:
         strain_terms=None,
         degradations=None,
         failed_components=None,
+        carve_outs=None,
     ):
         self.status = status
         self.authority_class = authority_class
@@ -68,6 +69,10 @@ class _Authority:
         self.strain_re = _compile_strain_re(self.strain_terms)
         self.degradations = degradations or []
         self.failed_components = failed_components or []
+        # OPTIONAL, non-authoritative: term-level accepted-risk carve-outs (e.g. Adam's 2026-07-30
+        # bud-per-directive video directive). Absent/malformed -> [] (fail-safe: every hard term still
+        # bans everywhere - removing an optimization is safe, removing a ban is not). See _load_carve_outs.
+        self.carve_outs = carve_outs or []
 
 
 class _Verdict:
@@ -80,6 +85,7 @@ class _Verdict:
         candidate_hits=None,
         authority_class="ok",
         must_not_pass=False,
+        accepted_risk=None,
     ):
         self.verdict = verdict
         self.evidence = evidence
@@ -89,6 +95,10 @@ class _Verdict:
         self.authority_class = authority_class
         self.must_not_pass = must_not_pass
         self.tier_outcome = "FAIL" if verdict == "FAIL" else "UNCLEAR" if verdict == "UNCLEAR" else "PASS"
+        # term-level accepted-risk carve-out markers (e.g. bud-per-directive on video) - kept OUT of
+        # fails/unclears (never counted as a violation) and never folded into an ad-level override;
+        # see _ACCEPTED_RISK_PREFIX in verdict_core.py for why this stays a separate channel.
+        self.accepted_risk = accepted_risk or []
 
 def _brain_data_path(env_name, filename, env=None):
     source = env if env is not None else os.environ
@@ -207,6 +217,14 @@ _GUM_AMBIG_ALPHA = [
 _BRAIN_HARD = []
 _BRAIN_CLAIM_SURFACE = []
 _BRAIN_CANDIDATE = []
+_CARVE_OUTS = []
+
+# Mirrors launch_gate.py's ACCEPTED_RISK_PREFIX exactly. A carve-out marker must NEVER start with this -
+# has_accepted_risk() substring-matches it as an AD-LEVEL override (either surface cell -> whole ad
+# launch-eligible), which would MASK a real, unrelated FAIL on the same ad. The carve-out is TERM-level
+# (this one expected hit), not ad-level - defended here structurally, not by trusting the data file to
+# never repeat the collision this mechanism exists to avoid (mc verdict-conventions.md #5, 2026-07-31).
+_ACCEPTED_RISK_PREFIX = "[Adam accepted-risk "
 
 _DECODE_CREATIVE_RE = _EMPTY_RE
 
@@ -309,7 +327,7 @@ def _creative_verdict_for(rec):
     union_raw_l  = _DECODE_CREATIVE_RE.sub(_blank, union_raw_l)
     union_leet_l = _DECODE_CREATIVE_RE.sub(_blank, union_leet_l)
 
-    fails=[]; unclears=[]; vision_adjudicate=[]
+    fails=[]; unclears=[]; vision_adjudicate=[]; accepted_risk=[]
 
     # HARDENING (drift guard, fail-closed + LOUD): an UNREGISTERED verdict source. `sources` keys are
     # static, so this fires only if a source is added without registering it in _SOURCE_MODALITY (the
@@ -334,7 +352,29 @@ def _creative_verdict_for(rec):
 
     # _single_vision_only is a module-level pure function (importable + unit-testable, incl. vision3-injection)
 
+    def _carve_out_match(val):
+        # rec is in closure scope. FAIL-SAFE ordering: missing/unset media_type never matches any
+        # applies_when condition (dict equality on a present key), so an un-tagged record can NEVER
+        # hit a carve-out - only an EXPLICITLY tagged record (e.g. media_type=="video") is eligible.
+        v = val.strip().lower()
+        for carve in _CARVE_OUTS:
+            if not carve.get("active"):
+                continue
+            if v not in carve.get("terms", ()):
+                continue
+            applies_when = carve.get("applies_when") or {}
+            if all(rec.get(k) == expected for k, expected in applies_when.items()):
+                return carve
+        return None
+
     def add_hard_hit(label, val, names):
+        carve = _carve_out_match(val)
+        if carve:
+            # Corroboration/single-vision logic does NOT apply here - the carve-out is about an
+            # EXPECTED, directive-driven term, not about detection confidence. Routes to its own
+            # channel: never counted in fails/unclears, never folded into the ad-level override.
+            accepted_risk.append(carve["marker"])
+            return
         if _single_vision_only(names):
             unclears.append(f"{label}(single-vision, uncorroborated):'{val}' - verify on image")
         else:
@@ -434,6 +474,7 @@ def _creative_verdict_for(rec):
 
     fails = list(dict.fromkeys(fails)); unclears = list(dict.fromkeys(unclears))
     vision_adjudicate = list(dict.fromkeys(vision_adjudicate))
+    accepted_risk = list(dict.fromkeys(accepted_risk))
     if fails:    v, ev = "FAIL", "; ".join(fails[:6])
     elif unclears: v, ev = "UNCLEAR", "; ".join(unclears[:5]) + "; needs human review"
     else:
@@ -444,7 +485,11 @@ def _creative_verdict_for(rec):
             ev = "clean: no banned text, imagery clean [vision-adjudicate default-exempt: " + "; ".join(vision_adjudicate[:3]) + "]"
         else:
             ev = "clean: no banned text, imagery clean"
-    return v, ev, fails, unclears
+        # carve-out markers append as their own bracketed token(s), verbatim from the data - never
+        # wrapped inside the vision-adjudicate bracket, so each stays independently greppable/auditable.
+        if accepted_risk:
+            ev = ev + " " + " ".join(accepted_risk[:3])
+    return v, ev, fails, unclears, accepted_risk
 
 def _meta_reconcile(v, fails, meta):
     m = (meta or "").upper()
@@ -514,6 +559,52 @@ def _load_banned(env):
     return hard_nonclaim, hard_claim, [(label, rx, item) for label, rx, item in candidate]
 
 
+def _load_carve_outs(env):
+    """Optional term-level accepted-risk carve-outs (banned-terms.json top-level 'carve_outs' array,
+    mc verdict-conventions.md #5, 2026-07-31 bud-per-directive video). Absent/malformed key -> [] -
+    NOT part of _load_banned's hard[]/candidate[] canary-gated contract, and deliberately non-fatal:
+    a carve-out failing to load must never take down the whole authority or silently widen a ban -
+    removing this optimization is SAFE (bud still hard-bans everywhere), the reverse would not be.
+    Each entry: {term, applies_when: {field: value, ...}, marker, active}. `term` matches case-
+    insensitively; the plural form is auto-added unless the term already ends in 's'. A marker that
+    would collide with the ad-level accepted-risk override prefix is rejected (skipped), not trusted."""
+    path = _brain_data_path("BANNED_TERMS_JSON", "banned-terms.json", env)
+    try:
+        data = _read_json(path)
+    except Exception:
+        return []
+    entries = data.get("carve_outs")
+    if not isinstance(entries, list):
+        return []
+    out = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        term = item.get("term")
+        if not isinstance(term, str) or not term.strip():
+            continue
+        term_l = term.strip().lower()
+        terms = {term_l}
+        if not term_l.endswith("s"):
+            terms.add(term_l + "s")
+        marker = item.get("marker")
+        if not isinstance(marker, str) or not marker.strip():
+            continue
+        if marker.startswith(_ACCEPTED_RISK_PREFIX):
+            # structural rejection, not a data-trust decision - see _ACCEPTED_RISK_PREFIX comment.
+            continue
+        applies_when = item.get("applies_when")
+        if not isinstance(applies_when, dict):
+            applies_when = {}
+        out.append({
+            "terms": terms,
+            "applies_when": applies_when,
+            "marker": marker,
+            "active": bool(item.get("active", False)),
+        })
+    return out
+
+
 def _load_coding(env):
     path = _brain_data_path("CODING_SIGNALS_JSON", "cannabis-coding-signals.json", env)
     data = _read_json(path)
@@ -580,6 +671,13 @@ def load(env=None, degradations=None):
         reasons.append(f"failed to load strain lexicon: {exc}")
         failed_components.append("strain")
         strains = []
+    # Non-fatal by design (see _load_carve_outs docstring): a carve-out load failure never appends to
+    # `reasons`/`failed_components` and never degrades authority status - it only ever falls back to [],
+    # the safe (more-restrictive) direction. It intentionally does NOT gate on `reasons` above it.
+    try:
+        carve_outs = _load_carve_outs(source)
+    except Exception:
+        carve_outs = []
     if reasons:
         return _Authority(
             status="failed",
@@ -593,6 +691,7 @@ def load(env=None, degradations=None):
             strain_terms=strains,
             degradations=degradations,
             failed_components=failed_components,
+            carve_outs=carve_outs,
         )
     return _Authority(
         status="ok",
@@ -604,6 +703,7 @@ def load(env=None, degradations=None):
         decode_creative_re=decode_creative_re,
         strain_terms=strains,
         degradations=degradations,
+        carve_outs=carve_outs,
     )
 
 
@@ -1086,8 +1186,8 @@ def _copy_classify(text, authority):
 
 
 def _with_creative_authority(rec, authority):
-    global _BRAIN_HARD, _BRAIN_CLAIM_SURFACE, _BRAIN_CANDIDATE, _DECODE_CREATIVE_RE, _STRAIN_TERMS, _STRAIN_RE, _AUTHORITY_FORCE_UNCLEAR
-    old = (_BRAIN_HARD, _BRAIN_CLAIM_SURFACE, _BRAIN_CANDIDATE, _DECODE_CREATIVE_RE, _STRAIN_TERMS, _STRAIN_RE, _AUTHORITY_FORCE_UNCLEAR)
+    global _BRAIN_HARD, _BRAIN_CLAIM_SURFACE, _BRAIN_CANDIDATE, _DECODE_CREATIVE_RE, _STRAIN_TERMS, _STRAIN_RE, _AUTHORITY_FORCE_UNCLEAR, _CARVE_OUTS
+    old = (_BRAIN_HARD, _BRAIN_CLAIM_SURFACE, _BRAIN_CANDIDATE, _DECODE_CREATIVE_RE, _STRAIN_TERMS, _STRAIN_RE, _AUTHORITY_FORCE_UNCLEAR, _CARVE_OUTS)
     _BRAIN_HARD = authority.hard
     _BRAIN_CLAIM_SURFACE = authority.claim_surface
     _BRAIN_CANDIDATE = authority.candidate
@@ -1095,11 +1195,12 @@ def _with_creative_authority(rec, authority):
     _STRAIN_TERMS = authority.strain_terms
     _STRAIN_RE = authority.strain_re
     _AUTHORITY_FORCE_UNCLEAR = authority.degradations
+    _CARVE_OUTS = authority.carve_outs
     try:
-        v, ev, fails, unclears = _creative_verdict_for(rec)
-        return _Verdict(v, ev, fails, unclears)
+        v, ev, fails, unclears, accepted_risk = _creative_verdict_for(rec)
+        return _Verdict(v, ev, fails, unclears, accepted_risk=accepted_risk)
     finally:
-        (_BRAIN_HARD, _BRAIN_CLAIM_SURFACE, _BRAIN_CANDIDATE, _DECODE_CREATIVE_RE, _STRAIN_TERMS, _STRAIN_RE, _AUTHORITY_FORCE_UNCLEAR) = old
+        (_BRAIN_HARD, _BRAIN_CLAIM_SURFACE, _BRAIN_CANDIDATE, _DECODE_CREATIVE_RE, _STRAIN_TERMS, _STRAIN_RE, _AUTHORITY_FORCE_UNCLEAR, _CARVE_OUTS) = old
 
 
 def _component_loss_unclears(authority, surface):

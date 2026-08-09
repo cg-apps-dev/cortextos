@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Creative verdict CLI/front-end backed by verdict_core."""
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -78,6 +79,30 @@ def meta_reconcile(v, fails, meta):
 single_vision_only = verdict_core._single_vision_only
 
 
+# STRUCTURAL GUARD (not a remembered rule - a remembered rule fired twice in one session and still
+# failed under load): a hand-built extraction record can accidentally carry scene-description narration
+# inside vision_text/vision_text2/ocr_text/vo_text (e.g. "[on-screen: a product pouch with...]") instead
+# of strictly verbatim on-image/spoken text. A generic candidate-tier word inside that narration (e.g.
+# "product") then falsely trips the grep - the scanner ends up grading its OWN description, not the ad.
+# A real short bracket ad-callout ("[LIMITED TIME]", "[SWIPE UP]", "[9x16]") is 1-4 words; narration is a
+# full descriptive sentence, so a >=5-word bracket segment is the discriminator. FAIL LOUD (raise, not a
+# printed warning) so this cannot be scrolled past - the exact property a memory-only fix does not have.
+_NARRATION_BRACKET_RE = re.compile(r"\[([^\[\]]{1,400})\]")
+
+
+def _reject_narration(rec):
+    for field in ("vision_text", "vision_text2", "ocr_text", "vo_text"):
+        text = rec.get(field) or ""
+        for m in _NARRATION_BRACKET_RE.finditer(text):
+            words = m.group(1).split()
+            if len(words) >= 5:
+                raise ValueError(
+                    f"row {rec.get('row')} field '{field}' looks like scene-description narration, "
+                    f"not verbatim on-image/spoken text: {m.group(0)!r} - strip it before re-running. "
+                    "verdict_core grades this field literally; narration pollutes the grep."
+                )
+
+
 if __name__ == "__main__":
     ts = sys.argv[2] if len(sys.argv) > 2 else "2026-06-10 PT"
     out = []
@@ -86,6 +111,7 @@ if __name__ == "__main__":
         if not line:
             continue
         rec = json.loads(line)
+        _reject_narration(rec)
         v, ev, fails, unclears = verdict_for(rec)
         grep_fails = [f for f in fails if not f.startswith("M-19d")]
         v2, note, learn = meta_reconcile(v, grep_fails, rec.get("meta", ""))
