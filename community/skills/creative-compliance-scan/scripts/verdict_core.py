@@ -1186,6 +1186,25 @@ def _copy_classify(text, authority):
 
 
 def _with_creative_authority(rec, authority):
+    # CALLER-CONTRACT GUARD (2026-08-12, mc): the creative surface requires the extraction RECORD dict
+    # (_creative_verdict_for does rec.get(...) for the source union + carve-out applies_when). A caller
+    # passing raw text or any non-dict would AttributeError inside the tree - the outer belt catches it and
+    # fails closed, but as a GENERIC internal_error that reads like an engine bug (this cost a 2-agent
+    # fire-drill on 2026-08-12 for a one-line caller mistake: a text string passed to surface="creative").
+    # Fail CLOSED here with a SELF-DIAGNOSING message so the next caller-mistake names itself. Belt invariant
+    # preserved: fail-closed via authority_class->verdict, NEVER a raise. authority_class="internal_error"
+    # keeps identical downstream routing (grep_verdict never-PASS via the UNCLEAR string; copy-gate hard-error
+    # branch) to what the belt produced before - only the evidence message is improved. NOTE {} (a None record
+    # normalized upstream via `text_or_record or {}`) is a legit empty record and passes this guard.
+    if not isinstance(rec, dict):
+        return _Verdict(
+            verdict="UNCLEAR",
+            evidence=(f"creative surface requires an extraction RECORD dict, got {type(rec).__name__} - "
+                      "CALLER ERROR: pass the record (e.g. via grep_verdict.verdict_for), or use "
+                      "surface='copy' for raw text; failing closed, needs human review"),
+            authority_class="internal_error",
+            must_not_pass=True,
+        )
     global _BRAIN_HARD, _BRAIN_CLAIM_SURFACE, _BRAIN_CANDIDATE, _DECODE_CREATIVE_RE, _STRAIN_TERMS, _STRAIN_RE, _AUTHORITY_FORCE_UNCLEAR, _CARVE_OUTS
     old = (_BRAIN_HARD, _BRAIN_CLAIM_SURFACE, _BRAIN_CANDIDATE, _DECODE_CREATIVE_RE, _STRAIN_TERMS, _STRAIN_RE, _AUTHORITY_FORCE_UNCLEAR, _CARVE_OUTS)
     _BRAIN_HARD = authority.hard

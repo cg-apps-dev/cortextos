@@ -229,6 +229,31 @@ def test_copy_gate_internal_error_routes_to_hard_error():
     print("  [PASS] copy-gate routing: internal_error satisfies must_not_pass AND class!=component_loss -> GateAuthorityError")
 
 
+# ---------- creative-surface caller-contract guard (2026-08-12): non-dict record self-diagnoses ----------
+class _OkAuthStub:
+    # healthy authority so _classify_impl reaches the creative branch -> _with_creative_authority; the
+    # caller-guard returns BEFORE any brain attribute is touched, so status/authority_class alone suffice.
+    status = "ok"
+    authority_class = "ok"
+
+
+def test_creative_surface_nondict_caller_guard():
+    core = _import_core(); _recorder(core)
+    auth = _OkAuthStub()
+    # the exact 2026-08-12 caller mistake: a raw TEXT STRING passed to the creative surface.
+    r = core.classify("actual real flower", auth, surface="creative")
+    assert r.verdict == "UNCLEAR", f"non-dict -> UNCLEAR (fail-closed), got {r.verdict}"
+    assert r.must_not_pass is True, "non-dict -> must_not_pass (never-PASS both surfaces)"
+    assert r.authority_class == "internal_error", "non-dict -> internal_error (same routing as the belt)"
+    assert "RECORD dict" in r.evidence and "CALLER ERROR" in r.evidence and "str" in r.evidence, \
+        f"evidence must self-diagnose (name the contract + the got-type), got: {r.evidence!r}"
+    # a list is non-dict too; the message names the concrete type.
+    r2 = core.classify(["ocr_text"], auth, surface="creative")
+    assert r2.verdict == "UNCLEAR" and r2.must_not_pass and "list" in r2.evidence, \
+        "list -> same self-diagnosing fail-closed, type named"
+    print("  [PASS] creative-surface non-dict caller-guard: str/list -> UNCLEAR+must_not_pass+internal_error, self-diagnosing message")
+
+
 if __name__ == "__main__":
     import traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
