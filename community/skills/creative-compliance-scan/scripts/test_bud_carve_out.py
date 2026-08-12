@@ -112,7 +112,30 @@ def test_all():
         os.unlink(path)
     cases += 1
 
-    print(f"OK: {cases} bud-carve-out cases pass (a-g)")
+    # (h) FAIL-OPEN GUARD (claude-dev review of 0192ccb8): a carve-out with EMPTY or MISSING applies_when
+    # must be REJECTED at load. all([]) == True, so an unconditional carve-out would suppress the term on
+    # EVERY record (not just media_type=video) = a banned term silently carved out everywhere = fail-open.
+    # The correct way to un-ban a term globally is to remove it from the ban list, never carve unconditionally.
+    empty_aw_raw   = {"term": "bud", "applies_when": {}, "marker": "[bud-per-directive 2026-07-30]", "active": True}
+    missing_aw_raw = {"term": "bud", "marker": "[bud-per-directive 2026-07-30]", "active": True}
+    good2_raw      = {"term": "bud", "applies_when": {"media_type": "video"},
+                       "marker": "[bud-per-directive 2026-07-30]", "active": True}
+    fd2, path2 = tempfile.mkstemp(suffix=".json")
+    with open(fd2, "w") as f:
+        json.dump({"hard": [{"m_code": "M-2", "pattern": "bud", "note": "x"}],
+                   "candidate": [{"m_code": "M-1", "pattern": "xyz123", "note": "x"}],
+                   "version": "1.0.11",
+                   "carve_outs": [empty_aw_raw, missing_aw_raw, good2_raw]}, f)
+    try:
+        loaded2 = vc._load_carve_outs({"BANNED_TERMS_JSON": path2})
+        assert len(loaded2) == 1, \
+            f"(h) empty/missing applies_when must be rejected (unconditional carve-out = fail-open); only the conditional one loads: {loaded2}"
+        assert loaded2[0]["applies_when"] == {"media_type": "video"}, f"(h) wrong entry survived: {loaded2}"
+    finally:
+        os.unlink(path2)
+    cases += 1
+
+    print(f"OK: {cases} bud-carve-out cases pass (a-h)")
 
 
 if __name__ == "__main__":

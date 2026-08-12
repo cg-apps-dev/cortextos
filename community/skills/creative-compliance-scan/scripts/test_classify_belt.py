@@ -229,29 +229,40 @@ def test_copy_gate_internal_error_routes_to_hard_error():
     print("  [PASS] copy-gate routing: internal_error satisfies must_not_pass AND class!=component_loss -> GateAuthorityError")
 
 
-# ---------- creative-surface caller-contract guard (2026-08-12): non-dict record self-diagnoses ----------
-class _OkAuthStub:
-    # healthy authority so _classify_impl reaches the creative branch -> _with_creative_authority; the
-    # caller-guard returns BEFORE any brain attribute is touched, so status/authority_class alone suffice.
-    status = "ok"
-    authority_class = "ok"
+# ---------- creative-surface record-contract guard (2026-08-12): non-dict fail-closes, {} passes ----------
+def _ok_authority(core):
+    # healthy authority so _classify_impl reaches the creative branch -> _with_creative_authority. Empty-but-
+    # VALID brain attrs so a {} record flows PAST the guard into a clean _creative_verdict_for (no hits).
+    import types
+    return types.SimpleNamespace(
+        status="ok", authority_class="ok",
+        hard=[], claim_surface=[], candidate=[],
+        decode_creative_re=core._EMPTY_RE, strain_terms=[], strain_re=core._EMPTY_RE,
+        degradations=[], carve_outs=[],
+    )
 
 
-def test_creative_surface_nondict_caller_guard():
+def test_creative_surface_nondict_record_guard():
     core = _import_core(); _recorder(core)
-    auth = _OkAuthStub()
-    # the exact 2026-08-12 caller mistake: a raw TEXT STRING passed to the creative surface.
+    auth = _ok_authority(core)
+    # the exact 2026-08-12 mistake: a raw TEXT STRING passed to the creative surface (expects a record dict).
     r = core.classify("actual real flower", auth, surface="creative")
     assert r.verdict == "UNCLEAR", f"non-dict -> UNCLEAR (fail-closed), got {r.verdict}"
     assert r.must_not_pass is True, "non-dict -> must_not_pass (never-PASS both surfaces)"
     assert r.authority_class == "internal_error", "non-dict -> internal_error (same routing as the belt)"
-    assert "RECORD dict" in r.evidence and "CALLER ERROR" in r.evidence and "str" in r.evidence, \
-        f"evidence must self-diagnose (name the contract + the got-type), got: {r.evidence!r}"
+    # self-diagnosing + NEUTRAL on cause (caller-or-upstream, not hard-labeled "caller error").
+    assert "RECORD dict" in r.evidence and "contract violation" in r.evidence and "str" in r.evidence, \
+        f"evidence must self-diagnose (contract + got-type), got: {r.evidence!r}"
+    assert "CALLER ERROR" not in r.evidence, "must NOT hard-attribute to caller (could be upstream regression)"
     # a list is non-dict too; the message names the concrete type.
     r2 = core.classify(["ocr_text"], auth, surface="creative")
     assert r2.verdict == "UNCLEAR" and r2.must_not_pass and "list" in r2.evidence, \
         "list -> same self-diagnosing fail-closed, type named"
-    print("  [PASS] creative-surface non-dict caller-guard: str/list -> UNCLEAR+must_not_pass+internal_error, self-diagnosing message")
+    # INVARIANT: {} is a LEGIT empty record - it MUST pass the guard into a clean classify, NOT trip it.
+    r3 = core.classify({}, auth, surface="creative")
+    assert r3.authority_class != "internal_error", \
+        f"empty {{}} record must PASS the record-contract guard (not trip it), got class={r3.authority_class}"
+    print("  [PASS] creative-surface record-contract guard: str/list -> fail-closed self-diagnosing (neutral cause); {} passes clean")
 
 
 if __name__ == "__main__":

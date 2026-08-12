@@ -594,8 +594,16 @@ def _load_carve_outs(env):
             # structural rejection, not a data-trust decision - see _ACCEPTED_RISK_PREFIX comment.
             continue
         applies_when = item.get("applies_when")
-        if not isinstance(applies_when, dict):
-            applies_when = {}
+        if not isinstance(applies_when, dict) or not applies_when:
+            # EMPTY / missing applies_when = an UNCONDITIONAL carve-out, and that is a FAIL-OPEN:
+            # _carve_out_match does all(applies_when.items()), and all([]) == True, so the term would be
+            # carved out on EVERY record (all media types + surfaces), not just its intended condition
+            # (e.g. media_type=="video") - a banned term silently suppressed everywhere. An unconditional
+            # carve-out is ALWAYS a misconfig: to un-ban a term globally you REMOVE it from the ban list,
+            # you never carve it out unconditionally. SKIP it - code-enforce "only conditional carve-outs"
+            # (structural, like the collision-prefix reject above), so a config typo fails CLOSED (term
+            # keeps banning) instead of open. (claude-dev review of 0192ccb8, 2026-08-12.)
+            continue
         out.append({
             "terms": terms,
             "applies_when": applies_when,
@@ -1186,22 +1194,27 @@ def _copy_classify(text, authority):
 
 
 def _with_creative_authority(rec, authority):
-    # CALLER-CONTRACT GUARD (2026-08-12, mc): the creative surface requires the extraction RECORD dict
-    # (_creative_verdict_for does rec.get(...) for the source union + carve-out applies_when). A caller
-    # passing raw text or any non-dict would AttributeError inside the tree - the outer belt catches it and
-    # fails closed, but as a GENERIC internal_error that reads like an engine bug (this cost a 2-agent
-    # fire-drill on 2026-08-12 for a one-line caller mistake: a text string passed to surface="creative").
-    # Fail CLOSED here with a SELF-DIAGNOSING message so the next caller-mistake names itself. Belt invariant
-    # preserved: fail-closed via authority_class->verdict, NEVER a raise. authority_class="internal_error"
-    # keeps identical downstream routing (grep_verdict never-PASS via the UNCLEAR string; copy-gate hard-error
-    # branch) to what the belt produced before - only the evidence message is improved. NOTE {} (a None record
-    # normalized upstream via `text_or_record or {}`) is a legit empty record and passes this guard.
+    # RECORD-CONTRACT GUARD (2026-08-12, mc): the creative surface requires the extraction RECORD dict
+    # (_creative_verdict_for does rec.get(...) for the source union + carve-out applies_when). A non-dict rec
+    # would AttributeError inside the tree - the outer belt catches it and fails closed, but as a GENERIC
+    # internal_error that reads like an engine bug (this cost a 2-agent fire-drill on 2026-08-12 for a
+    # one-line mistake: a text string passed to surface="creative"). Fail CLOSED here with a SELF-DIAGNOSING
+    # message so the next occurrence names itself. NEUTRAL on cause (per claude-dev review): a non-dict can be
+    # a CALLER passing the wrong type OR an UPSTREAM extractor regression producing a non-record - do not
+    # hard-label it "caller error" (that would mislabel + hide a systemic upstream regression). Page-less for
+    # now (orch-endorsed: 120 self-diagnosing UNCLEARs + coverage-backstop scans are the visible signal);
+    # DOCUMENTED FUTURE-TRIGGER if a systemic non-dict spike ever appears un-noticed = add an AGGREGATE
+    # non-dict-rate watch (not a per-row page). Belt invariant preserved: fail-closed via authority_class->
+    # verdict, NEVER a raise; authority_class="internal_error" keeps identical downstream routing (grep_verdict
+    # never-PASS via the UNCLEAR string; copy-gate hard-error branch). NOTE {} (a None record normalized
+    # upstream via `text_or_record or {}`) is a legit empty record and passes this guard.
     if not isinstance(rec, dict):
         return _Verdict(
             verdict="UNCLEAR",
             evidence=(f"creative surface requires an extraction RECORD dict, got {type(rec).__name__} - "
-                      "CALLER ERROR: pass the record (e.g. via grep_verdict.verdict_for), or use "
-                      "surface='copy' for raw text; failing closed, needs human review"),
+                      "contract violation (a caller passed a non-record, or an upstream extractor produced "
+                      "one): pass the record via grep_verdict.verdict_for, or use surface='copy' for raw "
+                      "text; failing closed, needs human review"),
             authority_class="internal_error",
             must_not_pass=True,
         )
