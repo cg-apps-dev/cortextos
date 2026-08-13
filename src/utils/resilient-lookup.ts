@@ -148,17 +148,36 @@ export function createResilientLookup(deps: ResilientLookupDeps = {}): Resilient
   const log = deps.log ?? ((message: string) => process.stderr.write(`${message}\n`));
   const cache = new Map<string, { address: string; family: number; expiresAt: number }>();
 
+  // CALLER CONTRACT: this is a Node dns.lookup-style function. A caller passing it as the
+  // `lookup` option of http(s).request MUST attach its connect-error handler
+  // (req.on('error', ...)) SYNCHRONOUSLY in the same tick it creates the request — standard
+  // http.request usage (see src/telegram/api.ts). Every cb() below fires asynchronously (the
+  // cache-hit path via process.nextTick, the resolution path post-await) precisely so that
+  // same-tick handler is already attached when a connect error (e.g. ENETUNREACH) fires, so it
+  // surfaces as a catchable 'error' event rather than a thrown process 'uncaughtException'. A
+  // caller that attaches its error handler LATER than the request-creation tick can still be
+  // crashed by a deferred connect error — that caller must fix its own handler timing.
   return (hostname, options, cb) => {
     const family = options.family === 4 || options.family === 6 ? options.family : undefined;
     const key = cacheKey(hostname, family);
     const cached = cache.get(key);
     const currentTime = now();
     if (cached && cached.expiresAt > currentTime) {
-      if (options.all) {
-        cb(null, [{ address: cached.address, family: cached.family }]);
-      } else {
-        cb(null, cached.address, cached.family);
-      }
+      // A dns.lookup-style callback MUST fire ASYNCHRONOUSLY. Invoking `cb` synchronously
+      // (as this cache-hit branch previously did) makes net's internalConnect run inside
+      // THIS sync stack — before net attaches the socket 'error' handler — so a synchronous
+      // connect error (e.g. ENETUNREACH on a transient network blip) throws and escapes to
+      // process 'uncaughtException', fleet-crashing the whole daemon (crash-history 2026-08-08
+      // + 2026-08-12). Deferring to process.nextTick matches the async resolution path below
+      // (which calls cb post-await), so the connect error instead surfaces as a catchable
+      // socket error -> rejected request -> caught by the poller's try/catch -> logged+retried.
+      process.nextTick(() => {
+        if (options.all) {
+          cb(null, [{ address: cached.address, family: cached.family }]);
+        } else {
+          cb(null, cached.address, cached.family);
+        }
+      });
       return;
     }
 

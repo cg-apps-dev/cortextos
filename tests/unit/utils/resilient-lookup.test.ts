@@ -122,4 +122,44 @@ describe('resilientLookup', () => {
     await expect(call()).resolves.toEqual({ address: '149.154.166.110', family: 4 });
     expect(resolve4).toHaveBeenCalledTimes(1);
   });
+
+  it('fires the cache-hit callback ASYNCHRONOUSLY (never synchronously)', async () => {
+    // REGRESSION (daemon fleet-crash 2026-08-08 + 2026-08-12): a dns.lookup-style callback
+    // invoked SYNCHRONOUSLY makes net's internalConnect run inside the lookup's sync stack —
+    // before net attaches the socket 'error' handler — so a synchronous connect error
+    // (ENETUNREACH on a transient network blip) throws to process 'uncaughtException' and
+    // kills the ENTIRE daemon (all hosted agents). The cache-hit path must defer (process
+    // .nextTick) exactly like the async resolution path. This test fails if the cache-hit
+    // callback is ever made synchronous again.
+    let now = 1000;
+    const resolve4 = vi.fn(async () => [{ address: '149.154.166.110', ttl: 120 }]);
+    const resilientLookup = createResilientLookup({
+      resolve4,
+      now: () => now,
+      log: vi.fn(),
+      timeoutMs: 25,
+    });
+
+    // Prime the cache with a first (non-cached) resolution.
+    await new Promise<void>((resolve, reject) => {
+      resilientLookup('api.telegram.org', {}, (e) => (e ? reject(e) : resolve()));
+    });
+
+    // Second call is a cache hit. Exercise the options.all branch — the exact crash path
+    // (the crash stack was net emitLookup -> our cache-hit cb with all:true -> internalConnect).
+    let firedBeforeReturn = false;
+    let fired = false;
+    await new Promise<void>((resolve) => {
+      resilientLookup('api.telegram.org', { all: true }, () => {
+        fired = true;
+        resolve();
+      });
+      // Synchronously after the lookup() call returns, the cache-hit cb must NOT have run yet.
+      firedBeforeReturn = fired;
+    });
+
+    expect(firedBeforeReturn).toBe(false); // deferred to a later tick — the crash-prevent invariant
+    expect(fired).toBe(true); // but it does still fire
+    expect(resolve4).toHaveBeenCalledTimes(1); // and it was a genuine cache hit (no re-resolve)
+  });
 });
