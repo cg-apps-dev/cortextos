@@ -15,7 +15,6 @@ CASES = [
     # de-code framings -> UNCLEAR (masked, Adam-review per #154), NOT hard-FAIL
     ("Lab-tested for purity.",             "UNCLEAR"),
     ("Certificate of analysis on file.",   "UNCLEAR"),
-    ("Farm-direct quality.",               "UNCLEAR"),
     # Single vision-source hard hits route to UNCLEAR for human review, not hard FAIL.
     ("Available where it's legal.",        "UNCLEAR"),
     ("Ships to legal states only.",        "UNCLEAR"),
@@ -30,6 +29,11 @@ CASES = [
     ("Outdoor-grown quality.",             "UNCLEAR"),
     # clean
     ("Real quality delivered. 20% off.",   "PASS"),
+    # farm-direct is USABLE (Adam PR #204, 2026-07-04) - it was REMOVED from de_code_hard_remove that
+    # day (the 2026-06-22 hard-remove ruling was reversed) and must NOT route to UNCLEAR. The banned
+    # line is the word GROWN, not farm-direct: "Family-grown quality." above stays UNCLEAR (grown hit),
+    # this stays PASS. This case guards against silently re-adding farm-direct as a de-code pattern.
+    ("Farm-direct quality.",               "PASS"),
     ("Sold in legal states.",              "UNCLEAR"),
     ("Ships to legal states. 100% legal.", "UNCLEAR"),
 ]
