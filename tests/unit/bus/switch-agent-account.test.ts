@@ -6,8 +6,6 @@ import { atomicWriteSync } from '../../../src/utils/atomic';
 import { shortTokenHash } from '../../../src/utils/live-token-hash';
 import { checkInbox, sendMessage } from '../../../src/bus/message';
 import {
-  DEFAULT_PROBE_RETRY_INTERVAL_MS,
-  DEFAULT_PROBE_TIMEOUT_MS,
   cleanupSwitchProbeInbox,
   isAcceptedProbeReply,
   isExactProbeReply,
@@ -245,13 +243,7 @@ describe('switch-agent-account', () => {
     expect(JSON.parse(readFileSync(configPath, 'utf-8')).usage_account).toBe('me-com-max');
   });
 
-  it('passes verify when runtime hash, attribution, heartbeat, and probe all pass', async () => {
-    const probeOperators: string[] = [];
-    ops.probeAgent = async (_agent, operatorAgent) => {
-      probeOperators.push(operatorAgent);
-      return true;
-    };
-
+  it('passes verify when runtime hash, attribution, and a fresh heartbeat all pass', async () => {
     const result = await runSwitch();
 
     expect(result.status).toBe('success');
@@ -262,94 +254,64 @@ describe('switch-agent-account', () => {
     expect(JSON.parse(readFileSync(configPath, 'utf-8')).usage_account).toBe('moonlight-max');
     expect(stopCalls).toEqual(['worker-a']);
     expect(startCalls).toEqual(['worker-a']);
-    expect(probeOperators).toHaveLength(1);
-    expect(probeOperators[0]).toMatch(/^switch-probe-[a-f0-9]{16}$/);
-    expect(probeOperators[0]).not.toBe('the-orchestrator');
-    expect(existsSync(join(frameworkRoot, 'orgs', 'clean-green-marketing', 'agents', probeOperators[0]))).toBe(false);
-    expect(result.warnings).toContain(`INFO: resolved operator agent the-orchestrator; probe replies use session-less ${probeOperators[0]}.`);
+    // The round-trip probe is gone: a healthy switch verifies on the authoritative
+    // gates + a fresh post-restart heartbeat, with no probe reference in warnings.
+    expect(result.warnings.some((w) => w.toLowerCase().includes('probe'))).toBe(false);
   });
 
-  it('passes when the live probe succeeds but the post-restart heartbeat is missing', async () => {
-    ops.getStatuses = async (): Promise<AgentStatus[]> => [{
-      name: 'worker-a',
-      status: running ? 'running' : 'stopped',
-      ...(running ? { pid } : {}),
-      uptime: 10,
-    }];
-
-    const result = await runSwitch();
-
-    expect(result.status).toBe('success');
-    expect(result.warnings).toContain('WARN: verified via live probe; post-restart heartbeat not yet fresh at verify time (heavy-boot agent) - corroborator only.');
-  });
-
-  it('fails at the probe gate even when heartbeat is fresh', async () => {
-    ops.hashLiveProcessToken = () => shortTokenHash(currentEnvToken());
-    ops.probeAgent = async () => {
-      const config = JSON.parse(readFileSync(configPath, 'utf-8')) as { usage_account: string };
-      return config.usage_account !== 'moonlight-max';
-    };
-
-    await expect(runSwitch()).rejects.toMatchObject({
-      code: 'inference-probe',
-      rolledBack: true,
-    });
-  });
-
-  it('bounds probe retry at the cap when the agent never answers', async () => {
-    let currentTime = Date.parse('2026-07-09T17:00:00.000Z');
-    let probeCalls = 0;
-    ops.hashLiveProcessToken = () => shortTokenHash(currentEnvToken());
-    ops.probeAgent = async (_agent, _operator, timeoutMs) => {
-      probeCalls += 1;
-      currentTime += timeoutMs;
-      return false;
-    };
-
-    await expect(runSwitch({ nowMs: () => currentTime })).rejects.toMatchObject({
-      code: 'ROLLBACK_VERIFY_FAILED',
-      rolledBack: true,
-    });
-    expect(probeCalls).toBe(2 * Math.ceil(DEFAULT_PROBE_TIMEOUT_MS / DEFAULT_PROBE_RETRY_INTERVAL_MS));
-    expect(DEFAULT_PROBE_RETRY_INTERVAL_MS).toBe(60_000);
-    expect(Math.ceil(DEFAULT_PROBE_TIMEOUT_MS / DEFAULT_PROBE_RETRY_INTERVAL_MS)).toBe(6);
-  });
-
-  it('rescues a heavy boot that answers just within the bounded probe cap', async () => {
-    const maxProbeAttempts = Math.ceil(DEFAULT_PROBE_TIMEOUT_MS / DEFAULT_PROBE_RETRY_INTERVAL_MS);
-    let currentTime = Date.parse('2026-07-09T17:00:00.000Z');
-    let probeCalls = 0;
-    ops.probeAgent = async (_agent, _operator, timeoutMs) => {
-      probeCalls += 1;
-      currentTime += timeoutMs;
-      return probeCalls === maxProbeAttempts;
-    };
-    ops.getStatuses = async (): Promise<AgentStatus[]> => [{
-      name: 'worker-a',
-      status: running ? 'running' : 'stopped',
-      ...(running ? { pid } : {}),
-      uptime: 10,
-      lastHeartbeat: '2026-07-09T17:00:30.000Z',
-    }];
-
-    const result = await runSwitch({ nowMs: () => currentTime });
-
-    expect(result.status).toBe('success');
-    expect(probeCalls).toBe(maxProbeAttempts);
-    expect(result.warnings).toContain('WARN: verified via live probe; post-restart heartbeat not yet fresh at verify time (heavy-boot agent) - corroborator only.');
-  });
-
-  it('terminates probe retry on the first successful echo', async () => {
-    let probeCalls = 0;
-    ops.probeAgent = async () => {
-      probeCalls += 1;
-      return true;
+  // SYMMETRIC PAIR (half 1 - the auto-revert this fix kills): a HEALTHY switch
+  // whose authoritative gates all pass but whose post-restart heartbeat is not yet
+  // fresh (heavy-boot) must return SUCCESS-with-warning and MUST NOT restoreSnapshot.
+  // The other half (an authoritative failure STILL reverts) is the rollback tests
+  // below - together they prove only the probe gate was dropped, not the hard gates.
+  it('a healthy switch with a not-yet-fresh heartbeat succeeds with a warning and does not revert', async () => {
+    let statusCalls = 0;
+    ops.getStatuses = async (): Promise<AgentStatus[]> => {
+      statusCalls += 1;
+      return [{
+        name: 'worker-a',
+        status: running ? 'running' : 'stopped',
+        ...(running ? { pid } : {}),
+        uptime: 10,
+        // no lastHeartbeat -> never fresh within the corroborator window
+      }];
     };
 
     const result = await runSwitch();
 
     expect(result.status).toBe('success');
-    expect(probeCalls).toBe(1);
+    expect(result.warnings.some((w) => w.startsWith('WARN: auth flip verified by env-file') && w.includes('not a failure'))).toBe(true);
+    // the corroborator re-polls (bounded retry), it is not a single check.
+    expect(statusCalls).toBeGreaterThan(2);
+    // no revert: env holds the TARGET token, config holds the target account, and
+    // exactly one stop+start happened (a rollback would add a second stop+start).
+    expect(readFileSync(envPath, 'utf-8')).toContain(TARGET_TOKEN);
+    expect(readFileSync(envPath, 'utf-8')).not.toContain(OLD_TOKEN);
+    expect(JSON.parse(readFileSync(configPath, 'utf-8')).usage_account).toBe('moonlight-max');
+    expect(stopCalls).toEqual(['worker-a']);
+    expect(startCalls).toEqual(['worker-a']);
+  });
+
+  it('a heavy boot that heartbeats within the corroborator window verifies with no warning', async () => {
+    let sawFreshAfter = 0;
+    ops.getStatuses = async (): Promise<AgentStatus[]> => {
+      sawFreshAfter += 1;
+      const base = {
+        name: 'worker-a',
+        status: running ? 'running' : 'stopped',
+        ...(running ? { pid } : {}),
+        uptime: 10,
+      };
+      // Heartbeat is absent until enough polls pass, then observed within window.
+      // Threshold is high enough to land inside the awaitFreshHeartbeat retry loop
+      // regardless of how many status reads preflight/restart consume first.
+      return [sawFreshAfter >= 6 ? { ...base, lastHeartbeat: '2026-07-09T17:00:30.000Z' } : base];
+    };
+
+    const result = await runSwitch();
+
+    expect(result.status).toBe('success');
+    expect(result.warnings.some((w) => w.includes('heartbeat not fresh'))).toBe(false);
   });
 
   it('passes with indeterminate runtime proof when ps env read is restricted but primary gates pass', async () => {
@@ -362,7 +324,7 @@ describe('switch-agent-account', () => {
 
     expect(result.status).toBe('success');
     expect(result.runtimeProof).toBe('indeterminate');
-    expect(result.warnings).toContain('WARN: runtime-token unreadable; attribution via env-file + process-start-postdates-flip + probe, no direct live-token read.');
+    expect(result.warnings).toContain('WARN: runtime-token unreadable; attribution via env-file + process-start-postdates-flip + account attribution, no direct live-token read.');
     expect(readFileSync(envPath, 'utf-8')).toContain(TARGET_TOKEN);
     expect(JSON.parse(readFileSync(configPath, 'utf-8')).usage_account).toBe('moonlight-max');
     expect(stopCalls).toEqual(['worker-a']);
@@ -503,10 +465,13 @@ describe('switch-agent-account', () => {
     writeFileSync(join(workerB, '.env'), `CLAUDE_CODE_OAUTH_TOKEN=${OLD_TOKEN}\n`, { mode: 0o600 });
     atomicWriteSync(join(workerB, 'config.json'), JSON.stringify({ usage_account: 'me-com-max' }, null, 2) + '\n');
     ops.resolveAgentAccount = (dir) => {
+      // worker-b never reflects the flip -> its attribution gate fails, so its
+      // switch reverts and reports 'failed', stopping the batch after it. (The old
+      // probe-driven failure path this replaced no longer exists.)
+      if (dir.includes('worker-b')) return { label: 'me-com-max' };
       const config = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8')) as { usage_account: string };
       return { label: config.usage_account };
     };
-    ops.probeAgent = async (agent) => agent !== 'worker-b';
 
     const result = await switchAllFrom({
       ctxRoot,

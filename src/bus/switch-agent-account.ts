@@ -20,8 +20,14 @@ const DEFAULT_BOOT_VERIFY_WAIT_MS = 40_000;
 // Heavy-boot agents with long session-start checklists can miss 120s by seconds.
 // hbTime >= restartAtMs below still requires a fresh post-restart heartbeat.
 const DEFAULT_HEARTBEAT_WINDOW_MS = 4 * 60_000;
-export const DEFAULT_PROBE_TIMEOUT_MS = 6 * 60_000;
-export const DEFAULT_PROBE_RETRY_INTERVAL_MS = 60_000;
+// Liveness corroborator (warning-only): bounded poll for a fresh post-restart
+// heartbeat before proceeding. This NEVER fails the switch - a heavy-boot agent
+// not yet fresh within this window gets a warning, never a revert. It replaced
+// the old bus round-trip probe, which sent from a session-less (unroutable)
+// operator and so frequently never confirmed a HEALTHY just-restarted agent,
+// false-failing verify and auto-reverting a good switch (the kill-trap class).
+const DEFAULT_HEARTBEAT_CORROBORATE_MS = 90_000;
+const DEFAULT_HEARTBEAT_POLL_MS = 5_000;
 
 export interface SwitchAgentAccountOptions {
   ctxRoot: string;
@@ -66,7 +72,6 @@ interface VerifyInput {
   tokenFingerprint: string;
   restartAtMs: number;
   envFlipMtimeMs: number;
-  operatorAgent: string;
   envPath: string;
 }
 
@@ -238,9 +243,6 @@ export async function switchAgentAccount(options: SwitchAgentAccountOptions): Pr
   const sleepMs = options.sleepMs ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const ops = options.ops;
   const warnings: string[] = [];
-  const probeOperatorAgent = makeSwitchProbeOperatorAgent();
-  validateAgentName(probeOperatorAgent);
-  warnings.push(`INFO: resolved operator agent ${options.operatorAgent}; probe replies use session-less ${probeOperatorAgent}.`);
   const agentDir = join(options.frameworkRoot, 'orgs', options.org, 'agents', options.agent);
   const envPath = join(agentDir, '.env');
   const configPath = join(agentDir, 'config.json');
@@ -284,9 +286,8 @@ export async function switchAgentAccount(options: SwitchAgentAccountOptions): Pr
         tokenFingerprint: target.fingerprint,
         restartAtMs,
         envFlipMtimeMs,
-        operatorAgent: probeOperatorAgent,
         envPath,
-      }, agentDir, options.ctxRoot, ops, nowMs);
+      }, agentDir, options.ctxRoot, ops, nowMs, sleepMs);
       if (!verify.ok) {
         throw new SwitchAgentAccountError(`verify failed at ${verify.gate}: ${verify.reason}`, verify.gate ?? 'VERIFY_FAILED');
       }
@@ -317,9 +318,8 @@ export async function switchAgentAccount(options: SwitchAgentAccountOptions): Pr
             tokenFingerprint: priorFingerprint,
             restartAtMs: rollbackAtMs,
             envFlipMtimeMs: rollbackEnvMtimeMs,
-            operatorAgent: probeOperatorAgent,
             envPath,
-          }, agentDir, options.ctxRoot, ops, nowMs);
+          }, agentDir, options.ctxRoot, ops, nowMs, sleepMs);
           if (!rollbackVerify.ok) {
             throw new SwitchAgentAccountError(
               `switch failed and rollback verification failed at ${rollbackVerify.gate}: ${rollbackVerify.reason}`,
@@ -544,6 +544,7 @@ async function verifySwitched(
   ctxRoot: string,
   ops: SwitchAgentAccountOps,
   nowMs: () => number,
+  sleepMs: (ms: number) => Promise<void>,
 ): Promise<VerifyResult> {
   const statuses = await ops.getStatuses();
   const status = statuses.find((s) => s.name === input.agent);
@@ -576,7 +577,7 @@ async function verifySwitched(
     }
   }
   if (primary === 'indeterminate') {
-    warnings.push('WARN: runtime-token unreadable; attribution via env-file + process-start-postdates-flip + probe, no direct live-token read.');
+    warnings.push('WARN: runtime-token unreadable; attribution via env-file + process-start-postdates-flip + account attribution, no direct live-token read.');
   }
 
   const attribution = ops.resolveAgentAccount(agentDir, ctxRoot);
@@ -584,15 +585,20 @@ async function verifySwitched(
     return { ok: false, gate: 'attribution', reason: `expected ${input.targetAccount}, got ${attribution.label ?? 'unresolved'}`, pid: status.pid, primary };
   }
 
-  const probeOk = await probeAgentWithRetry(input.agent, input.operatorAgent, ops, nowMs);
-  if (!probeOk) return { ok: false, gate: 'inference-probe', reason: 'bus round-trip probe failed', pid: status.pid, primary };
-
-  const hbTime = status.lastHeartbeat ? Date.parse(status.lastHeartbeat) : NaN;
-  const heartbeatFresh = !Number.isNaN(hbTime) &&
-    hbTime >= input.restartAtMs &&
-    nowMs() - hbTime <= DEFAULT_HEARTBEAT_WINDOW_MS;
+  // Switch CORRECTNESS is fully proven by the authoritative gates above (status
+  // running + .env fingerprint==target + process-start postdates the .env flip +
+  // attribution==target + live-token==target when readable) - each still
+  // hard-fails -> rollback on a genuinely bad switch. Liveness is a corroborator
+  // ONLY: bounded-poll for a fresh post-restart heartbeat (routable) and WARN,
+  // never fail, if it is not fresh in the window. The old bus round-trip probe
+  // was dropped - it sent from a session-less (unroutable) operator, so a HEALTHY
+  // just-restarted agent frequently never confirmed within the cap, which
+  // false-failed verify and auto-reverted a good switch (the kill-trap class).
+  const heartbeatFresh = await awaitFreshHeartbeat(input.agent, input.restartAtMs, status.lastHeartbeat, ops, nowMs, sleepMs);
   if (!heartbeatFresh) {
-    warnings.push('WARN: verified via live probe; post-restart heartbeat not yet fresh at verify time (heavy-boot agent) - corroborator only.');
+    warnings.push('WARN: auth flip verified by env-file + process-start-postdates-flip + attribution' +
+      (primary === 'matched' ? ' + live-token' : '') +
+      '; post-restart heartbeat not fresh within the corroborator window (heavy-boot agent) - liveness corroborator pending, not a failure.');
   }
 
   return {
@@ -604,20 +610,32 @@ async function verifySwitched(
   };
 }
 
-async function probeAgentWithRetry(
+// Liveness corroborator: return true as soon as a fresh post-restart heartbeat
+// is observed, else false at the bound. WARNING-ONLY at the call site - a false
+// here never fails the switch. Attempt-capped AND nowMs-deadline-bounded so it
+// terminates under either a moving or a frozen (test) clock; the inter-poll wait
+// uses the injected sleepMs so tests drive it instantly.
+async function awaitFreshHeartbeat(
   agent: string,
-  operatorAgent: string,
+  restartAtMs: number,
+  initialHeartbeat: string | undefined,
   ops: SwitchAgentAccountOps,
   nowMs: () => number,
+  sleepMs: (ms: number) => Promise<void>,
 ): Promise<boolean> {
-  const startedAtMs = nowMs();
-  const deadline = startedAtMs + DEFAULT_PROBE_TIMEOUT_MS;
-  const maxAttempts = Math.max(1, Math.ceil(DEFAULT_PROBE_TIMEOUT_MS / DEFAULT_PROBE_RETRY_INTERVAL_MS));
+  const isFresh = (hb: string | undefined): boolean => {
+    const t = hb ? Date.parse(hb) : NaN;
+    return !Number.isNaN(t) && t >= restartAtMs && nowMs() - t <= DEFAULT_HEARTBEAT_WINDOW_MS;
+  };
+  if (isFresh(initialHeartbeat)) return true;
+  const deadline = nowMs() + DEFAULT_HEARTBEAT_CORROBORATE_MS;
+  const maxAttempts = Math.max(1, Math.ceil(DEFAULT_HEARTBEAT_CORROBORATE_MS / DEFAULT_HEARTBEAT_POLL_MS));
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const remainingMs = Math.max(0, deadline - nowMs());
-    if (remainingMs <= 0) return false;
-    const attemptTimeoutMs = Math.min(DEFAULT_PROBE_RETRY_INTERVAL_MS, remainingMs);
-    if (await ops.probeAgent(agent, operatorAgent, attemptTimeoutMs)) return true;
+    if (nowMs() >= deadline) break;
+    await sleepMs(DEFAULT_HEARTBEAT_POLL_MS);
+    const statuses = await ops.getStatuses();
+    const status = statuses.find((s) => s.name === agent);
+    if (isFresh(status?.lastHeartbeat)) return true;
   }
   return false;
 }
