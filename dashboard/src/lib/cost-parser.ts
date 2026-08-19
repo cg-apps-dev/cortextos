@@ -167,32 +167,50 @@ export function parseAgentProjectDir(
 }
 
 /**
- * Scan ~/.claude/projects/ for JSONL files and parse them.
- * Scoped to the current instance's orgs to prevent cross-instance data bleed.
+ * Resolve every Claude "projects" root to scan. TWO classes:
+ *  - the shared ~/.claude/projects (pre-isolation + any interactive sessions), and
+ *  - each agent's ISOLATED projects dir. Per-agent Claude config isolation (the
+ *    CLI `claude-home`, CLAUDE_CONFIG_DIR) moved each agent's transcripts to
+ *    <ctxRoot>/state/<agent>/claude-home/projects as of ~2026-07. This parser
+ *    previously read ONLY ~/.claude/projects, so once agents were isolated their
+ *    transcripts stopped being ingested (the Claude-side cost freeze ~07-12)
+ *    while codex (its own <ctxRoot>/logs path) kept working. We walk the agent
+ *    registry (same source as scanCodexLogsCosts) to add the isolated roots.
  *
- * Observability (silent-failure class, cf. #459): directory-read and per-file
- * parse errors are logged, not swallowed, and a skip summary is logged so an
- * empty result can never silently masquerade as "no usage".
+ * Assumes the default claude-home location (<ctxRoot>/state/<agent>/claude-home).
+ * A non-default CLAUDE_CONFIG_DIR override would need per-agent .env resolution;
+ * all current agents use the default, matching scanCodexLogsCosts' fixed path.
  */
-export function scanClaudeProjectsCosts(): CostEntry[] {
-  const claudeDir = path.join(os.homedir(), '.claude', 'projects');
-  if (!fs.existsSync(claudeDir)) return [];
+function claudeProjectsRoots(): string[] {
+  const roots = [path.join(os.homedir(), '.claude', 'projects')];
+  const pairs = getAllAgents();
+  const names = pairs.length > 0
+    ? pairs.map((p) => p.name)
+    : getOrgs().flatMap((org) => getAgentsForOrg(org));
+  for (const name of names) {
+    roots.push(path.join(CTX_ROOT, 'state', name, 'claude-home', 'projects'));
+  }
+  return Array.from(new Set(roots));
+}
 
-  const allowedOrgs = new Set(getOrgs());
-  // Also allow the instance ID itself as a fallback org label
-  const instanceId = process.env.CTX_INSTANCE_ID ?? 'default';
-  allowedOrgs.add(instanceId);
+/**
+ * Scan ONE Claude "projects" root for agent JSONL transcripts. Extracted so the
+ * shared root and every isolated per-agent root run identical decode + org-scope
+ * logic. Errors are logged, never swallowed (silent-failure class, cf. #459).
+ */
+function scanClaudeProjectsRoot(
+  projectsRoot: string,
+  allowedOrgs: Set<string>,
+  note: (reason: string) => void,
+): CostEntry[] {
+  if (!fs.existsSync(projectsRoot)) return [];
 
   const allEntries: CostEntry[] = [];
-  // Track WHY agent-looking dirs were skipped, so empty results are diagnosable.
-  const skips: Record<string, number> = {};
-  const note = (reason: string) => { skips[reason] = (skips[reason] ?? 0) + 1; };
-
   let projectDirs: fs.Dirent[];
   try {
-    projectDirs = fs.readdirSync(claudeDir, { withFileTypes: true });
+    projectDirs = fs.readdirSync(projectsRoot, { withFileTypes: true });
   } catch (err) {
-    console.warn(`[cost-parser] cannot read ${claudeDir}: ${(err as Error).message}`);
+    console.warn(`[cost-parser] cannot read ${projectsRoot}: ${(err as Error).message}`);
     return [];
   }
 
@@ -208,7 +226,7 @@ export function scanClaudeProjectsCosts(): CostEntry[] {
     // Scope to current instance's orgs — prevent cross-instance bleed
     if (!allowedOrgs.has(orgName)) { note(`org not allowed: ${orgName}`); continue; }
 
-    const projectPath = path.join(claudeDir, dir.name);
+    const projectPath = path.join(projectsRoot, dir.name);
     let files: string[];
     try {
       files = fs.readdirSync(projectPath).filter((f) => f.endsWith('.jsonl'));
@@ -224,6 +242,30 @@ export function scanClaudeProjectsCosts(): CostEntry[] {
         console.warn(`[cost-parser] failed parsing ${path.join(projectPath, file)}: ${(err as Error).message}`);
       }
     }
+  }
+
+  return allEntries;
+}
+
+/**
+ * Scan every Claude "projects" root (shared + per-agent isolated) for JSONL and
+ * parse them. Scoped to the current instance's orgs to prevent cross-instance
+ * bleed. A per-session transcript lives under exactly one root, so aggregating
+ * across roots does not double-count (and the DB dedup keys on source_file too).
+ */
+export function scanClaudeProjectsCosts(): CostEntry[] {
+  const allowedOrgs = new Set(getOrgs());
+  // Also allow the instance ID itself as a fallback org label
+  const instanceId = process.env.CTX_INSTANCE_ID ?? 'default';
+  allowedOrgs.add(instanceId);
+
+  const allEntries: CostEntry[] = [];
+  // Track WHY agent-looking dirs were skipped, so empty results are diagnosable.
+  const skips: Record<string, number> = {};
+  const note = (reason: string) => { skips[reason] = (skips[reason] ?? 0) + 1; };
+
+  for (const root of claudeProjectsRoots()) {
+    allEntries.push(...scanClaudeProjectsRoot(root, allowedOrgs, note));
   }
 
   const skipSummary = Object.entries(skips).map(([r, n]) => `${r} ×${n}`).join('; ');
@@ -465,6 +507,93 @@ export function persistCostEntries(entries: CostEntry[]): number {
 }
 
 /**
+ * Newest transcript-source file mtime (ms) for an agent across BOTH its isolated
+ * claude-home projects and its codex log, or null if the agent has no source.
+ * Used by the staleness watch to answer "does fresh source data exist?".
+ */
+function newestSourceMtimeMs(name: string): number | null {
+  let newest: number | null = null;
+  const consider = (p: string) => {
+    try {
+      const m = fs.statSync(p).mtimeMs;
+      if (newest === null || m > newest) newest = m;
+    } catch { /* missing file — not a source */ }
+  };
+
+  consider(path.join(CTX_ROOT, 'logs', name, 'codex-tokens.jsonl'));
+
+  const projRoot = path.join(CTX_ROOT, 'state', name, 'claude-home', 'projects');
+  try {
+    for (const dir of fs.readdirSync(projRoot, { withFileTypes: true })) {
+      if (!dir.isDirectory()) continue;
+      const dp = path.join(projRoot, dir.name);
+      try {
+        for (const f of fs.readdirSync(dp)) {
+          if (f.endsWith('.jsonl')) consider(path.join(dp, f));
+        }
+      } catch { /* unreadable project dir */ }
+    }
+  } catch { /* no isolated projects dir */ }
+
+  return newest;
+}
+
+export interface IngestionStaleness {
+  agent: string;
+  sourceMtime: string;
+  newestEntry: string | null;
+}
+
+/**
+ * PER-SOURCE ingestion-staleness watch — the durable half of the isolated-
+ * transcript fix. For each agent whose transcript source was written recently,
+ * flag it if its newest cost_entry is much older (or absent): fresh source +
+ * stale ledger == ingestion is silently failing for that agent.
+ *
+ * PER-SOURCE on purpose: a single global "newest cost_entry" freshness check
+ * missed the ~07-12 Claude-side freeze for a MONTH, because one still-ingesting
+ * codex agent kept the aggregate newest current. Warning-only (never blocks a
+ * sync); LOUD so a silent path-orphaning of this class surfaces in days.
+ */
+export function checkCostIngestionStaleness(nowMs: number = Date.now()): IngestionStaleness[] {
+  const STALE_MS = 48 * 60 * 60 * 1000;
+  const stale: IngestionStaleness[] = [];
+
+  const pairs = getAllAgents();
+  const names = pairs.length > 0
+    ? pairs.map((p) => p.name)
+    : getOrgs().flatMap((org) => getAgentsForOrg(org));
+
+  for (const name of names) {
+    const sourceMtimeMs = newestSourceMtimeMs(name);
+    if (sourceMtimeMs === null) continue;               // no source → nothing to ingest
+    if (nowMs - sourceMtimeMs > STALE_MS) continue;     // source itself is old → agent just quiet
+
+    const row = db
+      .prepare('SELECT MAX(timestamp) AS newest FROM cost_entries WHERE agent = ?')
+      .get(name) as { newest: string | null } | undefined;
+    const newestEntry = row?.newest ?? null;
+    const newestEntryMs = newestEntry ? Date.parse(newestEntry) : NaN;
+
+    if (Number.isNaN(newestEntryMs) || sourceMtimeMs - newestEntryMs > STALE_MS) {
+      stale.push({
+        agent: name,
+        sourceMtime: new Date(sourceMtimeMs).toISOString(),
+        newestEntry,
+      });
+    }
+  }
+
+  if (stale.length > 0) {
+    console.warn(
+      `[cost-parser] INGESTION-STALENESS ALARM: ${stale.length} agent(s) have FRESH transcripts but STALE/absent cost_entries — ingestion likely broken for: ${stale.map((s) => s.agent).join(', ')}`,
+    );
+  }
+
+  return stale;
+}
+
+/**
  * Full sync: scan claude JSONL + codex JSONL files and persist to DB.
  *
  * Dedup contract: an (agent, model, source_file, timestamp) tuple from claude
@@ -474,7 +603,7 @@ export function persistCostEntries(entries: CostEntry[]): number {
  * union explicitly so any future overlap (e.g., a codex agent that also gets
  * scanned through claude's projects dir) does not double-count.
  */
-export function syncCosts(): { scanned: number; inserted: number } {
+export function syncCosts(): { scanned: number; inserted: number; stale: IngestionStaleness[] } {
   const claudeEntries = scanClaudeProjectsCosts();
   const codexEntries = scanCodexLogsCosts();
 
@@ -488,7 +617,8 @@ export function syncCosts(): { scanned: number; inserted: number } {
   }
 
   const inserted = merged.length > 0 ? persistCostEntries(merged) : 0;
-  return { scanned: merged.length, inserted };
+  const stale = checkCostIngestionStaleness();
+  return { scanned: merged.length, inserted, stale };
 }
 
 // ---------------------------------------------------------------------------
