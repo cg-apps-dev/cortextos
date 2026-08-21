@@ -1028,6 +1028,15 @@ interface AccountAlertState {
   seven_d_pending: boolean; // saw ONE over-read; awaiting a 2nd consecutive to confirm
   extra_enabled: boolean;   // last-seen: extra-usage meter enabled
   extra_credits: number;    // last-seen: credits (for rise detection)
+  // Extra-usage RISING dedup — state-change (not per-poll) semantics. All optional
+  // so a pre-fix state file (or a fresh account) reads them undefined = "not rising",
+  // which makes the first post-land poll during a live rise fire exactly ONE onset.
+  extra_rising?: boolean;          // currently in a rising regime (onset already fired)
+  extra_rise_onset_at?: string;    // when the current rise began (ISO)
+  extra_rise_onset_credits?: number; // credits at onset (summary baseline)
+  extra_summary_at?: string;       // last hourly-summary emission (ISO)
+  extra_rise_rate?: number;        // baseline rise rate (credits/hr) for regime-jump detection
+  extra_milestone?: number;        // last credit-milestone index alerted
   scoped_limits?: Record<string, ScopedLimit['severity']>; // last-seen model-scoped weekly severity
   fetch_failing: boolean;   // last-seen: fetch failing (monitoring blind)
   fail_consecutive?: number; // consecutive ok:false reads in the current episode
@@ -1046,6 +1055,15 @@ const SEVEN_DAY_RISE_SUSPECT_POINTS = 30;
 const SEVEN_DAY_ZERO_DROP_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 const RECENT_BURN_WINDOW_HOURS = 24;
 const RECENT_BURN_SUSPECT_USD = 1;
+// Extra-usage RISING alert dedup (state-change, not per-poll). While credits keep
+// rising we fire once on onset, then at most an hourly summary, plus re-fires on a
+// credit-milestone crossing or a large rate-regime jump. All re-fire paths only ADD
+// an alert, so the failure direction is noise (safe); the guarded direction is a
+// missed NEW onset, covered by onset-default + clear-on-static.
+const EXTRA_SUMMARY_INTERVAL_MS = 60 * 60_000; // hourly summary cadence while rising
+const EXTRA_MILESTONE_CREDITS = 1000;          // re-fire each time credits cross a 1000 boundary
+const EXTRA_RATE_REGIME_MULT = 5;              // re-fire on a >=5x jump in rise rate
+const EXTRA_RATE_REGIME_MIN = 100;             // ...only when the baseline rate (credits/hr) is meaningful — avoids 5x-of-jitter noise
 
 export interface RecentAccountBurn {
   usd: number;
@@ -1448,6 +1466,12 @@ export function evaluateAlerts(
     const extraReadable = u.extra_usage !== undefined;
     const enabled = u.extra_usage?.is_enabled === true;
     const credits = u.extra_usage?.used_credits ?? 0;
+    // clearRising defaults to extraReadable: any READABLE non-rising cycle (enable/
+    // disable edge, flat, or a drop/reset) CLEARS the rising latch below — the never-
+    // latch guarantee, so a NEW onset after a quiet gap re-fires. Only the RISING
+    // branch keeps it set. An UNreadable cycle (transient missing block) carries the
+    // latch, matching the baseline-carry below so a 1-cycle blip does not false re-onset.
+    let clearRising = extraReadable;
     if (extraReadable) {
       if (enabled && !prev.extra_enabled) {
         alerts.push(
@@ -1458,8 +1482,54 @@ export function evaluateAlerts(
       } else if (!enabled && prev.extra_enabled) {
         alerts.push(`EXTRA-USAGE ${who}: DISABLED (was at ${prev.extra_credits} credits) - meter walled off`);
       } else if (enabled && prev.extra_enabled && credits > prev.extra_credits) {
-        alerts.push(`EXTRA-USAGE ${who}: credits RISING ${prev.extra_credits} -> ${credits} (delta +${credits - prev.extra_credits} since ${ptTime(prev.at)}) (silent billing ACTIVE)`);
+        // RISING. Dedup on STATE, not the (ever-changing) string: fire ONCE on onset,
+        // then suppress per-poll and emit at most an hourly summary; re-fire only on a
+        // credit-milestone crossing or a large rate-regime jump. Every re-fire path only
+        // ADDS an alert (failure = noise, safe); the guarded direction (a missed onset)
+        // rests on the onset default + clear-on-static.
+        clearRising = false;
+        const dtMs = Math.max(1, Date.parse(now) - Date.parse(prev.at));
+        const rate = (credits - prev.extra_credits) / (dtMs / 3_600_000); // credits/hr this poll
+        if (!prev.extra_rising) {
+          // ONSET (STATIC -> RISING). Also the mid-rise LAND case: a pre-fix state file
+          // has no extra_rising, so the first post-land poll during a live rise fires
+          // exactly ONE onset here, then goes quiet — expected, not a bug.
+          alerts.push(`EXTRA-USAGE ${who}: credits RISING (onset) ${prev.extra_credits} -> ${credits} (+${credits - prev.extra_credits} since ${ptTime(prev.at)}) (silent billing ACTIVE; per-poll suppressed, hourly summary to follow)`);
+          next.extra_rising = true;
+          next.extra_rise_onset_at = now;
+          next.extra_rise_onset_credits = prev.extra_credits;
+          next.extra_summary_at = now;
+          next.extra_rise_rate = rate;
+          next.extra_milestone = Math.floor(credits / EXTRA_MILESTONE_CREDITS);
+        } else {
+          // CONTINUE rising: per-poll fire SUPPRESSED. next = {...prev} already carries
+          // the onset/summary/rate/milestone state; update only on a trigger.
+          const summaryAt = Date.parse(prev.extra_summary_at ?? prev.at);
+          if (Date.parse(now) - summaryAt >= EXTRA_SUMMARY_INTERVAL_MS) {
+            const onsetCredits = prev.extra_rise_onset_credits ?? prev.extra_credits;
+            alerts.push(`EXTRA-USAGE ${who}: credits still RISING - now ${credits} (+${credits - onsetCredits} since onset ${ptTime(prev.extra_rise_onset_at ?? prev.at)}) (hourly summary)`);
+            next.extra_summary_at = now;
+          }
+          const milestone = Math.floor(credits / EXTRA_MILESTONE_CREDITS);
+          if (milestone > (prev.extra_milestone ?? milestone)) {
+            alerts.push(`EXTRA-USAGE ${who}: credits crossed ${milestone * EXTRA_MILESTONE_CREDITS} (now ${credits}, silent billing)`);
+            next.extra_milestone = milestone;
+          }
+          const baseline = prev.extra_rise_rate ?? rate;
+          if (baseline >= EXTRA_RATE_REGIME_MIN && rate >= EXTRA_RATE_REGIME_MULT * baseline) {
+            alerts.push(`EXTRA-USAGE ${who}: burn RATE jumped to ~${Math.round(rate)}/hr from ~${Math.round(baseline)}/hr (now ${credits} credits)`);
+            next.extra_rise_rate = rate;
+          }
+        }
       }
+    }
+    if (clearRising) {
+      next.extra_rising = false;
+      next.extra_rise_onset_at = undefined;
+      next.extra_rise_onset_credits = undefined;
+      next.extra_summary_at = undefined;
+      next.extra_rise_rate = undefined;
+      next.extra_milestone = undefined;
     }
     // enabled + flat, or persistently disabled -> quiet.
     next.extra_enabled = extraReadable ? enabled : prev.extra_enabled;

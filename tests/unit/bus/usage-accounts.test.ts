@@ -476,14 +476,15 @@ describe('usage-accounts', () => {
       expect(second.alerts).toEqual([]);
     });
 
-    it('extra-usage: RISE edge fires with burn-rate delta + PT time', () => {
-      const { alerts } = evaluateAlerts(
+    it('extra-usage: RISE ONSET fires once with delta + PT time and sets the rising latch', () => {
+      const { alerts, nextState } = evaluateAlerts(
         [{ ...base, extra_usage: { is_enabled: true, used_credits: 12 } }],
         st({ extra_enabled: true, extra_credits: 7 }), NOW,
       );
-      expect(alerts[0]).toContain('RISING 7 -> 12');
-      expect(alerts[0]).toContain('delta +5 since');
+      expect(alerts[0]).toContain('RISING (onset) 7 -> 12');
+      expect(alerts[0]).toContain('+5 since');
       expect(alerts[0]).toContain('PT');
+      expect(nextState.a.extra_rising).toBe(true);
     });
 
     it('extra-usage: DISABLE edge fires once (meter walled off)', () => {
@@ -493,6 +494,78 @@ describe('usage-accounts', () => {
       );
       expect(alerts.some(a => a.includes('DISABLED') && a.includes('537155'))).toBe(true);
       expect(nextState.a.extra_enabled).toBe(false);
+    });
+
+    // Extra-usage RISING dedup: state-change, not per-poll. The old code fired on every
+    // poll while credits rose (and the job-script string-dedup could never match because
+    // the string embeds the changing credit numbers) — a self-sustaining alert loop.
+    const meRise = (used_credits: number) => ({ ...base, extra_usage: { is_enabled: true, used_credits } });
+    const extraOf = (alerts: string[]) => alerts.filter(a => a.includes('EXTRA-USAGE'));
+
+    it('extra-usage: SUPPRESSES the per-poll RISING fire while the rise continues', () => {
+      const c1 = evaluateAlerts([meRise(100)], st({ extra_enabled: true, extra_credits: 50 }), '2026-06-11T02:05:00.000Z');
+      expect(extraOf(c1.alerts)).toHaveLength(1);
+      expect(c1.alerts[0]).toContain('onset');
+      const c2 = evaluateAlerts([meRise(150)], c1.nextState, '2026-06-11T02:10:00.000Z');
+      expect(extraOf(c2.alerts)).toEqual([]); // still rising, but suppressed
+      expect(c2.nextState.a.extra_rising).toBe(true);
+    });
+
+    it('extra-usage: emits an HOURLY summary while rising, then suppresses again (summary is not a latch)', () => {
+      const c1 = evaluateAlerts([meRise(100)], st({ extra_enabled: true, extra_credits: 50 }), '2026-06-11T02:05:00.000Z');
+      const c2 = evaluateAlerts([meRise(900)], c1.nextState, '2026-06-11T03:06:00.000Z'); // +61min
+      const e2 = extraOf(c2.alerts);
+      expect(e2).toHaveLength(1);
+      expect(e2[0]).toContain('hourly summary');
+      expect(e2[0]).toContain('since onset');
+      const c3 = evaluateAlerts([meRise(950)], c2.nextState, '2026-06-11T03:11:00.000Z'); // +5min, <1h since summary
+      expect(extraOf(c3.alerts)).toEqual([]);
+    });
+
+    it('extra-usage: CLEARS on static then RE-FIRES onset on a new rise (never-latch)', () => {
+      const c1 = evaluateAlerts([meRise(100)], st({ extra_enabled: true, extra_credits: 50 }), '2026-06-11T02:05:00.000Z');
+      expect(c1.alerts[0]).toContain('onset');
+      const c2 = evaluateAlerts([meRise(100)], c1.nextState, '2026-06-11T02:10:00.000Z'); // flat -> clears latch
+      expect(extraOf(c2.alerts)).toEqual([]);
+      expect(c2.nextState.a.extra_rising).toBe(false);
+      const c3 = evaluateAlerts([meRise(130)], c2.nextState, '2026-06-11T02:15:00.000Z'); // rises again -> NEW onset
+      const e3 = extraOf(c3.alerts);
+      expect(e3).toHaveLength(1);
+      expect(e3[0]).toContain('onset');
+    });
+
+    it('extra-usage: MID-RISE LAND fires exactly ONE onset then quiet (pre-fix state has no extra_rising)', () => {
+      // The fix landing mid-rise: prev (pre-fix) state has extra_enabled+credits but no
+      // extra_rising, so the first post-land poll onsets once — expected, not a bug.
+      const c1 = evaluateAlerts([meRise(5000)], st({ extra_enabled: true, extra_credits: 4930 }), '2026-06-11T02:05:00.000Z');
+      expect(extraOf(c1.alerts)).toHaveLength(1);
+      expect(c1.alerts[0]).toContain('onset');
+      expect(c1.nextState.a.extra_rising).toBe(true);
+      const c2 = evaluateAlerts([meRise(5070)], c1.nextState, '2026-06-11T02:10:00.000Z');
+      expect(extraOf(c2.alerts)).toEqual([]);
+    });
+
+    it('extra-usage: RE-FIRES on a credit-milestone crossing while rising', () => {
+      const c1 = evaluateAlerts([meRise(1950)], st({ extra_enabled: true, extra_credits: 1900 }), '2026-06-11T02:05:00.000Z');
+      expect(c1.alerts[0]).toContain('onset');
+      const c2 = evaluateAlerts([meRise(2010)], c1.nextState, '2026-06-11T02:10:00.000Z'); // crosses 2000
+      const e2 = extraOf(c2.alerts);
+      expect(e2).toHaveLength(1);
+      expect(e2[0]).toContain('crossed 2000');
+    });
+
+    it('extra-usage: RE-FIRES on a >=5x rate-regime jump while rising', () => {
+      const c1 = evaluateAlerts([meRise(100)], st({ extra_enabled: true, extra_credits: 50 }), '2026-06-11T02:05:00.000Z'); // ~600/hr
+      const c2 = evaluateAlerts([meRise(600)], c1.nextState, '2026-06-11T02:10:00.000Z'); // ~6000/hr = 10x
+      expect(extraOf(c2.alerts).some(a => a.includes('RATE jumped'))).toBe(true);
+    });
+
+    it('extra-usage: a credit DROP (reset) clears the rising latch and does not fire RISING', () => {
+      const c1 = evaluateAlerts([meRise(5000)], st({ extra_enabled: true, extra_credits: 4900 }), '2026-06-11T02:05:00.000Z');
+      expect(c1.nextState.a.extra_rising).toBe(true);
+      const c2 = evaluateAlerts([meRise(0)], c1.nextState, '2026-06-11T02:10:00.000Z'); // Sunday reset drop
+      expect(c2.alerts.filter(a => a.includes('RISING'))).toEqual([]);
+      expect(c2.nextState.a.extra_rising).toBe(false);
     });
 
     // Regression: the me-com phantom-464 bug. A NEVER-metered account whose
@@ -535,7 +608,7 @@ describe('usage-accounts', () => {
         [{ ...base, extra_usage: { is_enabled: true, used_credits: 130 } }],
         c2.nextState, NOW,
       );
-      expect(c3b.alerts.some(a => a.includes('RISING 100 -> 130'))).toBe(true);
+      expect(c3b.alerts.some(a => a.includes('RISING (onset) 100 -> 130'))).toBe(true);
     });
 
     // A genuine fetch-fail (u.ok=false) is carried wholesale ABOVE the extra
