@@ -568,6 +568,33 @@ describe('usage-accounts', () => {
       expect(c2.nextState.a.extra_rising).toBe(false);
     });
 
+    // Straddle regression (security review of ffdac320): a blind gap that spans a
+    // static->rising boundary must NOT swallow the new onset. A blind cycle breaks
+    // rising-continuity so the resumed rise RE-ONSETS (safe: at most one duplicate).
+    it('extra-usage: RE-ONSETS after a FETCH-FAIL blind gap straddling a rise (no swallowed onset)', () => {
+      const c1 = evaluateAlerts([meRise(100)], st({ extra_enabled: true, extra_credits: 50 }), '2026-06-11T02:05:00.000Z');
+      expect(c1.alerts[0]).toContain('onset');
+      expect(c1.nextState.a.extra_rising).toBe(true);
+      const c2 = evaluateAlerts([{ account: 'a', ok: false, error: 'net', fetched_at: '2026-06-11T02:10:00.000Z' }], c1.nextState, '2026-06-11T02:10:00.000Z');
+      expect(c2.nextState.a.extra_rising).toBe(false); // blind cycle broke continuity
+      const c3 = evaluateAlerts([meRise(130)], c2.nextState, '2026-06-11T02:15:00.000Z');
+      const e3 = extraOf(c3.alerts);
+      expect(e3).toHaveLength(1);
+      expect(e3[0]).toContain('onset'); // re-onset, NOT swallowed
+    });
+
+    it('extra-usage: RE-ONSETS after a multi-cycle extra_usage-absent blind gap straddling a rise', () => {
+      const c1 = evaluateAlerts([meRise(100)], st({ extra_enabled: true, extra_credits: 50 }), '2026-06-11T02:05:00.000Z');
+      expect(c1.nextState.a.extra_rising).toBe(true);
+      const c2 = evaluateAlerts([{ ...base }], c1.nextState, '2026-06-11T02:10:00.000Z'); // extra_usage absent
+      const c3 = evaluateAlerts([{ ...base }], c2.nextState, '2026-06-11T02:15:00.000Z'); // still absent
+      expect(c3.nextState.a.extra_rising).toBe(false);
+      const c4 = evaluateAlerts([meRise(130)], c3.nextState, '2026-06-11T02:20:00.000Z');
+      const e4 = extraOf(c4.alerts);
+      expect(e4).toHaveLength(1);
+      expect(e4[0]).toContain('onset');
+    });
+
     // Regression: the me-com phantom-464 bug. A NEVER-metered account whose
     // response carries no extra_usage block (fetch-OK, extra_usage:None) used to
     // carry a stale prev.extra_credits forever via `enabled ? credits : prev`.

@@ -1405,6 +1405,15 @@ export function evaluateAlerts(
       }
       next.fetch_failing = true;
       next.fail_consecutive = failConsecutive;
+      // A blind cycle breaks rising-continuity: clear the latch so a rise that resumes
+      // after the blackout RE-ONSETS (safe: at most a duplicate) instead of being
+      // swallowed by a still-true latch (a missed onset). See the clearRising note below.
+      next.extra_rising = false;
+      next.extra_rise_onset_at = undefined;
+      next.extra_rise_onset_credits = undefined;
+      next.extra_summary_at = undefined;
+      next.extra_rise_rate = undefined;
+      next.extra_milestone = undefined;
       nextState[u.account] = next;
       continue;
     }
@@ -1466,12 +1475,16 @@ export function evaluateAlerts(
     const extraReadable = u.extra_usage !== undefined;
     const enabled = u.extra_usage?.is_enabled === true;
     const credits = u.extra_usage?.used_credits ?? 0;
-    // clearRising defaults to extraReadable: any READABLE non-rising cycle (enable/
-    // disable edge, flat, or a drop/reset) CLEARS the rising latch below — the never-
-    // latch guarantee, so a NEW onset after a quiet gap re-fires. Only the RISING
-    // branch keeps it set. An UNreadable cycle (transient missing block) carries the
-    // latch, matching the baseline-carry below so a 1-cycle blip does not false re-onset.
-    let clearRising = extraReadable;
+    // clearRising defaults TRUE: any non-rising cycle CLEARS the rising latch below —
+    // enable/disable edge, flat, drop/reset, OR an extra_usage-absent (blind) cycle.
+    // Only the RISING branch keeps it set. Clearing on a blind cycle is deliberate and
+    // in the SAFE direction: it costs at most ONE duplicate onset when a rise resumes
+    // after a blind gap (noise), and it CANNOT swallow a genuine new onset. Carrying the
+    // latch through a blind period (the earlier design) inverted the fail-direction —
+    // a multi-cycle blind lull that straddled a static->rising boundary silently ate the
+    // new onset (security review of ffdac320). miss >> noise, so we clear. Fetch-FAIL
+    // cycles early-continue above and clear the latch there for the same reason.
+    let clearRising = true;
     if (extraReadable) {
       if (enabled && !prev.extra_enabled) {
         alerts.push(
