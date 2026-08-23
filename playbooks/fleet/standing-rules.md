@@ -898,3 +898,11 @@ Ratified 2026-08-21 PT (directed by the-orchestrator, draft approved as written;
 **Scope.** ANY agent with a contracted emit - a killed run leaving a dark register is generic, not meta-ads-specific.
 
 **Paired half - the detection side (the-analyst, same thread).** This rule PREVENTS the gap; the-analyst's absence-explained watchdog principle CATCHES it when prevention fails: a liveness check must ask BOTH did-the-beat-fire AND was-its-absence-explained - an unexplained dark register alarms, an honestly-labeled late make-up does not. Together they close the class in both directions: the runner fires the make-up emit on recovery-close, and the watcher distinguishes "never ran" from "ran, emit was late but labeled." Do not rely on either half alone - prevention without detection silently fails on the run that skips the make-up; detection without prevention alarms on every killed run forever.
+
+## Standing rule: a [DEV]-tagged task is filed with --assignee claude-dev-agent, whoever files it
+
+Ratified 2026-08-23 PT (the-orchestrator, from the weekly-sweep dedup finding; carried by the-sop-keeper). A task-filing convention: it governs how ANY agent creates a task, so it lives in this fleet-wide rule surface (canonical); the tasks skill is the consuming lane.
+
+**Rule.** Any task tagged `[DEV]` implies `--assignee claude-dev-agent` AT FILE TIME, regardless of which agent files it. A `[DEV]` task filed into the filer's own queue (or left unassigned) is INVISIBLE to the devs' assignee-scoped sweep - so the dev work is untracked by the people who actually do it. Set the assignee at creation; do NOT rely on a later triage pass to catch strays.
+
+**Why (origin).** 2026-08-23 weekly-sweep dedup: of 11 meta-ads `[DEV]` items, 4 were double-filed and 7 were untracked dev-side - all because `[DEV]` work landed in the filer's own queue instead of claude-dev-agent's assignee-scoped view. The convention prevents the invisibility at CREATION; the-orchestrator enforces it at triage as the backstop for any stray that slips through, not as the primary mechanism (prevent-at-source beats catch-at-triage - a stray only surfaces if a sweep happens to run before the work is needed).
