@@ -20,6 +20,8 @@ Every significant piece of work must have a corresponding task. Tasks enable coo
 cortextos bus create-task "<title>" --desc "<description>" [--assignee <agent>] [--priority <p>] [--project <name>]
 ```
 
+**Filing rule for a `[DEV]` tag:** file it with `--assignee claude-dev-agent`, whoever files it - a `[DEV]` task left in the filer's own queue is invisible to the devs' assignee-scoped sweep. Fleet standing-rule (canonical text there).
+
 ### 2. Mark in progress
 ```bash
 cortextos bus update-task <task_id> in_progress
