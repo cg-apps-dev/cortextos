@@ -138,6 +138,25 @@ cortextos bus send-telegram $CTX_TELEGRAM_CHAT_ID "Skill activated: [skill-name]
 cortextos bus ack-inbox [msg_id]
 ```
 
+#### Sync back to version control (required)
+
+Activation only moved the skill into this agent's `.claude/skills/[skill-name]/`, which is **gitignored** - a deployed dist copy that lives in no committed history. The obligation is a routing one: **an activated skill must not be silently lost.** Until its code is homed in tracked git, a re-provision or fresh spawn drops it.
+
+Route by scope:
+
+- **Generalizable skill (the default)** - sync to the template source, which every new agent inherits:
+  - Claude agents: `templates/agent/.claude/skills/[skill-name]/`
+  - Codex agents: `templates/agent-codex/plugins/cortextos-agent-skills/skills/[skill-name]/`
+- **Truly agent-bespoke skill** - do NOT invent a per-agent tracked home. Flag the-orchestrator; placement is decided at the first real instance.
+
+Agents cannot self-commit template source (load-bearing, reviewed), so route the sync-back - do not skip this:
+
+```bash
+cortextos bus send-message the-sop-keeper normal "Sync-back: activated skill [skill-name] needs homing. Scope: [generalizable|bespoke]. Live copy at .claude/skills/[skill-name]/ (agent: $CTX_AGENT_NAME)."
+```
+
+the-sop-keeper lands generalizable skills in the template source via a reviewed docs branch (the-orchestrator merges); bespoke skills are surfaced to the-orchestrator for placement. The skill is only **done** - durable across re-provisions - once its code exists in committed git, not when it activates locally. (Skill-code VC model: dev's 2026-08-24 ruling, close of task_1783854617968.)
+
 ### Rejected
 
 ```bash
