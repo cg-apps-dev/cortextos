@@ -15,6 +15,7 @@ The orchestrator's recurring chase on things waiting for Adam: pending approvals
 
 1. **Pending approvals**: `cortextos bus list-approvals --format json` - for any approval pending older than 1h, send Adam a Telegram reminder.
 2. **[HUMAN] tasks**: `cortextos bus list-tasks --status pending --format json | jq 'map(select(.project=="human-tasks"))'` - for any [HUMAN] task pending >4h, send Adam a Telegram reminder with the title and what's blocked.
+   - **Triage, do not just remind**: each cycle, convert 1-2 CARRIED items with a cheap owner-routed premise-check instead of re-copying them. This cron is the primary executor of the fleet method - see [owner-premise-check-triage.md](../fleet/owner-premise-check-triage.md).
 3. **ACK** any approval/human-task inbox messages.
 
 ## The two mechanisms (fleet-wide)
