@@ -22,6 +22,7 @@ import { execFile } from 'child_process';
 const DEDUP_WINDOW_MS = 10 * 60 * 1000;         // 10 minutes
 const QUIET_HOUR_START_LA = 22;                 // 22:00 America/Los_Angeles
 const QUIET_HOUR_END_LA = 7;                    // 07:00 America/Los_Angeles
+const CRASH_REASON_WINDOW_MS = 10_000;           // restart marker must belong to this SessionEnd
 
 // End types that are routine and should be suppressed during quiet hours.
 // "crash" is deliberately NOT in this list — a genuine unexpected crash at
@@ -171,22 +172,44 @@ export function buildCrashLogEventArgs(opts: {
   })];
 }
 
-export function readLatestCrashReason(logDir: string, endType: string, fallback: string): string {
+export function readLatestCrashReason(logDir: string, endType: string, fallback: string, crashAt: Date = new Date()): string {
   if (endType !== 'crash') return fallback;
 
+  let reason = fallback;
+  let matchedCurrentCrash = false;
   try {
     const restartsLog = readFileSync(join(logDir, 'restarts.log'), 'utf-8');
     const lines = restartsLog.trim().split(/\r?\n/).reverse();
     const line = lines.find((entry) =>
-      /\] (CRASH|HALTED|CRASH_LOOP|IMAGE_POISON_RECOVERY): /.test(entry),
+      {
+        const m = entry.match(/^\[([^\]]+)\] (CRASH|HALTED|CRASH_LOOP|IMAGE_POISON_RECOVERY): (.+)$/);
+        if (!m) return false;
+        const entryTime = Date.parse(m[1]);
+        if (!Number.isFinite(entryTime)) return false;
+        return Math.abs(crashAt.getTime() - entryTime) <= CRASH_REASON_WINDOW_MS;
+      },
     );
-    if (!line) return fallback;
-    const match = line.match(/\] ([A-Z_]+): (.+)$/);
-    if (!match) return fallback;
-    return `${match[1]} ${match[2]}`;
-  } catch {
-    return fallback;
-  }
+    const match = line?.match(/^\[[^\]]+\] ([A-Z_]+): (.+)$/);
+    if (match) {
+      reason = `${match[1]} ${match[2]}`;
+      matchedCurrentCrash = true;
+    }
+  } catch { /* keep fallback */ }
+
+  try {
+    const stderrTail = readFileSync(join(logDir, 'stderr.log'), 'utf-8')
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(-3)
+      .join(' | ')
+      .slice(0, 500);
+    if (stderrTail && (matchedCurrentCrash || (reason && reason !== 'none'))) {
+      return `${reason || 'crash'} stderr_tail=${stderrTail}`;
+    }
+  } catch { /* no stderr detail */ }
+
+  return reason;
 }
 
 /**
@@ -342,10 +365,11 @@ async function main(): Promise<void> {
       reason = 'anthropic rate limit detected in stdout.log';
     }
   }
-  reason = readLatestCrashReason(logDir, endType, reason);
+  const crashAt = new Date();
+  reason = readLatestCrashReason(logDir, endType, reason, crashAt);
 
   // Track crash count (real crashes only).
-  const today = new Date().toISOString().split('T')[0];
+  const today = crashAt.toISOString().split('T')[0];
   const countFile = join(stateDir, '.crash_count_today');
   let crashCount = 0;
   if (endType === 'crash') {
@@ -360,7 +384,7 @@ async function main(): Promise<void> {
       writeFileSync(countFile, `${today}:${crashCount}`, 'utf-8');
     } catch { /* ignore */ }
   } else if (endType === 'daemon-crashed') {
-    // Read-only: surface today's count to chief/analyst without mutating it.
+    // Read-only: surface today's count without mutating it.
     try {
       const data = readFileSync(countFile, 'utf-8').trim();
       const [date, count] = data.split(':');
@@ -382,7 +406,7 @@ async function main(): Promise<void> {
   // an earlier iteration tried that and it was removed). If a duplicate-firing
   // FP ever slips through, two crashes.log lines sharing a session value make
   // it provable after the fact.
-  const timestamp = new Date().toISOString();
+  const timestamp = crashAt.toISOString();
   const logLine = `${timestamp} type=${endType} reason=${reason || 'none'} session=${sessionId || 'unknown'} last_task=${lastTask}\n`;
   try {
     appendFileSync(join(logDir, 'crashes.log'), logLine);
@@ -408,8 +432,8 @@ async function main(): Promise<void> {
     }
   });
 
-  // Real-crash agent alerts: notify chief + analyst on crash and daemon-crashed
-  // so silent failures get visibility on the bus, not just on Telegram. Gated
+  // Real-crash agent alerts: notify the analyst and orchestrator on crash and
+  // daemon-crashed so silent failures get visibility on the bus, not just on Telegram. Gated
   // by the same dedup window as the Telegram send (handled above), and skipped
   // for clean exits / planned restarts / rate-limit pauses. Hoisted above the
   // Telegram-credential gate so agents without BOT_TOKEN/CHAT_ID still reach
@@ -433,7 +457,7 @@ async function main(): Promise<void> {
       lastTask,
       crashCount,
       restartAttempted,
-      recipients: ['chief', 'analyst', 'the-orchestrator'],
+      recipients: ['the-analyst', 'the-orchestrator'],
     });
   }
 
@@ -487,7 +511,7 @@ async function main(): Promise<void> {
 
   // Per-endType routing (goal-3). The old raw fetch to Adam bypassed the in-process TelegramAPI belt (this
   // hook runs in a SEPARATE process); NO endType raw-sends to Adam now.
-  //   crash / daemon-crashed        -> already routed to ops via notifyAgents(chief+analyst+the-orchestrator)
+  //   crash / daemon-crashed        -> already routed to ops via notifyAgents(the-analyst+the-orchestrator)
   //                                    above; orch escalates a real/systemic death to Adam (transient=ops-only).
   //   rate-limited                  -> DEMOTE to ops (notify-agent the-orchestrator): the ONLY demote — an
   //                                    UNEXPECTED throughput signal, reliably routable (a rate-limited agent's
