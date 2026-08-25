@@ -9,6 +9,10 @@ import { TelegramAPI } from '../telegram/api.js';
 import { sendMessage } from './message.js';
 import { postActivity } from './system.js';
 
+export const APPROVAL_STATUSES = ['pending', 'approved', 'rejected'] as const satisfies readonly ApprovalStatus[];
+export type ApprovalListStatus = ApprovalStatus | 'all';
+export const APPROVAL_LIST_STATUSES = [...APPROVAL_STATUSES, 'all'] as const satisfies readonly ApprovalListStatus[];
+
 /**
  * Build the inline keyboard posted to the activity channel alongside a
  * newly-created approval. Two buttons (Approve / Deny) with callback_data
@@ -274,9 +278,13 @@ export function updateApproval(
  */
 export function listPendingApprovals(paths: BusPaths): Approval[] {
   const pendingDir = join(paths.approvalDir, 'pending');
+  return readApprovalsFromDir(pendingDir);
+}
+
+function readApprovalsFromDir(dir: string): Approval[] {
   let files: string[];
   try {
-    files = readdirSync(pendingDir).filter(f => f.endsWith('.json'));
+    files = readdirSync(dir).filter(f => f.endsWith('.json'));
   } catch {
     return [];
   }
@@ -284,7 +292,7 @@ export function listPendingApprovals(paths: BusPaths): Approval[] {
   const approvals: Approval[] = [];
   for (const file of files) {
     try {
-      const content = readFileSync(join(pendingDir, file), 'utf-8');
+      const content = readFileSync(join(dir, file), 'utf-8');
       approvals.push(JSON.parse(content));
     } catch {
       // Skip corrupt
@@ -294,4 +302,22 @@ export function listPendingApprovals(paths: BusPaths): Approval[] {
   return approvals.sort(
     (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
   );
+}
+
+/**
+ * List approvals by status.
+ */
+export function listApprovalsByStatus(paths: BusPaths, status: ApprovalListStatus): Approval[] {
+  if (status === 'pending') {
+    return listPendingApprovals(paths);
+  }
+
+  const resolvedApprovals = readApprovalsFromDir(join(paths.approvalDir, 'resolved'));
+  if (status === 'all') {
+    return [...listPendingApprovals(paths), ...resolvedApprovals].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+  }
+
+  return resolvedApprovals.filter((approval) => approval.status === status);
 }

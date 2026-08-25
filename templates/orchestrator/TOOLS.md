@@ -32,7 +32,7 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 | `list-tasks [--status S] [--agent A] [--all-orgs]` | List / filter tasks |
 | `check-stale-tasks [--all-orgs]` | Find tasks stale >2h in_progress or >24h pending |
 | `check-human-tasks` | Check for stale human-assigned tasks |
-| `archive-tasks [--dry-run] [--all-orgs]` | Archive completed tasks >7d |
+| `archive-tasks [--dry-run]` | Archive completed tasks >7d |
 
 ### Messages — full docs: `.claude/skills/comms/SKILL.md`
 | Command | What it does |

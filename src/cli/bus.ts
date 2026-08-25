@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { spawnSync, execFileSync } from 'child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import { sendMessage, checkInbox, ackInbox } from '../bus/message.js';
 import { validateAgentName, validateTaskId } from '../utils/validate.js';
 import { createTask, updateTask, completeTask, claimTask, readTaskAudit, checkTaskDependencies, compactTasks, listTasks, checkStaleTasks, archiveTasks, checkHumanTasks } from '../bus/task.js';
@@ -12,7 +13,7 @@ import { selfRestart, hardRestart, autoCommit, checkGoalStaleness, postActivity 
 import { createExperiment, runExperiment, evaluateExperiment, updateExperiment, listExperiments, gatherContext, manageCycle, loadExperimentConfig } from '../bus/experiment.js';
 import { browseCatalog, installCommunityItem, prepareSubmission, submitCommunityItem } from '../bus/catalog.js';
 import { collectMetrics, parseUsageOutput, storeUsageData, checkUpstream, collectTelegramCommands, registerTelegramCommands } from '../bus/metrics.js';
-import { createApproval, updateApproval } from '../bus/approval.js';
+import { createApproval, updateApproval, listApprovalsByStatus, APPROVAL_LIST_STATUSES, type ApprovalListStatus } from '../bus/approval.js';
 import { createReminder, listReminders, ackReminder, pruneReminders } from '../bus/reminders.js';
 import { updateCronFire, parseDurationMs, readCronState } from '../bus/cron-state.js';
 import { addCron, removeCron, readCrons, updateCron as updateCronDef, getCronByName, getExecutionLog } from '../bus/crons.js';
@@ -31,7 +32,7 @@ import { IPCClient } from '../daemon/ipc-server.js';
 import { TelegramAPI } from '../telegram/api.js';
 import { logOutboundMessage, cacheLastSent } from '../telegram/logging.js';
 import { appendContextFooter } from '../telegram/context-footer.js';
-import type { Priority, Task, TaskStatus, EventCategory, EventSeverity, ApprovalCategory, ApprovalStatus, OrgContext, CronDefinition, BusPaths } from '../types/index.js';
+import type { Priority, Task, TaskStatus, EventCategory, EventSeverity, ApprovalCategory, ApprovalStatus, OrgContext, CronDefinition, BusPaths, StaleTaskReport } from '../types/index.js';
 
 /**
  * Check if the org requires deliverables and the task has none attached.
@@ -74,6 +75,16 @@ function checkDeliverableRequirement(taskId: string, frameworkRoot: string, org:
 
 export const busCommand = new Command('bus')
   .description('Bus commands for agent messaging, tasks, and events');
+
+function listOrgNames(instanceId: string): string[] {
+  const ctxRoot = join(homedir(), '.cortextos', instanceId);
+  const orgsDir = join(ctxRoot, 'orgs');
+  return existsSync(orgsDir)
+    ? readdirSync(orgsDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name)
+    : [];
+}
 
 const SEND_MESSAGE_REPLY_TO_RE = /^[0-9]{13}-[a-z0-9-]+-[a-z0-9]{5}$/;
 export const SEND_MESSAGE_REJECTED_PREFIX = 'CORTEXTOS_SEND_MESSAGE_REJECTED:';
@@ -646,14 +657,29 @@ busCommand
   .option('--status <s>', 'Filter by status')
   .option('--format <fmt>', 'Output format: json or text', 'text')
   .option('--respect-deps', 'Sort DAG-aware: unblocked tasks first, blocked tasks last')
-  .action((opts: { agent?: string; status?: string; format?: string; respectDeps?: boolean }) => {
+  .option('--all-orgs', 'Scan all orgs under CTX_ROOT (matches dashboard view)', false)
+  .action((opts: { agent?: string; status?: string; format?: string; respectDeps?: boolean; allOrgs?: boolean }) => {
     const env = resolveEnv();
-    const paths = resolvePaths(env.agentName, env.instanceId, env.org);
-    const tasks = listTasks(paths, {
-      agent: opts.agent,
-      status: opts.status as TaskStatus,
-      respectDeps: opts.respectDeps ?? false,
-    });
+    let tasks: Task[] = [];
+
+    if (opts.allOrgs) {
+      const orgs = listOrgNames(env.instanceId);
+      for (const org of orgs) {
+        const orgPaths = resolvePaths(env.agentName, env.instanceId, org);
+        tasks = tasks.concat(listTasks(orgPaths, {
+          agent: opts.agent,
+          status: opts.status as TaskStatus,
+          respectDeps: opts.respectDeps ?? false,
+        }));
+      }
+    } else {
+      const paths = resolvePaths(env.agentName, env.instanceId, env.org);
+      tasks = listTasks(paths, {
+        agent: opts.agent,
+        status: opts.status as TaskStatus,
+        respectDeps: opts.respectDeps ?? false,
+      });
+    }
 
     if (opts.format === 'json') {
       console.log(JSON.stringify(tasks, null, 2));
@@ -857,10 +883,32 @@ busCommand
 busCommand
   .command('check-stale-tasks')
   .description('Find stale tasks (in_progress >2h, pending >24h, overdue)')
-  .action(() => {
+  .option('--all-orgs', 'Scan all orgs under CTX_ROOT (matches dashboard view)', false)
+  .action((opts: { allOrgs?: boolean }) => {
     const env = resolveEnv();
-    const paths = resolvePaths(env.agentName, env.instanceId, env.org);
-    const report = checkStaleTasks(paths);
+    let report: StaleTaskReport;
+
+    if (opts.allOrgs) {
+      report = {
+        stale_in_progress: [],
+        stale_pending: [],
+        stale_human: [],
+        overdue: [],
+      };
+      const orgs = listOrgNames(env.instanceId);
+      for (const org of orgs) {
+        const orgPaths = resolvePaths(env.agentName, env.instanceId, org);
+        const orgReport = checkStaleTasks(orgPaths);
+        report.stale_in_progress.push(...orgReport.stale_in_progress);
+        report.stale_pending.push(...orgReport.stale_pending);
+        report.stale_human.push(...orgReport.stale_human);
+        report.overdue.push(...orgReport.overdue);
+      }
+    } else {
+      const paths = resolvePaths(env.agentName, env.instanceId, env.org);
+      report = checkStaleTasks(paths);
+    }
+
     console.log(JSON.stringify(report));
   });
 
@@ -2126,42 +2174,38 @@ busCommand
   .description('List pending approval requests')
   .option('--format <fmt>', 'Output format: json|text', 'json')
   .option('--all-orgs', 'Scan all orgs under CTX_ROOT (matches dashboard view)', false)
-  .action((opts: { format?: string; allOrgs?: boolean }) => {
-    const { listPendingApprovals } = require('../bus/approval.js');
-    const { readdirSync, existsSync } = require('fs');
-    const { join, homedir: _homedir } = require('path');
-    const { homedir } = require('os');
+  .option('--status <s>', 'Filter by status: pending|approved|rejected|all', 'pending')
+  .action((opts: { format?: string; allOrgs?: boolean; status?: string }) => {
     const env = resolveEnv();
+    const status = opts.status as ApprovalListStatus;
+    if (!APPROVAL_LIST_STATUSES.includes(status)) {
+      console.error(`Invalid approval status '${opts.status}'. Must be one of: ${APPROVAL_LIST_STATUSES.join(', ')}`);
+      process.exit(1);
+    }
 
     let approvals: unknown[] = [];
 
     if (opts.allOrgs) {
       // Scan every org directory under CTX_ROOT — mirrors dashboard syncAll() behaviour
-      const ctxRoot = join(homedir(), '.cortextos', env.instanceId);
-      const orgsDir = join(ctxRoot, 'orgs');
-      const orgs: string[] = existsSync(orgsDir)
-        ? readdirSync(orgsDir, { withFileTypes: true })
-            .filter((d: { isDirectory(): boolean }) => d.isDirectory())
-            .map((d: { name: string }) => d.name)
-        : [];
+      const orgs = listOrgNames(env.instanceId);
       for (const org of orgs) {
         const orgPaths = resolvePaths(env.agentName, env.instanceId, org);
-        approvals = approvals.concat(listPendingApprovals(orgPaths));
+        approvals = approvals.concat(listApprovalsByStatus(orgPaths, status));
       }
     } else {
       const paths = resolvePaths(env.agentName, env.instanceId, env.org);
-      approvals = listPendingApprovals(paths);
+      approvals = listApprovalsByStatus(paths, status);
     }
 
     if (opts.format === 'text') {
-      if (approvals.length === 0) { console.log('No pending approvals'); return; }
+      if (approvals.length === 0) { console.log(`No ${status} approvals`); return; }
       for (const a of approvals as Array<{ id: string; title: string; category: string; requesting_agent: string; created_at: string; description?: string; org?: string }>) {
         console.log(`[${a.id}] ${a.title}`);
         console.log(`  Category: ${a.category} | Agent: ${a.requesting_agent} | Org: ${a.org ?? env.org} | Created: ${a.created_at}`);
         if (a.description) console.log(`  Context: ${a.description}`);
         console.log('');
       }
-      console.log(`Total: ${approvals.length} pending`);
+      console.log(`Total: ${approvals.length} ${status}`);
     } else {
       console.log(JSON.stringify(approvals, null, 2));
     }
