@@ -75,6 +75,21 @@ def meta_reconcile(v, fails, meta):
     return v, "", False
 
 
+def apply_leaf_icon_floor(v, ev, rec):
+    """M-27 companion (leaf_icon wire-up): leaf_icon was read into the output but consumed nowhere, so a
+    leaf-icon creative silently PASSed. A leaf-icon on a would-be-PASS row is a HUMAN vision-adjudication
+    call, not a machine verdict: the Clean Green brand leaf-LOGO is EXEMPT (rules.md M-19/M-24 brand-imagery
+    exemption) while banned cannabis-leaf ICONOGRAPHY is not, AND leaf-icon is a known vision-hallucination
+    surface. So FLOOR a PASS to UNCLEAR (route to vision-adjudicate) - NEVER auto-FAIL, which would
+    false-FAIL every branded creative. Only PASS is floored (worst-of: FAIL/UNCLEAR already >= UNCLEAR);
+    call this AFTER meta_reconcile so a Meta-DISAPPROVED FAIL is never masked by this UNCLEAR floor."""
+    if v == "PASS" and (rec.get("leaf_icon", "no") or "no").lower() == "yes":
+        note = ("M-19e leaf-icon present -> UNCLEAR (brand-logo-exempt vs banned-iconography; "
+                "vision-adjudicate). leaf_icon=yes.")
+        return "UNCLEAR", (ev + " | " + note if ev else note)
+    return v, ev
+
+
 # Test compatibility for the modality unit. The implementation remains private in verdict_core.
 single_vision_only = verdict_core._single_vision_only
 
@@ -118,6 +133,8 @@ if __name__ == "__main__":
         if v2 != v or note:
             ev = ev + note
             v = v2
+        # M-27 leaf_icon wire-up: AFTER meta_reconcile (worst-of - never masks a Meta-DISAPPROVED FAIL).
+        v, ev = apply_leaf_icon_floor(v, ev, rec)
         cell = f"{v} (creative v2.1 {ts}) - {ev}"
         if rec.get("asset") == "9x16":
             cell += " (9x16)"

@@ -112,6 +112,40 @@ def test_degraded_parity_normal_records_unchanged():
     print("  [PASS] degraded-parity: normal records (no must_not_pass+PASS) unchanged, no spurious loud")
 
 
+# --- M-27 companion: leaf_icon wire-up (task_1787756898924). leaf_icon was read-but-unwired -> silent PASS.
+def test_leaf_icon_yes_floors_would_be_pass_to_unclear():
+    # The acceptance case: a clean-text record with leaf_icon=yes yielded PASS; now floors to UNCLEAR.
+    v, ev = g.apply_leaf_icon_floor("PASS", "clean-text evidence", {"leaf_icon": "yes"})
+    assert v == "UNCLEAR", f"leaf_icon=yes must floor a would-be-PASS to UNCLEAR (never PASS), got {v}"
+    assert "leaf-icon present" in ev and "leaf_icon=yes" in ev, "evidence must name the leaf-icon adjudication"
+    assert "vision-adjudicate" in ev, "evidence must route to vision-adjudicate (human call)"
+    print("  [PASS] leaf_icon=yes floors a would-be-PASS to UNCLEAR (vision-adjudicate), never PASS")
+
+
+def test_leaf_icon_never_auto_fails_never_downgrades_no_overblock():
+    # NEVER auto-FAIL (brand leaf-logo M-19/M-24 exempt) + never masks a real FAIL/UNCLEAR (worst-of) +
+    # no over-block when the field is absent/no.
+    assert g.apply_leaf_icon_floor("FAIL", "x", {"leaf_icon": "yes"})[0] == "FAIL", "leaf must not touch a FAIL"
+    assert g.apply_leaf_icon_floor("UNCLEAR", "x", {"leaf_icon": "yes"})[0] == "UNCLEAR", "leaf must not touch an UNCLEAR"
+    assert g.apply_leaf_icon_floor("PASS", "x", {"leaf_icon": "no"})[0] == "PASS", "leaf_icon=no -> PASS unchanged"
+    assert g.apply_leaf_icon_floor("PASS", "x", {})[0] == "PASS", "no leaf_icon field -> PASS unchanged (no over-block)"
+    assert g.apply_leaf_icon_floor("PASS", "x", {"leaf_icon": "YES"})[0] == "UNCLEAR", "case-insensitive yes"
+    print("  [PASS] leaf never auto-FAILs, never downgrades FAIL/UNCLEAR, no over-block when absent/no")
+
+
+def test_leaf_icon_does_not_mask_meta_disapproved_fail():
+    # worst-of ordering (mirrors __main__): a leaf_icon=yes text-PASS that Meta DISAPPROVED must end FAIL,
+    # NOT be masked to UNCLEAR - because apply_leaf_icon_floor runs AFTER meta_reconcile.
+    (v, ev, fails, unclears), _ = _run_verdict_for(_mk("PASS"))
+    v2, note, _ = g.meta_reconcile(v, fails, "DISAPPROVED")
+    if v2 != v or note:
+        ev = ev + note
+        v = v2
+    v, ev = g.apply_leaf_icon_floor(v, ev, {"leaf_icon": "yes"})
+    assert v == "FAIL", f"leaf_icon must NOT mask a Meta-DISAPPROVED FAIL (worst-of), got {v}"
+    print("  [PASS] worst-of: leaf_icon=yes does not mask a Meta-DISAPPROVED FAIL (applied after meta_reconcile)")
+
+
 if __name__ == "__main__":
     import traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
