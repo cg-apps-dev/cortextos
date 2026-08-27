@@ -66,14 +66,30 @@ function scanBeforeIngestMonitor(
       return;
     }
 
-    // exit 0 = clean, exit 1 = active findings. Parse + log when there are findings.
+    // exit 0 = clean, exit 1 = active findings (findings come from out.count, NOT the status).
+    // SINGLE-TERMINAL-EVENT INVARIANT (task_1786077403648): the success path must emit EXACTLY ONE
+    // of finding|degraded|ok — no silent path. A clean run that logged nothing left no run-record,
+    // which made "monitor never ran" indistinguishable from "ran and found nothing" (the
+    // injection_scan_error latch-ambiguity, 2026-08-06). `parsed` is the discriminator so that an
+    // unparseable run is NEVER conflated with clean (a status-1 unparseable = "scanner found
+    // something AND we cannot see what" — must fail toward attention, and must NOT ride the ok/clean
+    // path a future Phase-2 embed-gate would read as safe).
     let out: { count?: number; by_severity?: Record<string, number>; by_provenance?: Record<string, number> } = {};
+    let parsed = true;
     try {
       out = JSON.parse(r.stdout || '{}');
     } catch {
-      /* tolerate non-JSON stdout — fail open */
+      parsed = false; // stdout unparseable — still a RUN; record liveness as degraded, never clean
     }
-    if (out.count && out.count > 0) {
+    if (!parsed) {
+      // DEGRADED: the monitor RAN (status 0/1) but findings are UNKNOWN. Distinct from ok so a
+      // Phase-2 gate written as `event === ok` cannot fail-open through a buried flag.
+      logEvent(busPaths, 'security-agent', org, 'action', 'injection_scan_degraded', 'warning', {
+        file: filePath,
+        status: r.status,
+        phase: 'monitor',
+      });
+    } else if ((out.count ?? 0) > 0) {
       logEvent(
         busPaths,
         'security-agent',
@@ -90,6 +106,15 @@ function scanBeforeIngestMonitor(
         },
       );
       // Phase 2 (LATER, not now): if trust === 'external' && out.count > 0 → skip embed + flag.
+    } else {
+      // POSITIVE LIVENESS BEAT: monitor ran, parsed clean, zero findings. The run-record that lets a
+      // register distinguish healthy-quiet (ok present within cadence) from never-ran (no beat = latch).
+      logEvent(busPaths, 'security-agent', org, 'action', 'injection_scan_ok', 'info', {
+        file: filePath,
+        count: 0,
+        status: r.status,
+        phase: 'monitor',
+      });
     }
   } catch (e: unknown) {
     // Absolute backstop: scanning must never break ingestion in Phase 1.

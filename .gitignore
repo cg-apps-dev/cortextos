@@ -23,6 +23,15 @@ orgs/
 # Secrets
 .env
 !.env.example
+
+# Credential backups. These are ALREADY ignored via the orgs/ rule above, but that
+# protection is incidental: orgs/ is ignored for unrelated reasons, so the day anyone
+# un-ignores it to track agent configs, 30 files carrying live tokens become stageable
+# and the person doing it will be thinking about configs, not secrets. A credential-
+# specific rule costs one line and does not depend on orgs/ staying ignored forever.
+*.env.bak
+*.env.bak.*
+*.env.bak-*
 templates/*/.env
 .cortextos-env
 
