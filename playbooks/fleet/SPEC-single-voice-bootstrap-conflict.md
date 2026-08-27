@@ -471,6 +471,37 @@ attributed to a commit its author did not choose.
 - Multiple agents commit to the same branch in the same working tree concurrently. **Use a dedicated
   worktree** for anything non-trivial.
 
+### Freshness is a property of a REGION, not of a file
+
+*2026-07-26, the-orchestrator + the-analyst. The corollary of the above, and it defeats the heuristic
+most agents actually use.*
+
+Adding axis 8 to `check-negative-is-measured.sh` on branch `codex/guard-fix-a-send-guard`, the diff
+against `main` showed the edit would have **deleted ten lines of main** — the header block explaining
+why the axis count was removed — while that same working copy **still said "ALL SIX" with eight axes
+present**.
+
+**Stale in the header and current in the axes, at the same moment, in one file.** So:
+
+- **"I updated this file recently, so it is fresh" is unsound.** Recency of *your* edit says nothing
+  about the regions you did not touch. A working copy is not uniformly stale or fresh — it is stale
+  **per region**, and "is my copy current?" has no single answer.
+- The only check that respects that is **`git diff <authoritative-ref> -- <path>` before committing,
+  and reading the `-` lines**. Not `git status` (which says "modified", not "modified *away from
+  what*"), and not the file's own mtime.
+- **An auto-commit of a stale working copy is a silent revert.** The commit message describes the
+  addition; nothing in it mentions the deletion. Reviewers of "add axis 8" do not look for removals.
+- Corollary for shared trees: your copy can be stale in a region **another agent** just fixed, so the
+  regions most likely to be stale are the ones under active work by someone else — the opposite of
+  where attention goes.
+
+The same night this file's **oldest** axes turned out to be its least-verified: axis 1 prints `ok` on
+every run and had never been mutation-tested by anyone, while the newest axis was tested within
+minutes of being written. **A green check is a citation, not an inspection**, so run-count is
+anti-evidence: the axes that have passed the most times are the highest-risk, not the most-proven.
+Age is the risk factor and recency of authorship is the attention driver, and the two are
+**anticorrelated by construction** — in a file whose entire purpose is catching rot.
+
 ## Put the control where the RESOURCE is, not where the WORKFLOW is
 
 *Generalised by the-team-lead from two independent instances the same night, in different domains.*

@@ -46,7 +46,11 @@
 #  added and the list stayed at six -- the residue sat OUTSIDE the edited span,
 #  which is the same span-replace defect this file exists to catch, committed by
 #  the author of the seventh axis. Deleted rather than corrected: a corrected
-#  list is a second site that goes stale on the eighth.)
+#  list is a second site that goes stale on the eighth.
+#  IT REACHED THE EIGHTH. This working copy still carried the six-item list while
+#  the file held eight, on a branch, uncommitted -- so the prediction in the line
+#  above came true in the very artifact that made it, and was caught only by
+#  diffing against main before committing. THE STALE COUNT OUTLIVED TWO FIXES.)
 # ---------------------------------------------------------------------------
 
 set -uo pipefail
@@ -200,6 +204,119 @@ expect "7. WHICH grep?   -F is the answer to both" "$n3" 1 "literal means litera
 # ON ANY NEGATIVE THAT MATTERS, RE-RUN WITH -F (or `command grep`). IF THE COUNT
 # MOVES, THE PATTERN WAS NEVER LITERAL. Here 1 vs 0 vs 1 -- the disagreement is
 # the signal, and you get it without diagnosing the engine at all.
+
+# ---------------------------------------------------------------------------
+# AXIS 8: TYPE.  Is the value a MEASUREMENT, or a SENTENCE ABOUT a measurement?
+#
+# Incident 2026-07-26, the-orchestrator, FOUR times in one night on one file
+# (the-analyst/workspace/throughput-series.jsonl). Every error had the same
+# root: a number was read out of a data file WITHOUT CHECKING ITS TYPE, and
+# every one of those numbers lived inside a hand-authored string.
+#   - "8 -> 8; gross_inflow 0"            -> read as gross_inflow=0. It is prose.
+#   - "413 -> 413 (3rd consecutive flat)" -> read as a 3-window series. One row.
+#   - each row's own "FLAT"               -> read as flat ACROSS rows. It moved:
+#     604 -> 588 -> 588 -> 588 -> 611, i.e. -16 then +23, +7 net. And the 07-21
+#     row embeds the CONCLUSION "5th+ window flat = zero real launches" while the
+#     value was 611 two windows later.
+#
+# THAT THIRD ONE IS THE WORST AND IT IS NOT A LIE ANYWHERE. Every "FLAT" is a
+# TRUE statement about WITHIN-window movement; the quantity moved BETWEEN
+# windows. So no reader is ever contradicted, and the trend is the opposite of
+# what reading the rows gives you. Hence the second clause of the rule below:
+# A CLAIM THAT IS TRUE ABOUT ITS OWN ROW CAN STILL BE FALSE ABOUT THE SERIES.
+# A severity ruling was published on it, retracted, republished on a second
+# string, and retracted again. THE SECOND RETRACTION IS THE POINT: a correction
+# reads as already-checked, so nobody audits the evidence you move TO.
+#
+# This axis is immune to the check the rest of this file is about. You cannot
+# catch it by varying a pattern, and you cannot catch it by MISMATCH between two
+# agents either -- mismatch needs two independent measurements, and a field only
+# one row carries has exactly one (meta-compliance-agent, same night). What DOES
+# fire is type + per-row presence. That is the replacement, not a gap.
+# FIXTURE PROVENANCE, and why a synthetic one is acceptable HERE.
+# security-agent's asymmetry rule (2026-07-26): A POSITIVE CONTROL NEEDS A REAL
+# NEEDLE, because a synthetic may lack the real shape. A NEGATIVE CONTROL NEEDS
+# INPUT YOU CAN PROVE IS CLEAN, AND THE ONLY INPUT YOU CAN PROVE IS CLEAN IS INPUT
+# YOU BUILT. This axis's rows are constructed, so the rule says validate them
+# against the real artifact -- done, on the-analyst/workspace/throughput-series.jsonl
+# (57 rows), and ALL THREE PROBES MATCH THE FIXTURE'S EXIT CODES:
+#   probe1 scrape-by-name on the real last row   -> FOUND "0"        exit 0  (matches)
+#   probe2 require-numeric on the real last row  -> ABSENT           exit 1  (matches)
+#   probe3 rows carrying posted_static_other     -> 1 of 57          exit 1  (matches)
+# So the synthetic HAS the real shape and the axis is validated against a real
+# needle rather than only against its own construction.
+#
+# BUT A SYNTHETIC VALIDATED AGAINST A REAL ARTIFACT IS VALIDATED AT A POINT IN TIME
+# (security-agent). The synthetic is FROZEN and the artifact is NOT. If that file
+# gains a field, changes a type, or starts emitting the numeric where it now emits
+# the string, THIS FIXTURE KEEPS PASSING against a shape that no longer exists --
+# and it will pass MORE confidently, because it carries a note saying it was checked
+# against the real thing. That is the relational-detector rule turned on a fixture:
+# A STALE SCAN GETS RE-RUN AND SELF-CORRECTS; A STALE FIXTURE KEEPS PASSING AND
+# ACTIVELY ARGUES THAT IT IS CURRENT.
+#
+# SO THE VALIDATION IS STAMPED. Re-run the three-probe comparison if these move:
+#   throughput-series.jsonl at validation time: 57 rows, 86755 bytes, mtime 2026-07-25T05:33:47Z
+# If the live file differs from those, THIS PROVENANCE NOTE IS OLDER THAN THE DATA
+# and the "validated against a real needle" claim above is unverified, not false.
+TYPEFIX="$(mktemp)"
+cat > "$TYPEFIX" <<'JSONL'
+{"date":"2026-07-23","measured":{"gross_inflow":2},"static_posts":{"posted_to_sheet_raw":"611->611 FLAT"}}
+{"date":"2026-07-24","measured":{"gross_inflow":6}}
+{"date":"2026-07-25","VERDICT":{"qc_review_static":"8 -> 8; gross_inflow 0, gross_exits 0","posted_static_other":"413 -> 413 (3rd consecutive window flat)"}}
+JSONL
+
+# The probe that FALSELY PASSED, verbatim in shape: scrape a number for the field
+# name off the latest row and use it. Finds "0". Exit 0. Looks like a reading.
+p1=0; python3 - "$TYPEFIX" <<'PY' || p1=1
+import json,sys,re
+row=[json.loads(l) for l in open(sys.argv[1]) if l.strip()][-1]
+blob=json.dumps(row)
+m=re.search(r'gross_inflow[^0-9-]*(-?\d+)',blob)
+sys.exit(0 if m else 1)
+PY
+expect "8. TYPE?        scrape the number by field name" "$p1" 0 "finds 0 -> READS AS A MEASUREMENT"
+
+# The probe that CATCHES it: require the field to exist AS A NUMBER on that row.
+p2=0; python3 - "$TYPEFIX" <<'PY' || p2=1
+import json,sys
+row=[json.loads(l) for l in open(sys.argv[1]) if l.strip()][-1]
+def walk(o,p=""):
+    if isinstance(o,dict):
+        for k,v in o.items(): yield from walk(v,f"{p}.{k}" if p else k)
+    else: yield p,o
+nums=[(p,v) for p,v in walk(row)
+      if p.endswith("gross_inflow") and isinstance(v,(int,float)) and not isinstance(v,bool)]
+sys.exit(0 if nums else 1)
+PY
+expect "8. TYPE?        require it to BE a number on that row" "$p2" 1 "ABSENT -- the 0 was prose"
+
+# And the consecutiveness claim: count rows that actually CARRY the field. A
+# string asserting "3rd consecutive window" about rows that do not contain the
+# field is unfalsifiable -- the only evidence for the history is the phrase.
+p3=0; python3 - "$TYPEFIX" <<'PY' || p3=1
+import json,sys
+rows=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+n=sum(1 for r in rows if "posted_static_other" in json.dumps(r))
+sys.exit(0 if n >= 3 else 1)   # the string claims 3 windows; do 3 rows carry it?
+PY
+expect "8. TYPE?        do 3 rows back the '3 consecutive' claim" "$p3" 1 "1 of 3 -- IT ASSERTS ITS OWN HISTORY"
+rm -f "$TYPEFIX"
+# THE RULE, both clauses:
+#   A STRING CONTAINING NUMBERS IS A CLAIM, NOT A MEASUREMENT --
+#   AND A CLAIM THAT IS TRUE ABOUT ITS OWN ROW CAN STILL BE FALSE ABOUT THE SERIES.
+# Before a value carries a decision, assert (a) its TYPE is numeric and (b) it is
+# PRESENT ON EVERY ROW YOU CLAIM TO DIFF. Both are one line and either alone would
+# have stopped all four of that night's errors.
+#
+# Note which way the corrected reading went: not "less certain" but OPPOSITE --
+# the inflow series was RISING out of a zero run, and the quantity every row
+# called flat had MOVED. A NARRATED SERIES DOES NOT FAIL TOWARD CAUTION.
+#
+# And this is structural, not a lapse. Sweeping that file's 332 key paths
+# (the-analyst, same night): 19 exist ON THE LAST ROW ONLY -- including the whole
+# verdict block -- and 149 are orphaned on one old row. UN-DIFFABLE BY
+# CONSTRUCTION is the normal case for narrated fields, not the exception.
 
 echo
 # Derive the summary from the accumulated failure flag, NOT by re-checking the

@@ -20,6 +20,11 @@ import os, json, re, urllib.request, urllib.parse
 from collections import Counter
 
 BASELINE = {"MB": 565, "LB": 7, "MG": 4}
+# MB is the DOMINANT allocator - its count grows every week as a matter of normal
+# operation, so growth there is NOT a signal. The risk this detector exists for is a
+# SECOND writer entering the numbering space (new prefix) or a DORMANT one resuming
+# (LB/MG growth). Excluding MB is deliberate; including it fires on ordinary work.
+DOMINANT = "MB"
 LISTS = ["901711558014","901711553702","901715106177","901715106274",
          "901715106224","901715106329","901711560388","901712123770","901712093295"]
 
@@ -44,12 +49,14 @@ for lst in LISTS:
         page += 1
 
 new_prefixes = sorted(set(seen) - set(BASELINE))
-moved = {p: (BASELINE[p], seen.get(p, 0)) for p in BASELINE if seen.get(p, 0) != BASELINE[p]}
+moved = {p: (BASELINE[p], seen.get(p, 0)) for p in BASELINE
+         if p != DOMINANT and seen.get(p, 0) != BASELINE[p]}
 
 print("observed:", dict(seen))
 if new_prefixes:
     print("FIRE - NEW ALLOCATOR(S):", new_prefixes)
 if moved:
-    print("FIRE - COUNT DRIFT (baseline -> now):", moved)
+    print("FIRE - DORMANT ALLOCATOR RESUMED (baseline -> now):", moved)
 if not new_prefixes and not moved:
-    print("no drift - obligation still dormant")
+    dom = seen.get(DOMINANT, 0)
+    print("no drift - obligation still dormant (%s at %d, growth expected and ignored)" % (DOMINANT, dom))

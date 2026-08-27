@@ -48,6 +48,20 @@ This guards ACCIDENTAL self-teardown (a hosted agent, or a symlinked invocation 
 
 "Bounce executed from outside the daemon process tree, verified." Verified = the daemon create-time is fresh AND the new dist markers are live in the running artifact AND the agents re-bootstrapped.
 
+## VERIFY-THE-BOUNCE-LANDED (the mechanics — the corrected gate-1)
+
+**The trap (origin: 2026-07-18 inference-error):** `cortextos status` shows AGENT-SESSION PIDs, which reset on every `--continue` re-spawn (~71h) and on any session restart. A session reset LOOKS like a restart but is NOT a daemon bounce — the daemon (and its in-memory `dist/daemon.js`) is untouched. Never conclude "the daemon bounced" from `cortextos status` or an agent-session PID change. Verify the DAEMON process itself:
+
+1. **DAEMON PID CHANGED:** `ps -eo pid,lstart,command | grep '[d]ist/daemon.js'` — the daemon PID must be DIFFERENT from the pre-bounce PID AND its start-time fresh. (PM2-managed: `pm2 jlist` — `restart_time` increments and `pm_uptime` resets.) An unchanged PID = the daemon did NOT bounce, regardless of what `cortextos status` shows.
+2. **RUNNING == DIST (start-time AFTER dist mtime):** the daemon's start-time must be LATER than `dist/daemon.js`'s mtime (`stat -f '%Sm' dist/daemon.js`). A daemon whose start-time PRECEDES the dist mtime is running STALE in-memory code — the on-disk dist changed but the running process never reloaded it (an on-disk swap without a real bounce). This is the load-bearing check: a fresh dist + an un-bounced daemon = the new code is NOT live (worked example 2026-08-08: an on-disk `daemon.js` de-arm at 00:02Z did not take effect until the daemon actually restarted at 11:29Z — PID 26681 -> 88369 — which is when RUNNING finally == DIST).
+3. **MARKERS LIVE:** grep the expected fix markers in the running `dist/daemon.js` (per the four-link invariant above) — confirms the bounced daemon loaded the intended dist, not a rollback/backup.
+
+Any one of the three failing = the bounce did NOT land (or landed stale). Fail-loud: an ambiguous/unresolvable PID or start-time REFUSEs the "landed" verdict, same discipline as the guard.
+
+**INSTRUMENT CAVEATS (origin: 2026-08-20 — two stacked misreads produced a confidently-wrong "clean proactive restart" call on what was actually the 4th crash of the resilient-lookup ENETUNREACH bug):**
+- **`unstable_restarts` is NOT a crash detector.** It is a rapid-cycle rate-limit counter; a single crash with a clean ~5s respawn leaves it at 0. To answer crash-vs-clean-restart, the AUTHORITATIVE sources are the crash-history log (`type=daemon-crashed`) and a `FATAL uncaughtException` in the pm2 error log — NOT `unstable_restarts`. `restart_time` incrementing tells you a respawn happened, not why.
+- **`ps lstart` prints LOCAL time.** It is fine to compare against `stat -f '%Sm' dist/daemon.js` (also local) for the RUNNING==DIST axis, but do NOT reason about it against UTC values (crash-history timestamps, log lines, the current UTC clock) without converting — a PDT `04:05` reads as UTC `11:05` (a 7-hour error that turned "just now" into "overnight/proactive").
+
 ## Cross-reference
 
 Standing-rules registry ([standing-rules.md](standing-rules.md)): the control-plane self-teardown row (the incident this procedure prevents) and the refuse-on-partial companion rule (the fail-safe discipline the guard exemplifies).
