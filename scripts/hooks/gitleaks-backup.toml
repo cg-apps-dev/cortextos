@@ -29,11 +29,36 @@ regexes = [
 # generic-api-key active everywhere for triage visibility. Verified no-regression (planted sk-ant
 # in a memory path still caught; generic key OUTSIDE these paths still caught).
 [[allowlists]]
-description = "generic-api-key entropy FPs in first-party agent memory + claude-dev staging prose docs"
+description = "generic-api-key entropy FPs in first-party agent memory + claude-dev staging + root-level plan-doc prose"
 targetRules = ["generic-api-key"]
 paths = [
   '''agents/claude-dev-agent/staging/.*\.md''',
   '''agents/[^/]+/memory/.*\.md''',
+  # Root-level plan/dogfood docs whose PROSE trips generic-api-key on the keyword
+  # "secret"/"key"/"token" (e.g. a checklist line "no ... secret leak ... remains").
+  # 2026-08-20: WINDOWS_DOGFOOD_2_EXECUTION_PLAN.md:259 "secret leak, ..." (upstream
+  # docs branch, prose, NOT a credential). generic-api-key ONLY — dedicated rules stay active.
+  '''(^|/)WINDOWS_DOGFOOD_2_EXECUTION_PLAN\.md$''',
+]
+
+# generic-api-key FPs on Next.js BUILD ARTIFACTS (.next / .next.bak* dirs). Next writes per-build
+# preview-mode keys (previewModeSigningKey/EncryptionKey, 64-char) into prerender-manifest.json + high-
+# entropy build IDs/hashes into manifests/chunks/.rscinfo/.previewinfo — the default generic-api-key rule
+# shape-matches these. BUILD-EPHEMERAL (regenerated every build; a backed-up copy is stale) on an internal
+# AUTH-GATED dashboard = not a real credential class. Root cause (2026-08-19): a deploy backup `.next.bak-*`
+# was not gitignored, so the analyst daily-snapshot branch captured it into local history — and since this
+# pre-push guard runs `gitleaks git .` over ALL local history, that snapshot commit BLOCKED the backup push
+# (secret-guard-block 2026-08-20T09:00Z). Durable fix = gitignore `.next.bak*` (applied). This allowlist is
+# the MIRROR of the same block added to tools/gitleaks-backup.toml — BOTH-CONFIGS rule: the fleet-scan
+# history config and THIS pre-push hook config both scan git history, so an FP baseline must live in both
+# (the exact drift that let this block the push: it was baselined in tools/ first, not here). SCOPED to
+# generic-api-key ONLY — every DEDICATED real-secret rule (anthropic-sk-ant-token, aws, gcp, slack, shopify,
+# jwt) stays ACTIVE in build dirs, so a real cred that somehow landed in one still fires.
+[[allowlists]]
+description = "generic-api-key FPs on Next.js build artifacts (.next / .next.bak* — ephemeral preview keys + build hashes)"
+targetRules = ["generic-api-key"]
+paths = [
+  '''(^|/)\.next(\.bak[^/]*)?/''',
 ]
 
 # Anthropic sk-ant token (OAuth/API/session) — our runtime + usage creds, spend-capable.
