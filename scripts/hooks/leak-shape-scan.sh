@@ -85,6 +85,21 @@ scan_operator_paths() {
   done < <(grep -nE '/Users/[A-Za-z0-9._-]+' "$content_file" 2>/dev/null)
 }
 
+# THRESHOLD RATIONALE (security-agent, 2026-08-28; reconciled vs upstream #704).
+# This windowed heuristic fires only when >=2 roster agents AND >=2 cron tokens co-occur
+# within a 5-line window. Upstream #704's parallel guard is MORE sensitive (window=3, fires
+# on a SINGLE agent + SINGLE cron). We deliberately KEEP the >=2+>=2 / window=5 threshold:
+#  - WHY (FP-reduction): this scanner runs on EVERY push (CI leak-guard.yml + pre-push hook),
+#    so a false-block is an availability hit. A lone agent-name plus a lone cron expression
+#    commonly co-occur in ordinary prose/docs and are usually NOT a roster-table leak; the
+#    2+2 signal requires an actual TABLE shape (multiple agents each with a schedule).
+#  - KNOWN MISS CLASS (accepted): a minimal leak of ONE agent + ONE cron split across adjacent
+#    lines evades this (upstream #704 would catch it). Judged acceptable: a single roster row
+#    is low-value ops detail vs the false-block cost of the more sensitive setting.
+#  - UPGRADE TRIGGER: if a single-agent+single-cron split-line leak is ever observed for real
+#    (not hypothetical), revisit - either lower to >=1+>=1 or add a separate LOWER-SEVERITY
+#    single-pair advisory tier (advise, do not block) so sensitivity rises without the
+#    every-push false-block cost. Until then, 2+2/window=5 stands as a deliberate tradeoff.
 scan_roster_cron_table() {
   local file="$1"
   local content_file="$2"
