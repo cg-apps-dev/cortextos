@@ -296,17 +296,16 @@ cortextos bus log-event action briefing_sent info --meta '{"type":"morning_revie
 cortextos bus update-heartbeat "morning review complete - dispatched N tasks"
 
 # Write to memory
-TODAY=$(date +%Y-%m-%d)
-# Interim: delimiter left UNQUOTED so the $(date) header expands; body is placeholder-static. Footgun-safe helper-swap (memory-append.sh) deferred to task_1787930511505.
-cat >> "memory/$TODAY.md" << MEMEOF
-
-## Morning Review - $(date -u +%H:%M:%S)
+# memory-append.sh names the LOCAL-day file, stamps UTC+local, writes the body
+# VERBATIM (no shell expansion of backticks/$()). Preferred zero-expansion form:
+# write the note to a file with the Edit/Write tool, then `-f <notefile>`.
+./scripts/memory-append.sh "Morning Review" <<'NOTE'
 - Daily focus: <what user said>
 - Goals cascaded to: <list agents>
 - Tasks dispatched: N
 - Agent health: <all healthy / any stale agents>
 - Notes: <blockers or special items>
-MEMEOF
+NOTE
 ```
 
 ---

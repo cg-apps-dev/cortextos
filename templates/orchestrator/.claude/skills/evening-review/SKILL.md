@@ -108,15 +108,15 @@ After scoring, generate 3-5 improvement proposals based on what broke, what was 
 
 Store in memory:
 ```bash
-# Body is static; the quoted <<'MEMEOF' blocks backtick/$() expansion (zero behavior change). Full helper-swap of all review-SKILL memory writes = task_1787930511505.
-cat >> "memory/$TODAY.md" <<'MEMEOF'
-
-## Evening Self-Evaluation
+# memory-append.sh names the LOCAL-day file, stamps UTC+local, writes the body
+# VERBATIM (no shell expansion of backticks/$()). Preferred zero-expansion form:
+# write the note to a file with the Edit/Write tool, then `-f <notefile>`.
+./scripts/memory-append.sh "Evening Self-Evaluation" <<'NOTE'
 - Score: X/25
 - Key learning: [one thing to improve]
 - Win to repeat: [one thing that worked]
 - Proposals: [S1 title], [S2 title]
-MEMEOF
+NOTE
 ```
 
 ---
@@ -251,16 +251,15 @@ cortextos bus log-event action briefing_sent info --meta '{"type":"evening_revie
 cortextos bus update-heartbeat "evening review complete - transitioning to nighttime mode"
 
 # Write to memory
-TODAY=$(date +%Y-%m-%d)
-# Interim: delimiter left UNQUOTED so the $(date) header expands; body is placeholder-static. Footgun-safe helper-swap (memory-append.sh) deferred to task_1787930511505.
-cat >> "memory/$TODAY.md" << MEMEOF
-
-## Evening Review Complete - $(date -u +%H:%M:%S)
+# memory-append.sh names the LOCAL-day file, stamps UTC+local, writes the body
+# VERBATIM (no shell expansion of backticks/$()). Preferred zero-expansion form:
+# write the note to a file with the Edit/Write tool, then `-f <notefile>`.
+./scripts/memory-append.sh "Evening Review Complete" <<'NOTE'
 - Tasks completed today: X (all agents combined)
 - Tasks dispatched overnight: X
 - Self-eval score: X/25
 - Tomorrow prep dispatched: yes/no
-MEMEOF
+NOTE
 ```
 
 ---

@@ -162,11 +162,10 @@ cortextos bus log-event action briefing_sent info --meta '{"type":"weekly_review
 cortextos bus update-heartbeat "weekly review complete - next week planned"
 
 # Write to memory
-TODAY=$(date +%Y-%m-%d)
-# Interim: delimiter left UNQUOTED so the $(date) header expands; body is placeholder-static. Footgun-safe helper-swap (memory-append.sh) deferred to task_1787930511505.
-cat >> "memory/$TODAY.md" << MEMEOF
-
-## Weekly Review - $(date -u +%H:%M:%S)
+# memory-append.sh names the LOCAL-day file, stamps UTC+local, writes the body
+# VERBATIM (no shell expansion of backticks/$()). Preferred zero-expansion form:
+# write the note to a file with the Edit/Write tool, then `-f <notefile>`.
+./scripts/memory-append.sh "Weekly Review" <<'NOTE'
 
 ### Summary
 - Total tasks completed this week: X (all agents)
@@ -180,7 +179,7 @@ cat >> "memory/$TODAY.md" << MEMEOF
 
 ### System Improvements Queued
 - [improvement 1]
-MEMEOF
+NOTE
 
 # Update MEMORY.md with persistent learnings
 # Add any new patterns, preferences, or system behaviors discovered this week

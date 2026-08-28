@@ -132,11 +132,10 @@ Before the morning review cron fires, ensure this data is ready in today's memor
 4. Recommended priorities for today
 
 ```bash
-TODAY=$(date +%Y-%m-%d)
-# Interim: delimiter left UNQUOTED so the $(date) header expands; body is placeholder-static. Footgun-safe helper-swap (memory-append.sh) deferred to task_1787930511505.
-cat >> "memory/$TODAY.md" << MEMEOF
-
-## Overnight Summary - $(date -u +%H:%M:%S)
+# memory-append.sh names the LOCAL-day file, stamps UTC+local, writes the body
+# VERBATIM (no shell expansion of backticks/$()). Preferred zero-expansion form:
+# write the note to a file with the Edit/Write tool, then `-f <notefile>`.
+./scripts/memory-append.sh "Overnight Summary" <<'NOTE'
 
 ### Completed
 - [task] by [agent] -- [deliverable at path/]
@@ -150,7 +149,7 @@ cat >> "memory/$TODAY.md" << MEMEOF
 
 ### Agent Status at Morning
 [list each agent: status, last heartbeat]
-MEMEOF
+NOTE
 
 cortextos bus update-heartbeat "morning briefing data ready - overnight complete"
 ```
