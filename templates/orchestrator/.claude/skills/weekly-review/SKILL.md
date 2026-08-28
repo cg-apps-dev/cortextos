@@ -162,7 +162,8 @@ cortextos bus log-event action briefing_sent info --meta '{"type":"weekly_review
 cortextos bus update-heartbeat "weekly review complete - next week planned"
 
 # Write to memory
-TODAY=$(date -u +%Y-%m-%d)
+TODAY=$(date +%Y-%m-%d)
+# Interim: delimiter left UNQUOTED so the $(date) header expands; body is placeholder-static. Footgun-safe helper-swap (memory-append.sh) deferred to task_1787930511505.
 cat >> "memory/$TODAY.md" << MEMEOF
 
 ## Weekly Review - $(date -u +%H:%M:%S)

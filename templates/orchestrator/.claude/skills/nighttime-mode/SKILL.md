@@ -87,7 +87,7 @@ cortextos bus complete-task "$TASK_ID" --result "<what was produced>"
 cortextos bus log-event task task_completed info --meta '{"task_id":"'$TASK_ID'","agent":"<completing_agent>"}'
 
 # 3. Write to memory
-TODAY=$(date -u +%Y-%m-%d)
+TODAY=$(date +%Y-%m-%d)
 echo "COMPLETED: $TASK_ID - <description> (by <agent>)" >> "memory/$TODAY.md"
 
 # 4. Dispatch next task if queue has more
@@ -100,7 +100,7 @@ When an agent reports a blocker:
 
 ```bash
 # 1. Log the blocker
-TODAY=$(date -u +%Y-%m-%d)
+TODAY=$(date +%Y-%m-%d)
 echo "BLOCKED: $TASK_ID - <reason> (agent: <name>)" >> "memory/$TODAY.md"
 
 # 2. Try to unblock if possible (provide info, reassign)
@@ -132,7 +132,8 @@ Before the morning review cron fires, ensure this data is ready in today's memor
 4. Recommended priorities for today
 
 ```bash
-TODAY=$(date -u +%Y-%m-%d)
+TODAY=$(date +%Y-%m-%d)
+# Interim: delimiter left UNQUOTED so the $(date) header expands; body is placeholder-static. Footgun-safe helper-swap (memory-append.sh) deferred to task_1787930511505.
 cat >> "memory/$TODAY.md" << MEMEOF
 
 ## Overnight Summary - $(date -u +%H:%M:%S)

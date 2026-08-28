@@ -76,7 +76,7 @@ Cross-reference memory COMPLETED entries against tasks still showing in_progress
 
 ```bash
 cortextos bus list-tasks --status in_progress
-TODAY=$(date -u +%Y-%m-%d)
+TODAY=$(date +%Y-%m-%d)
 grep "COMPLETED:" memory/${TODAY}.md 2>/dev/null
 grep "COMPLETED:" memory/${YESTERDAY}.md 2>/dev/null
 ```
@@ -296,7 +296,8 @@ cortextos bus log-event action briefing_sent info --meta '{"type":"morning_revie
 cortextos bus update-heartbeat "morning review complete - dispatched N tasks"
 
 # Write to memory
-TODAY=$(date -u +%Y-%m-%d)
+TODAY=$(date +%Y-%m-%d)
+# Interim: delimiter left UNQUOTED so the $(date) header expands; body is placeholder-static. Footgun-safe helper-swap (memory-append.sh) deferred to task_1787930511505.
 cat >> "memory/$TODAY.md" << MEMEOF
 
 ## Morning Review - $(date -u +%H:%M:%S)

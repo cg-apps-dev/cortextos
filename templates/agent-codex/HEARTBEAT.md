@@ -63,18 +63,16 @@ cortextos bus log-event heartbeat agent_heartbeat info --meta '{"agent":"'$CTX_A
 Full reference: `plugins/cortextos-agent-skills/skills/memory/SKILL.md`
 
 ```bash
-TODAY=$(date -u +%Y-%m-%d)
-LOCAL_TIME=$(date +'%-I:%M %p %Z' 2>/dev/null || date)
-MEMORY_DIR="$(pwd)/memory"
-mkdir -p "$MEMORY_DIR"
-cat >> "$MEMORY_DIR/$TODAY.md" << MEMORY
-
-## Heartbeat Update - $(date -u +'%H:%M UTC') / $LOCAL_TIME
+# memory-append.sh names the LOCAL-day file, stamps the UTC+local timestamp, and
+# writes the body VERBATIM (no shell expansion of backticks/$()). Preferred zero-
+# expansion form: write the note to a file with the Edit/Write tool, then
+# `./scripts/memory-append.sh -f <notefile> "Heartbeat Update"`.
+./scripts/memory-append.sh "Heartbeat Update" <<'NOTE'
 - WORKING ON: <task_id or "none">
 - Status: <healthy/working/blocked>
 - Inbox: <N messages processed>
 - Next action: <what you will do next>
-MEMORY
+NOTE
 ```
 
 ## Step 6: Check GOALS.md
@@ -136,7 +134,7 @@ Keep your memory collection searchable and current:
 ```bash
 # Re-ingest memory, then VERIFY it actually indexed. A silent failure here
 # (e.g. a bad flag, or no GEMINI_API_KEY) means your memory never reaches the KB.
-RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
+RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date +%Y-%m-%d).md \
   --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private 2>&1)
 echo "$RESULT"
 if echo "$RESULT" | grep -qE "Errors: [1-9]"; then echo "WARNING: Step 9 KB ingest ERROR (likely Gemini free-tier 429 daily embed-quota, 1000/day/project — blocks KB writes fleet-wide until daily reset/plan upgrade); flag the orchestrator."
@@ -151,7 +149,7 @@ if echo "$RESULT" | grep -qE "Errors: [1-9]"; then echo "WARNING: Step 9 KB inge
 # the success branch - a success pattern evaluated first lets a zero run match it and never reach this check.
 elif echo "$RESULT" | grep -qE "Ingested 0 new chunk|Added 0 chunk"; then
   echo "WARNING: Step 9 KB ingest stored ZERO CHUNKS on a run that may have real new content — a bare success word does not mean anything was stored (the-ad-strategist + meta-compliance-agent, 2026-07-25/26). Re-running once before treating this as a failure."
-  RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
+  RESULT=$(cortextos bus kb-ingest ./MEMORY.md ./memory/$(date +%Y-%m-%d).md \
     --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private 2>&1)
   echo "$RESULT"
   if echo "$RESULT" | grep -qE "Ingested [1-9][0-9]* new chunk|Added [1-9][0-9]* chunk"; then echo "Step 9: KB ingest OK (after re-run)"

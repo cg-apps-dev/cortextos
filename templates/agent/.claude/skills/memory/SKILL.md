@@ -18,60 +18,54 @@ The purpose of daily memory is not to log activity — it is to capture enough c
 
 Session-scoped context journal. Written at key checkpoints, not continuously.
 
-**Location:** `memory/$(date -u +%Y-%m-%d).md` in your agent workspace
+**Location:** `memory/$(date +%Y-%m-%d).md` in your agent workspace, named by your LOCAL day (not UTC). One local day is one contiguous file. Before 2026-08-28 this used `date -u`, which split a PT evening (17:00-24:00 PT = the next UTC day) across two files; that fragmentation is retired.
+
+**Always write via `./scripts/memory-append.sh`** - it names the LOCAL-day file, stamps the timestamp, and writes the body VERBATIM (no shell expansion of backticks/`$()` in your note text, which a bare `cat >> file << HEREDOC` silently does). Two body sources: `-f <file>` (write the note to a file with the Edit/Write tool first = zero expansion surface, preferred) or a quoted-delimiter heredoc on stdin (`<<'NOTE'`). The `<label>` becomes `## <label> - <UTC> / <LOCAL>`.
 
 ### On session start
 ```bash
-TODAY=$(date -u +%Y-%m-%d)
-mkdir -p memory
-cat >> "memory/$TODAY.md" << MEMEOF
-
-## Session Start - $(date -u +'%H:%M:%S UTC')
+./scripts/memory-append.sh "Session Start" <<'NOTE'
 - Status: online
 - Crons active: <output of `cortextos bus list-crons $CTX_AGENT_NAME`>
 - Inbox: <N messages or "empty">
 - Current state: <where things stand — what is in progress, pending, or needs attention>
 - Resuming: <what to do next and why, with enough context to act without re-reading everything>
-MEMEOF
+NOTE
 ```
 
 ### Mid-work inline note (write immediately when something important happens)
 ```bash
-echo "NOTE $(date -u +'%H:%M UTC'): <key decision / discovery / user preference / non-obvious thing>" >> "memory/$TODAY.md"
+./scripts/memory-append.sh "Inline note" <<'NOTE'
+<key decision / discovery / user preference / non-obvious thing>
+NOTE
 ```
-Don't wait for the heartbeat. Use for: significant decisions, user preferences learned, non-obvious situations, anything you would want the next session to know. One line.
+Don't wait for the heartbeat. Use for: significant decisions, user preferences learned, non-obvious situations, anything you would want the next session to know. One line of body is enough.
 
 ### On heartbeat
 ```bash
-TODAY=$(date -u +%Y-%m-%d)
-cat >> "memory/$TODAY.md" << MEMEOF
-
-## Heartbeat - $(date -u +'%H:%M:%S UTC')
+./scripts/memory-append.sh "Heartbeat" <<'NOTE'
 - Current focus: <what I am working on and why>
 - Active threads: <anything in progress or being monitored — state of each>
 - Key decisions: <decisions made since last entry with brief rationale>
 - Context notes: <anything non-obvious — user preferences, environment state, blockers>
 - Next: <what I am doing next>
-MEMEOF
+NOTE
 ```
 
 ### On session end (before any restart)
 ```bash
-TODAY=$(date -u +%Y-%m-%d)
-cat >> "memory/$TODAY.md" << MEMEOF
-
-## Session End - $(date -u +'%H:%M:%S UTC')
+./scripts/memory-append.sh "Session End" <<'NOTE'
 - Status: [done/interrupted/context-full]
 - Current state: [where things stand — specific enough that the next session can resume cold]
 - Active threads: [anything in progress or mid-task with current state]
 - Key decisions: [significant decisions from this session worth carrying forward]
 - For next session: [what to do first and what context is needed]
-MEMEOF
+NOTE
 ```
 
 ### Reading today's memory (on resume)
 ```bash
-cat "memory/$(date -u +%Y-%m-%d).md" 2>/dev/null || echo "No memory for today yet"
+cat "memory/$(date +%Y-%m-%d).md" 2>/dev/null || echo "No memory for today yet"
 ```
 
 ---
@@ -104,7 +98,7 @@ Update at every heartbeat and session end. Ingest to KB after updating.
 
 Re-ingest MEMORY.md and today's daily memory on every heartbeat so they stay semantically searchable:
 ```bash
-cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
+cortextos bus kb-ingest ./MEMORY.md ./memory/$(date +%Y-%m-%d).md \
   --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private --force
 ```
 

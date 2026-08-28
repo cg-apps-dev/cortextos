@@ -52,7 +52,7 @@ Complete the following in order. Do not skip steps.
    cortextos bus recall-facts --days 3
    ```
    Read these before the daily memory file — they capture granular decisions and outcomes from previous sessions that did not make it into MEMORY.md.
-8. Check today's memory file (`memory/$(date -u +%Y-%m-%d).md`) for any in-progress work
+8. Check today's memory file (`memory/$(date +%Y-%m-%d).md`) for any in-progress work
 9. If resuming a task **by topic**, query the knowledge base: `cortextos bus kb-query "<task topic>" --org $CTX_ORG`. If resuming by a specific **task ID, message ID, or filename**, `grep` for it in `memory/` directly instead - the KB is semantic-only (no exact-match path), so a query for an identifier returns a confident wrong-day match rather than failing (meta-compliance-agent, 2026-07-29).
 10. Check inbox: `cortextos bus check-inbox`
 11. Update heartbeat: `cortextos bus update-heartbeat "online"`
@@ -68,17 +68,17 @@ Run these steps before any restart (hard or soft) and on context exhaustion.
 
 1. Write final memory checkpoint to daily memory:
    ```bash
-   TODAY=$(date -u +%Y-%m-%d)
-   cat >> "memory/$TODAY.md" << MEMEOF
-
-   ## Session End - $(date -u +'%H:%M:%S UTC')
-   - Status: [done/interrupted/context-full]
-   - Current state: [where things stand — specific enough that the next session can resume cold]
-   - Active threads: [anything in progress or mid-task with current state]
-   - Key decisions: [significant decisions from this session worth carrying forward]
-   - For next session: [what to do first and what context is needed]
-
-MEMEOF
+   # memory-append.sh names the LOCAL-day file, stamps the timestamp, and writes
+   # the body VERBATIM (no shell expansion of backticks/$()). Preferred zero-
+   # expansion form: write the note to a file with the Edit/Write tool, then
+   # `./scripts/memory-append.sh -f <notefile> "Session End"`.
+   ./scripts/memory-append.sh "Session End" <<'NOTE'
+- Status: [done/interrupted/context-full]
+- Current state: [where things stand - specific enough that the next session can resume cold]
+- Active threads: [anything in progress or mid-task with current state]
+- Key decisions: [significant decisions from this session worth carrying forward]
+- For next session: [what to do first and what context is needed]
+NOTE
    ```
 2. Update heartbeat: `cortextos bus update-heartbeat "restarting"`
 3. Log session end: `cortextos bus log-event action session_end info --meta '{"agent":"'$CTX_AGENT_NAME'","reason":"[why]"}'`
@@ -253,6 +253,8 @@ You have three memory layers. Daily memory (working memory), MEMORY.md (long-ter
 
 This is your session journal. It survives crashes and context compactions. The goal is not to log activity — it is to capture enough context that you (or a fresh session) can resume intelligently without re-reading everything.
 
+> **Daily-file naming = LOCAL day, not UTC.** The file is `memory/$(date +%Y-%m-%d).md` in your local timezone, so one local day is one contiguous file. Before 2026-08-28 the convention was `date -u`, which split a PT evening (17:00-24:00 PT = the next UTC day) across two UTC-named files; that fragmentation is retired. `memory-append.sh` computes this for you - always write via the helper, never a hand-rolled `cat >> "memory/$(date -u ...)"`. On the switch-over day, each affected daily file carries a one-line basis-change marker (a definitional reset in the daily-file series).
+
 **Write at these checkpoints — not continuously:**
 - **Session start**: where things stand, what you are resuming and why
 - **Heartbeat cycle**: state snapshot — current focus, active threads, decisions, context notes
@@ -260,22 +262,25 @@ This is your session journal. It survives crashes and context compactions. The g
 
 **Mid-work inline notes — write immediately, don't wait for heartbeat:**
 ```bash
-echo "NOTE $(date -u +'%H:%M UTC'): <key decision / discovery / user preference / non-obvious thing>" >> "memory/$TODAY.md"
+# Lightweight one-off note, kept safe by the helper (body verbatim, LOCAL-day
+# file, auto-timestamped) - unlike a bare `echo >> file`, which expands
+# backticks/$() in your note text. One line of body is enough.
+./scripts/memory-append.sh "Inline note" <<'NOTE'
+<key decision / discovery / user preference / non-obvious thing>
+NOTE
 ```
 
 ```bash
-TODAY=$(date -u +%Y-%m-%d)
-mkdir -p memory
-cat >> "memory/$TODAY.md" << MEMEOF
-
-## Session Start - $(date -u +'%H:%M:%S UTC')
+# memory-append.sh handles the LOCAL-day filename, mkdir, timestamp, and safe
+# (verbatim) body. Preferred zero-expansion form: write the note to a file with
+# the Edit/Write tool, then `./scripts/memory-append.sh -f <notefile> "Session Start"`.
+./scripts/memory-append.sh "Session Start" <<'NOTE'
 - Status: online
 - Crons active: <list from `cortextos bus list-crons $CTX_AGENT_NAME`>
 - Inbox: <N messages or "empty">
 - Current state: <where things stand — what is in progress, pending, or needs attention>
 - Resuming: <what to do next and why, with enough context to act without re-reading everything>
-
-MEMEOF
+NOTE
 ```
 
 ### Layer 2: Long-Term Memory — Consolidated Knowledge (MEMORY.md)
@@ -288,7 +293,7 @@ Semantic vector store. Three collections: `memory-{agent}` (auto-reindexed at he
 
 ```bash
 # Re-index memory at heartbeat
-cortextos bus kb-ingest ./MEMORY.md ./memory/$(date -u +%Y-%m-%d).md \
+cortextos bus kb-ingest ./MEMORY.md ./memory/$(date +%Y-%m-%d).md \
   --org $CTX_ORG --agent $CTX_AGENT_NAME --scope private
 
 # Query before any task

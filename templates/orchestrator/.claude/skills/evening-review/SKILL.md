@@ -44,7 +44,7 @@ cortextos bus list-tasks --status in_progress
 cortextos bus read-all-heartbeats
 
 # Today's memory
-TODAY=$(date -u +%Y-%m-%d)
+TODAY=$(date +%Y-%m-%d)
 cat memory/${TODAY}.md 2>/dev/null
 
 # Inbox for agent reports
@@ -108,7 +108,8 @@ After scoring, generate 3-5 improvement proposals based on what broke, what was 
 
 Store in memory:
 ```bash
-cat >> "memory/$TODAY.md" << MEMEOF
+# Body is static; the quoted <<'MEMEOF' blocks backtick/$() expansion (zero behavior change). Full helper-swap of all review-SKILL memory writes = task_1787930511505.
+cat >> "memory/$TODAY.md" <<'MEMEOF'
 
 ## Evening Self-Evaluation
 - Score: X/25
@@ -205,7 +206,7 @@ TASK_ID=$(cortextos bus create-task "<title>" --desc "<description>" --assignee 
 cortextos bus update-task "$TASK_ID" in_progress
 cortextos bus send-message <agent> high '<full task details>'
 cortextos bus log-event action task_dispatched info --meta '{"to":"<agent>","task":"<title>"}'
-TODAY=$(date -u +%Y-%m-%d)
+TODAY=$(date +%Y-%m-%d)
 echo "DISPATCHED: $TASK_ID - <title> -> <agent>" >> "memory/$TODAY.md"
 ```
 
@@ -250,7 +251,8 @@ cortextos bus log-event action briefing_sent info --meta '{"type":"evening_revie
 cortextos bus update-heartbeat "evening review complete - transitioning to nighttime mode"
 
 # Write to memory
-TODAY=$(date -u +%Y-%m-%d)
+TODAY=$(date +%Y-%m-%d)
+# Interim: delimiter left UNQUOTED so the $(date) header expands; body is placeholder-static. Footgun-safe helper-swap (memory-append.sh) deferred to task_1787930511505.
 cat >> "memory/$TODAY.md" << MEMEOF
 
 ## Evening Review Complete - $(date -u +%H:%M:%S)
