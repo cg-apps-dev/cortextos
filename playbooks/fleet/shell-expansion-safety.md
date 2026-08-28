@@ -69,7 +69,7 @@ Every `--` use during this incident happened to be safe in practice, including t
 
 **State the consequence precisely - do not over-claim it as measured.** The mechanism (no ACK fires on a malformed `reply_to`, so the sender's dedup/retry redelivers) is sound by source-code trace, but whether it manifested in each of the 115 historical cases is NOT observed: agent-to-agent inbound is not durably logged (`message-history.jsonl` is a send log with only incidental inbound rows), so the redelivery consequence is unfalsifiable post-hoc. State it as a traced mechanism; never quote "115 phantom redeliveries" as an observed count.
 
-*(The send-guard's own `reply_to`-validation implementation - `extractTrailingReplyTo` collapsing absence and malformation into one NULL, and the derive-the-shape-from-the-generator-not-from-`MSG_ID_RE` detection-vs-validation nuance - is security-agent's authored content and lane; routed to them to fold into the send-guard section, not carried here.)*
+*(The send-guard's own `reply_to`-validation implementation - `extractTrailingReplyTo` collapsing absence and malformation into one NULL, and the derive-the-shape-from-the-generator-not-from-`MSG_ID_RE` detection-vs-validation nuance - is security-agent's authored content and lane; now folded into the send-guard section below, see **"Fix C (open): `reply_to` is accepted unvalidated"**, not carried here.)*
 
 **Incidental finding: `reply_to` is not validated on send.** A nonexistent reply-to id did not error in either safe form above — both delivered regardless, confirming team-lead's separate fail-open concern for this field specifically: the bus will accept and deliver a reply pointed at an id that never existed.
 
@@ -161,6 +161,25 @@ Its deny text (`remove the backticks (use plain text)`) named the instance rathe
 **But it is a BACKSTOP, not a substitute for composing safely.** The quoted-heredoc rule stays primary: compose the body correctly *and* let the guard catch a slip — defense in depth. A backstop relied on as the primary defense is one refactor from a gap, and this guard was inverted once already; **if it is rebuilt again, re-verify against the 42-test floor rather than assuming it stays correct.**
 
 **Fix B** (still queued): `stdin` / `--body-file` input, so a body never transits a command line at all — immune to the execution *and* corruption modes at once. A sanitiser *inside* `send-message` is structurally impossible: substitution completes in the caller's shell before the tool has argv. (Fix A closes the guard's inversion; Fix B would close the underlying command-line-transit exposure — different layers, both still worth having.)
+
+---
+
+## Fix C (open): `reply_to` is accepted unvalidated - the detection-vs-validation split
+
+> **Status 2026-08-27 (security-agent): OPEN gap with a designed fix, NOT landed.** The forensics above (the corrected 115-count across nine agents, and the ~11 hand-authored "Invention" class that *only* an existence/shape check can reach) establish the WHY. This subsection is that check's design. It is the DOC fold; the code lands as its own two-touch task.
+
+**Ground-truth against shipped code.** On `main` tip `d1bf9420`, `src/hooks/hook-send-guard.ts` has `decideSendGuard` (L434) but NO `reply_to` validation of any kind: no `extractTrailingReplyTo`, no `MSG_ID_RE` at that call site. Fix A closed the send-*body* `$()`/`${}` shell-expansion mode only; the `reply_to` field is still delivered as-is, exactly as the "Incidental finding: `reply_to` is not validated on send" above states. The `extractTrailingReplyTo`/`MSG_ID_RE`-at-callsite that the design pieces critique are the codex-branch *proposed* implementation, never shipped, so frame this as an open gap plus the correct fix, not as landed.
+
+**The fix is one split, not three checks: separate DETECTION from VALIDATION.**
+- **Detection** answers "is a `reply_to` slot occupied?" and must be permissive BY POSITION: the trailing token *is* a `reply_to` whenever the slot is filled, regardless of whether it looks well-formed.
+- **Validation** answers "is that token a real id?": well-formed against the id GENERATOR's shape AND present in the recipient's inbox.
+- `decideSendGuard` then DENIES on EITHER malformed shape OR absent-from-inbox. Absence and malformation are different states; the defect to avoid is collapsing them into one NULL (which is exactly what a strict-matcher `extractTrailingReplyTo` does: it validates the subtle case, a well-formed id missing from the inbox, and silently waves through the obvious case, an id broken on its face).
+
+**The load-bearing correction (PIECE 3): at the detection line, tightening the matcher is fail-OPEN.** A malformed id that fails a strict matcher returns `null`, which reads as "no `reply_to` supplied", so no check runs and the malformed value is silently allowed. Polarity is inverted at that line: LOOSENING the detection matcher increases coverage, tightening decreases it. Worked example: the invention-class value `...-unblock` DENIES *today* because it passes the loose gate, reaches the existence check, is absent, and is caught; tighten the gate to a strict `{5}` suffix and `...-unblock` (7 chars) fails the gate, returns `null`, and is silently allowed, the opposite of intended. This is why the shape tightening (derive `^[0-9]{13}-[a-z0-9-]+-[a-z0-9]{5,6}$` from the id GENERATOR rather than reusing the deliberately-loose `MSG_ID_RE`, `/^[0-9]{10,}-[a-z][a-z0-9-]*-[a-z0-9]+$/`, which passes the entire 14-instance `-placeholder` class) belongs ONLY in the validation half, never at detection. An existing validator is a hypothesis about the format, not the format itself; inheriting `MSG_ID_RE` inherits whatever it got wrong.
+
+**Reachability is the non-negotiable test.** Plant a malformed `reply_to` AT POSITION ZERO and assert the guard DENIES via the REAL production path, the matcher that is the actual defect. A unit suite that calls `decideSendGuard` directly bypasses that matcher and can pass green while the guard never fires in production. That is the mirror-fixture trap at the reachability level: the fixture must exercise the defective component, not route around it.
+
+**Tier: two-touch.** A guard whose fail-open silently allows a malformed or absent `reply_to` is a fail-open-critical control, so the implementation lands as its own independently-verified (author != reviewer) task, developed on a copy and never probed in place. Only after the detection/validation split exists does the `{5}` suffix tightening belong, as a validator, not at the gate.
 
 ---
 
