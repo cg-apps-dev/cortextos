@@ -1774,3 +1774,143 @@ describe('FastChecker', () => {
     });
   });
 });
+
+/**
+ * #937 — futile-handoff guard. A session BORN at/above the handoff threshold (a
+ * heavy resume baseline) cannot be helped by a handoff: the fresh session inherits
+ * the same baseline, the new-session reset clears ctxHandoffFiredAt, and Tier-2
+ * re-fires — restart thrash. Our fork's birth anchor is the session_id TRANSITION
+ * (we have no upstream ctxSessionStartedAt/grace): only after we OBSERVE one session
+ * hand to another do we capture a baseline and arm the guard. These tests drive the
+ * REAL checkContextStatus, not a reimplementation.
+ */
+describe('FastChecker — #937 futile-handoff guard', () => {
+  let testDir: string;
+  let paths: BusPaths;
+  let frameworkRoot: string;
+  const ORG = 'clean-green-marketing';
+  const ORCH = 'the-orchestrator';
+
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpdir(), 'cortextos-ctx937-'));
+    paths = createTestPaths(testDir);
+    frameworkRoot = mkdtempSync(join(tmpdir(), 'cortextos-fw937-'));
+    mkdirSync(join(frameworkRoot, 'orgs', ORG), { recursive: true });
+    writeFileSync(join(frameworkRoot, 'orgs', ORG, 'context.json'), JSON.stringify({ orchestrator: ORCH }));
+  });
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true });
+    rmSync(frameworkRoot, { recursive: true, force: true });
+  });
+
+  // Agent whose getAgentDir points at the canonical <root>/orgs/<org>/agents/<name>
+  // so resolveOrchestratorName resolves, and whose config carries live thresholds.
+  function makeAgent(handoff: number, warn: number, name = 'ctx-agent') {
+    const agentDir = join(frameworkRoot, 'orgs', ORG, 'agents', name);
+    mkdirSync(agentDir, { recursive: true });
+    const agent = createMockAgent(name);
+    agent.getConfig = vi.fn().mockReturnValue({
+      model: 'fable-5', org: ORG, timezone: 'America/Los_Angeles',
+      ctx_warning_threshold: warn, ctx_handoff_threshold: handoff,
+    });
+    agent.getAgentDir = vi.fn().mockReturnValue(agentDir);
+    return agent;
+  }
+
+  function writeStatus(pct: number, sessionId?: string): void {
+    const data: Record<string, unknown> = {
+      used_percentage: pct, exceeds_200k_tokens: false, written_at: new Date().toISOString(),
+    };
+    if (sessionId !== undefined) data.session_id = sessionId;
+    writeFileSync(join(paths.stateDir, 'context_status.json'), JSON.stringify(data));
+  }
+
+  function handoffInjected(agent: any): boolean {
+    return agent.injectMessage.mock.calls.some((c: any[]) => /CONTEXT HANDOFF REQUIRED/.test(String(c[0])));
+  }
+
+  function makeChecker(agent: any) {
+    const checker = new FastChecker(agent, paths, frameworkRoot) as any;
+    // Isolate the guard from silent-death detection (orthogonal).
+    checker.checkSilentDeath = vi.fn().mockResolvedValue(undefined);
+    return checker;
+  }
+
+  it('A: heavy-baseline idle session is suppressed and alerts the orchestrator exactly once', async () => {
+    const agent = makeAgent(70, 60);
+    const checker = makeChecker(agent);
+
+    writeStatus(50, 'S1'); await checker.checkContextStatus();          // establishes ctxLastSessionId=S1, no handoff
+    writeStatus(72, 'S2'); await checker.checkContextStatus();          // transition S1->S2: baseline=72, suppress
+    expect(checker.ctxSessionBaselinePct).toBe(72);
+    expect(checker.ctxHandoffFiredAt).toBe(0);                          // suppressed — NO handoff fired
+    expect(handoffInjected(agent)).toBe(false);
+    const alertAt = checker.ctxBaselineAlertFiredAt;
+    expect(alertAt).toBeGreaterThan(0);                                 // alerted once
+
+    writeStatus(73, 'S2'); await checker.checkContextStatus();          // same session, still idle: suppress, no re-alert
+    expect(checker.ctxHandoffFiredAt).toBe(0);
+    expect(checker.ctxBaselineAlertFiredAt).toBe(alertAt);             // throttled — exactly once
+  });
+
+  it('B: a low-baseline session that grows into the threshold still hands off (no suppress alert)', async () => {
+    const agent = makeAgent(70, 60);
+    const checker = makeChecker(agent);
+
+    writeStatus(50, 'S1'); await checker.checkContextStatus();
+    writeStatus(55, 'S2'); await checker.checkContextStatus();          // transition: baseline=55 (< handoff)
+    expect(checker.ctxSessionBaselinePct).toBe(55);
+    writeStatus(75, 'S2'); await checker.checkContextStatus();          // baseline 55 < handoff -> guard inert -> hands off
+    expect(checker.ctxHandoffFiredAt).toBeGreaterThan(0);
+    expect(handoffInjected(agent)).toBe(true);
+    expect(checker.ctxBaselineAlertFiredAt).toBe(0);
+  });
+
+  it('C: a session born above threshold still hands off once work-fill exceeds the margin', async () => {
+    const agent = makeAgent(60, 50);
+    const checker = makeChecker(agent);
+
+    writeStatus(45, 'S1'); await checker.checkContextStatus();
+    writeStatus(62, 'S2'); await checker.checkContextStatus();          // transition: baseline=62, 62-62<10 -> suppress
+    expect(checker.ctxSessionBaselinePct).toBe(62);
+    expect(checker.ctxHandoffFiredAt).toBe(0);                          // suppressed while idle
+    writeStatus(78, 'S2'); await checker.checkContextStatus();          // 78-62=16 >= WORKFILL_MARGIN -> real work -> hands off
+    expect(checker.ctxHandoffFiredAt).toBeGreaterThan(0);
+    expect(handoffInjected(agent)).toBe(true);
+  });
+
+  it('D: an un-anchored session (no session_id) still hands off at threshold — legacy path', async () => {
+    const agent = makeAgent(70, 60);
+    const checker = makeChecker(agent);
+
+    writeStatus(82); await checker.checkContextStatus();                // no session_id -> birth never observed -> no baseline
+    expect(checker.ctxSessionBaselinePct).toBeNull();
+    expect(checker.ctxHandoffFiredAt).toBeGreaterThan(0);              // guard inert -> normal handoff
+    expect(handoffInjected(agent)).toBe(true);
+    expect(checker.ctxBaselineAlertFiredAt).toBe(0);
+  });
+
+  it('E: safety invariant — a live PTY overflow banner force-restarts even a would-be-suppressed born-heavy session', async () => {
+    const agent = makeAgent(70, 60);
+    const checker = makeChecker(agent);
+    const restartSpy = vi.fn();
+    checker.forceContextRestart = restartSpy;
+
+    // Arm the guard on a born-heavy idle session (baseline 90 >= handoff, no work-fill).
+    writeStatus(50, 'S1'); await checker.checkContextStatus();
+    writeStatus(90, 'S2'); await checker.checkContextStatus();
+    expect(checker.ctxHandoffFiredAt).toBe(0);                         // guard is actively suppressing
+    expect(restartSpy).not.toHaveBeenCalled();
+
+    // Now a REAL exhaustion banner appears in the PTY buffer at pct>=85. The ungated
+    // hard-overflow path sits ABOVE the guard, so it MUST force-restart — the guard must
+    // never suppress a genuine live exhaustion. Pins the guard-below-overflow ordering:
+    // a future refactor that reorders them fails here loudly.
+    agent.getOutputBuffer = vi.fn().mockReturnValue({
+      getRecent: vi.fn().mockReturnValue('Error: conversation too long - run /compaction now'),
+    });
+    writeStatus(90, 'S2'); await checker.checkContextStatus();
+    expect(restartSpy).toHaveBeenCalledTimes(1);                       // overflow fired, NOT suppressed
+  });
+});
