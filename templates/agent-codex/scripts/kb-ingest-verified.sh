@@ -38,9 +38,22 @@
 #      ALARMS (cost: a re-run). A fail-open guard yields false PASSES (cost: a
 #      silent gap). Take the first every time.
 #
-# EXIT CODES  0 verified  3 ingest error/child-kill  4 unrecognised (closed)
-#             5 usage error
-#             (with multiple files: exit code is the WORST across all files)
+# EXIT CODES  0 verified  2 partial (durable progress, resume incomplete)
+#             3 ingest error/child-kill  4 unrecognised (closed)  5 usage error
+#             (with multiple files: exit code is the WORST across all files.
+#              severity 0 < 2 < 3 < 4 - partial is the LEAST-severe non-zero:
+#              progress WAS made and the next cycle resumes it, vs error = nothing
+#              reached, vs unrecognised = fail-closed on unknown output. A partial
+#              never renders as verified/0 - see the resume loop below.)
+#
+# CHECKPOINT-RESUME (2026-08-29): mmrag.py bounds each ingest call by a wall-clock
+# budget (MMRAG_INGEST_BUDGET_MS, default 135s) and, once it has made >=1 durable
+# per-chunk upsert, stops and exits 75 with "INGEST_PARTIAL done=N total=M
+# remaining=K" rather than grinding to the old ~10-min hang that SIGTERM'd
+# silently and reported false success. This wrapper resumes the SAME file (dedup
+# skips already-upserted chunks, so each call advances) up to
+# MMRAG_INGEST_MAX_RESUME times (default 3), then stops LOUD at exit 2 and lets
+# the next cycle continue. Nothing is lost: per-chunk upserts are durable.
 #
 # SELF-TEST:  ./kb-ingest-verified.sh --self-test
 #             Drives classify() with known-bad inputs. Run it after any edit;
@@ -63,6 +76,19 @@ classify() {
     if printf '%s' "$out" | grep -qE "stderr:[[:space:]]*null" &&
        printf '%s' "$out" | grep -qE "Node[.]js v[0-9]+[.][0-9]+[.][0-9]+"; then
         printf 'CHILD_KILL'; return
+    fi
+    # PARTIAL (checkpoint-resume): mmrag.py stops on its per-run time budget AFTER
+    # >=1 durable per-chunk upsert and exits 75 with a machine-readable marker.
+    # POSITIVE + fail-closed: require BOTH the exit code AND the marker. Checked
+    # BEFORE the ERROR branch because 75 is non-zero and would otherwise read as
+    # ERROR; a bare 75 with no marker, or the marker without exit 75, falls
+    # through to ERROR (closed) rather than being trusted as partial. mmrag also
+    # prints its usual "Done! Ingested N" summary on a partial run, so the EXIT
+    # CODE - not the text - is what disambiguates partial from complete, and the
+    # OK_/VERIFIED success branches below can never be reached on a partial.
+    if [ "$exit_code" -eq 75 ] 2>/dev/null &&
+       printf '%s' "$out" | grep -qE "INGEST_PARTIAL done=[0-9]+ total=[0-9]+ remaining=[0-9]+"; then
+        printf 'PARTIAL'; return
     fi
     if [ "$exit_code" -ne 0 ] 2>/dev/null ||
        printf '%s' "$out" | grep -qiE "error:|Traceback|Errors: [1-9]|Killed|command not found"; then
@@ -252,37 +278,66 @@ done
 # TIMEOUT (a work-per-spawn budget, not a token ceiling) and SIGTERMs it -
 # the-team-lead measured two files combined (~109,591 embedding tokens) time
 # out silently while each file alone (78,507 and 31,084 tokens) succeeded.
+# Resume budget. Bounded so one heartbeat cannot spin on a persistently degraded
+# KB: after MAX_RESUME partial resumes we stop LOUD (exit 2) and the next cycle
+# continues from the durable checkpoint. Non-integer/empty -> default 3.
+MAX_RESUME="${MMRAG_INGEST_MAX_RESUME:-3}"
+case "$MAX_RESUME" in ''|*[!0-9]*) MAX_RESUME=3 ;; esac
+
 WORST=0
 for f in "$@"; do
-    OUT="$(cortextos bus kb-ingest "$f" --org "$CTX_ORG" --agent "$CTX_AGENT_NAME" --scope private 2>&1)"
-    RC=$?
-    VERDICT="$(printf '%s' "$OUT" | classify "$RC")"
+    attempt=0
+    while : ; do
+        OUT="$(cortextos bus kb-ingest "$f" --org "$CTX_ORG" --agent "$CTX_AGENT_NAME" --scope private 2>&1)"
+        RC=$?
+        VERDICT="$(printf '%s' "$OUT" | classify "$RC")"
 
-    case "$VERDICT" in
-        OK_*)
-            echo "✅ KB ingest VERIFIED: $f - ${VERDICT#OK_} chunks"
-            query_back "$f"
-            ;;
-        VERIFIED)
-            echo "✅ KB ingest VERIFIED: $f - already current in KB (0 new chunks)"
-            query_back "$f"
-            ;;
-        CHILD_KILL)
-            echo "🚨 KB ingest CHILD_KILL on $f - child process was killed before verification completed."
-            echo "$OUT" | tail -5
-            [ "$WORST" -lt 3 ] && WORST=3
-            ;;
-        ERROR)
-            echo "🚨 KB ingest ERRORED on $f - memory did NOT reach the KB."; echo "$OUT" | tail -5
-            [ "$WORST" -lt 3 ] && WORST=3
-            ;;
-        *)
-            echo "🚨 KB ingest output UNRECOGNISED for $f - FAILING CLOSED."
-            echo "   Not an error and not a confirmed count. Treat as NOT ingested."
-            echo "$OUT" | tail -5
-            [ "$WORST" -lt 4 ] && WORST=4
-            ;;
-    esac
+        case "$VERDICT" in
+            OK_*)
+                echo "✅ KB ingest VERIFIED: $f - ${VERDICT#OK_} chunks"
+                [ "$attempt" -gt 0 ] && echo "   (completed after $attempt resume(s))"
+                query_back "$f"
+                break
+                ;;
+            VERIFIED)
+                echo "✅ KB ingest VERIFIED: $f - already current in KB (0 new chunks)"
+                [ "$attempt" -gt 0 ] && echo "   (completed after $attempt resume(s))"
+                query_back "$f"
+                break
+                ;;
+            PARTIAL)
+                PMARK="$(printf '%s' "$OUT" | grep -oE 'INGEST_PARTIAL done=[0-9]+ total=[0-9]+ remaining=[0-9]+' | tail -1)"
+                if [ "$attempt" -ge "$MAX_RESUME" ]; then
+                    # LOUD + fail-closed: a PARTIAL must NEVER read as success.
+                    # No ✅, a distinct ⏳ verdict, and a non-zero exit. Progress
+                    # is durable; the next ingest cycle resumes from here.
+                    echo "⏳ KB ingest PARTIAL (resume budget exhausted) on $f - $PMARK after $attempt resume attempt(s). NOT complete, NOT verified, NOT a green result. Per-chunk upserts are durable; the next ingest cycle resumes from here. Raise MMRAG_INGEST_MAX_RESUME or MMRAG_INGEST_BUDGET_MS to finish in one run."
+                    [ "$WORST" -lt 2 ] && WORST=2
+                    break
+                fi
+                attempt=$((attempt+1))
+                echo "🔄 KB ingest PARTIAL on $f - $PMARK; resuming (attempt $attempt/$MAX_RESUME)..."
+                ;;
+            CHILD_KILL)
+                echo "🚨 KB ingest CHILD_KILL on $f - child process was killed before verification completed."
+                echo "$OUT" | tail -5
+                [ "$WORST" -lt 3 ] && WORST=3
+                break
+                ;;
+            ERROR)
+                echo "🚨 KB ingest ERRORED on $f - memory did NOT reach the KB."; echo "$OUT" | tail -5
+                [ "$WORST" -lt 3 ] && WORST=3
+                break
+                ;;
+            *)
+                echo "🚨 KB ingest output UNRECOGNISED for $f - FAILING CLOSED."
+                echo "   Not an error and not a confirmed count. Treat as NOT ingested."
+                echo "$OUT" | tail -5
+                [ "$WORST" -lt 4 ] && WORST=4
+                break
+                ;;
+        esac
+    done
 done
 
 exit "$WORST"
