@@ -291,6 +291,8 @@ done
 ```
 Any `MISS-*` is an agent the cascade skipped - give it the right tier's treatment before proceeding. Any `UNMAPPED` is roster/map drift - fix the map (1F) and re-run. Zero MISS and zero UNMAPPED = the invariant holds for today.
 
+**First-run validated 2026-08-30** (first automated Sunday cascade): 11 active + 5 gated all stamped, 0 MISS / 0 UNMAPPED, and the two-stamp split confirmed (gated `updated_at` bumped to today while `last_content_change_at` stayed at the prior value). Verified by two independent instruments that crossed in flight - the orchestrator's in-run assertion (run under bash) and the-sop-keeper's post-cascade read-only re-run (zsh) - so the completeness block is proven in both shell forms it runs under.
+
 **Threshold companion (config, applied with this change - not part of this skill file).** Because gated agents are now re-stamped daily, `goal-tier-map.json` `thresholds_h.gated_stale` moves 192h -> 72h (3x the daily cascade cadence): post-S2 a gated STALE means "cascade skipped this agent >= 3 days" (a re-stamp-process failure), not "agent neglected 8 days". Long-parking is caught separately by the-analyst's GATED-LONG-PARKED advisory on `last_content_change_at`.
 
 ---
