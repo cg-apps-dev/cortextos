@@ -65,6 +65,12 @@ When divergence is DEEP (older base + customization AT the hunk sites, so hunks 
 
 Execution discipline for the mechanical fan-out: **dry-run -> reconcile the applied count to a pre-computed expected count EXACTLY (e.g. 204 == 204) -> snapshot each file -> literal edit -> per-file post-write re-read verify -> restore-on-fail -> INDEPENDENT grep re-verify across all files -> per-file definitional-reset marker -> FILE the deferral task BEFORE finishing.**
 
+### 6b. Reverse sync-back (live -> tracked source) and the proof-by-normalized-diff
+
+The arc also runs BACKWARDS: a live copy hand-edited during incidents drifts AHEAD of its tracked template, and the template must be brought current without (a) reverting the template's own legitimate lead (an edit the live copy lacks, e.g. a helper-swap) or (b) importing the live copy's violations into a governed source (e.g. em-dashes into a no-em-dash source). Rebuild the template FROM live, re-apply the template's known-ahead edits, and normalize the governed dimension in the template ONLY.
+
+PROVE it substance-preserving with a **normalized diff**: normalize the same dimension (punctuation) in a TEMP copy of the source, then `diff temp vs your-result`. The only remaining hunks must be your intended substantive deltas (the preserved edits) - nothing else. That isolates "substance == source + normalization-only" from real content drift, the reverse-direction analogue of classify-before-clobber. Two records make the result legible later: mark the normalization explicitly (a punctuation definitional-reset: "em-dash -> hyphen, N sites, live NOT touched") so the resulting source-vs-live punctuation gap reads as intended, and name the tracked source as the CONVERGENCE REFERENCE so the eventual live cleanup converges TO it rather than re-diverging.
+
 ## Cross-cutting principles
 
 - **Never trust a scripted bulk edit by its exit code or match counts.** Two silent-corruption hazards bit this same arc: perl `$(` in a replacement interpolates as the real GID variable (corrupted all files at once), and difflib/opcode block-replace fragment-corrupts non-byte-identical targets (left a mismatched heredoc). Diff the ACTUAL output, snapshot + verify each file, reconcile to the dry-run. For load-bearing multi-file edits the literal per-file Edit tool (fails closed on no-match) beats a clever one-shot script; when scripting, python `str.replace` (literal) beats perl/sed (metachar + var-interpolation traps).
