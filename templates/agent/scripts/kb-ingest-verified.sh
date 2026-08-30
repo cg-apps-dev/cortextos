@@ -81,8 +81,9 @@ classify() {
     # >=1 durable per-chunk upsert and exits 75 with a machine-readable marker.
     # POSITIVE + fail-closed: require BOTH the exit code AND the marker. Checked
     # BEFORE the ERROR branch because 75 is non-zero and would otherwise read as
-    # ERROR; a bare 75 with no marker, or the marker without exit 75, falls
-    # through to ERROR (closed) rather than being trusted as partial. mmrag also
+    # ERROR; a bare 75 with no marker falls through to ERROR, and the marker
+    # without exit 75 also fails closed (ERROR if exit is non-zero, UNRECOGNISED
+    # via the guard below if exit 0) - never trusted as partial. mmrag also
     # prints its usual "Done! Ingested N" summary on a partial run, so the EXIT
     # CODE - not the text - is what disambiguates partial from complete, and the
     # OK_/VERIFIED success branches below can never be reached on a partial.
@@ -93,6 +94,14 @@ classify() {
     if [ "$exit_code" -ne 0 ] 2>/dev/null ||
        printf '%s' "$out" | grep -qiE "error:|Traceback|Errors: [1-9]|Killed|command not found"; then
         printf 'ERROR'; return
+    fi
+    # exit==0 here: PARTIAL consumed exit 75 + marker, ERROR consumed exit != 0.
+    # A partial marker at exit 0 is the inconsistent (contract-violating) state -
+    # mmrag emits the marker ONLY immediately before sys.exit(75). Fail CLOSED
+    # (never green) per DESIGN RULE 2, don't lean on the engine holding the
+    # marker<->exit75 contract.
+    if printf '%s' "$out" | grep -qE "INGEST_PARTIAL done=[0-9]+ total=[0-9]+ remaining=[0-9]+"; then
+        printf 'UNRECOGNISED'; return
     fi
     # POSITIVE assertion: a real count, captured, not merely "not a failure".
     local n
