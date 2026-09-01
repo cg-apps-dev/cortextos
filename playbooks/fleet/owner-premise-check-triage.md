@@ -65,3 +65,10 @@ Triage in order of how HARMFUL a stale item is if it sits:
 - Lane-A product-as-news ruling (07-09, oldest carried, 6.5 weeks) -> mc -> never-launched (zero ad-ids across all 19 authoritative ledger columns) -> closed-superseded, refiled as a post-trip policy ask, OFF the near-term queue.
 
 Each was an ask that would have reached the user stale; the owner-check either evaporated it or re-scoped it into a fresh two-minute item.
+
+2026-08-31/09-01, the-orchestrator ran two more premise-checks against carried human-task backlog; both dispositioned in-cycle at near-zero user cost, and one spun off a durable fleet capability.
+
+- Brain Drive-mirror lag (task_1786647706267, carried from 08-13, "v1.0.12 Drive vs v1.0.14 GitHub") -> SELF-verifiable, no owner ping -> read the Drive mirror directly off the local CloudStorage mount + `gh api` on main, compared BYTE-PARITY (normalized-JSON sha256): both v1.1.5, identical, mirror already re-synced Aug 24 -> premise dissolved -> CLOSED, no user decision needed. Spun off a fleet standing rule (Drive-mirror READS are self-serviceable) so the whole class stops needing `[HUMAN]` filings for reads.
+- activity-channel Telegram bot (task_1786560196566, carried from 08-12, premise-checked 08-26 AND 08-31) -> STILL LIVE (no `activity-channel.env` tree-wide, `postActivity` reads only that file, no fallback) -> HELD, attached to the post-trip BotFather/credential bundle (a forcing-function slot), NOT re-copied -> zero op-impact, low-pri-but-valid.
+
+REFINEMENT this run added: the core move is "owner-routed, not self-investigation" for a premise that is an OWNER JUDGMENT - but when the premise is a directly machine-verifiable FACT (a version, a file's presence, a byte-for-byte currency check), SELF-VERIFY it; do not ping an owner to read something you can read. Route to the owner only for the judgment the owner alone can give. And on a multi-carry item whose premise is still live, the disposition is a FORCING FUNCTION (attach to a scheduled slot), not a fourth re-copy - the "3+ carries" discipline rule in practice.
