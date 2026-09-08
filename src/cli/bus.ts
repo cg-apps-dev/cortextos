@@ -882,7 +882,7 @@ busCommand
 
 busCommand
   .command('check-stale-tasks')
-  .description('Find stale tasks (in_progress >2h, pending >24h, overdue)')
+  .description('Find stale tasks (in_progress >2h, pending >24h, blocked >3d, overdue)')
   .option('--all-orgs', 'Scan all orgs under CTX_ROOT (matches dashboard view)', false)
   .action((opts: { allOrgs?: boolean }) => {
     const env = resolveEnv();
@@ -892,6 +892,7 @@ busCommand
       report = {
         stale_in_progress: [],
         stale_pending: [],
+        stale_blocked: [],
         stale_human: [],
         overdue: [],
       };
@@ -901,6 +902,7 @@ busCommand
         const orgReport = checkStaleTasks(orgPaths);
         report.stale_in_progress.push(...orgReport.stale_in_progress);
         report.stale_pending.push(...orgReport.stale_pending);
+        report.stale_blocked.push(...orgReport.stale_blocked);
         report.stale_human.push(...orgReport.stale_human);
         report.overdue.push(...orgReport.overdue);
       }

@@ -588,6 +588,7 @@ export interface TelegramVideoNote {
 export interface StaleTaskReport {
   stale_in_progress: Task[];
   stale_pending: Task[];
+  stale_blocked: Task[];
   stale_human: Task[];
   overdue: Task[];
 }

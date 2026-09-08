@@ -113,6 +113,42 @@ describe('Advanced Task Management', () => {
       expect(report.stale_pending[0].id).toBe('task_003_003');
     });
 
+    it('identifies stale blocked tasks (>3d) without regressing existing buckets', () => {
+      createBackdatedTask(paths, {
+        id: 'task_013_013',
+        title: 'Stale blocked',
+        status: 'blocked',
+        created_at: daysAgo(5),
+        updated_at: daysAgo(4),
+      });
+      createBackdatedTask(paths, {
+        id: 'task_014_014',
+        title: 'Fresh blocked',
+        status: 'blocked',
+        created_at: daysAgo(5),
+        updated_at: hoursAgo(1),
+      });
+      createBackdatedTask(paths, {
+        id: 'task_015_015',
+        title: 'Healthy stale pending control',
+        status: 'pending',
+        created_at: hoursAgo(25),
+        updated_at: hoursAgo(25),
+      });
+      createBackdatedTask(paths, {
+        id: 'task_016_016',
+        title: 'Fresh in progress control',
+        status: 'in_progress',
+        created_at: hoursAgo(1),
+        updated_at: hoursAgo(1),
+      });
+
+      const report = checkStaleTasks(paths);
+      expect(report.stale_blocked.map((task) => task.id)).toEqual(['task_013_013']);
+      expect(report.stale_pending.map((task) => task.id)).toEqual(['task_015_015']);
+      expect(report.stale_in_progress.length).toBe(0);
+    });
+
     it('identifies overdue tasks', () => {
       createBackdatedTask(paths, {
         id: 'task_005_005',
