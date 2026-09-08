@@ -63,9 +63,12 @@ failure.**
 
 ### How to actually verify a cron is live (do this instead of trusting `next_fire`)
 
-1. **Real fire records** - `cortextos bus get-cron-log <agent>` and
-   `${CTX_ROOT}/state/<agent>/cron-execution.log` show ACTUAL fires with real timestamps. A recent
-   real fire is a fire; a projected `next_fire` is not.
+1. **Real fire records** - `cortextos bus get-cron-log <agent>` (the reliable path - it resolves the
+   log location internally) shows ACTUAL fires with real timestamps. The raw file, if you read it
+   directly, is nested at `${CTX_ROOT}/.cortextOS/state/agents/<agent>/cron-execution.log` - NOT the
+   `${CTX_ROOT}/state/<agent>/` that some bootstrap docs still cite (that path does not exist and
+   reads empty; same `.cortextOS/state/agents/` nesting as `crons.json`). A recent real fire is a
+   fire; a projected `next_fire` is not.
 2. **The independent liveness signal** - the daemon-side heartbeat-staleness watchdog
    (`heartbeat-staleness-watchdog.md`) is the fleet's out-of-band liveness check and does not route
    through any agent's own `list-crons` render. If it is quiet, no agent is stale past 2x cadence,
