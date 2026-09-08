@@ -10,6 +10,41 @@ export type ReactionHandler = (reaction: TelegramMessageReaction) => void;
 const DEFAULT_LIVENESS_THROTTLE_MS = 60_000;
 
 /**
+ * Ceiling (ms) on an honored Telegram 429 `retry after N` hint.
+ *
+ * The retry_after hint is honored directly and is deliberately NOT subject to
+ * the exponential `backoffCapMs` — a real Telegram flood-control wait can
+ * legitimately exceed the cap, and truncating it would ignore the server's
+ * instruction and risk a tighter flood ban. But the hint must still be bounded:
+ * an uncapped honor path lets a hostile or buggy `retry after 3600` sleep the
+ * poller ~1h and freeze the agent's Telegram lifeline. 5 minutes is a generous
+ * ceiling — a legitimate hint is honored unchanged, an absurd one is clamped so
+ * the poller resumes within minutes rather than being frozen for an hour.
+ */
+export const RETRY_AFTER_CEILING_MS = 300_000;
+
+/**
+ * Compute the base backoff delay (ms) after a transient poll failure.
+ *
+ * Pure and jitter-free — the caller adds jitter and owns 409 handling.
+ *
+ * @param message getUpdates error message (checked for a 429 `retry after N` hint).
+ * @param attempt Consecutive-transient-error count (>=1).
+ * @param baseMs Base delay for the exponential curve (the normal poll interval).
+ * @param capMs Maximum exponential backoff delay.
+ * @returns Honors a `retry after N` 429 hint (short-circuits the curve), clamped
+ *   to {@link RETRY_AFTER_CEILING_MS}; otherwise min(capMs, baseMs * 2^(attempt-1)).
+ */
+export function computePollBackoffMs(message: string, attempt: number, baseMs: number, capMs: number): number {
+  const retryMatch = message.match(/retry after (\d+)/i);
+  if (retryMatch) {
+    const honored = Math.max(1, parseInt(retryMatch[1], 10)) * 1000;
+    return Math.min(RETRY_AFTER_CEILING_MS, honored);
+  }
+  return Math.min(capMs, baseMs * 2 ** (attempt - 1));
+}
+
+/**
  * Telegram polling loop. Replaces the Telegram portion of fast-checker.sh.
  * Polls getUpdates every 1 second and routes messages/callbacks to handlers.
  */
@@ -24,6 +59,8 @@ export class TelegramPoller {
   private callbackHandlers: CallbackHandler[] = [];
   private reactionHandlers: ReactionHandler[] = [];
   private pollInterval: number;
+  private consecutiveErrors = 0;
+  private readonly backoffCapMs = 30_000;
   private livenessThrottleMs: number;
   private lastAliveMarkerWriteAt: number | undefined;
   lastPollOkAt: number | undefined;
@@ -103,10 +140,21 @@ export class TelegramPoller {
   async start(): Promise<void> {
     this.running = true;
     this.lastExitReason = '';
+    this.consecutiveErrors = 0;
     while (this.running) {
       try {
         await this.pollOnce();
+        // Success — clear the backoff counter and poll again at the normal interval.
+        this.consecutiveErrors = 0;
+        await sleep(this.pollInterval);
       } catch (err) {
+        // Intentional stop() mid-poll: skip the backoff sleep and exit. stop()
+        // has already set lastExitReason; re-assert it in case running was
+        // cleared by another path without a reason.
+        if (!this.running) {
+          this.lastExitReason = 'stopped-externally';
+          return;
+        }
         const msg = err instanceof Error ? err.message : String(err);
         // A 409 Conflict means another getUpdates connection holds the lock
         // (e.g. a not-yet-released connection lingering ~60s after a daemon
@@ -117,10 +165,15 @@ export class TelegramPoller {
           this.running = false;
           return;
         }
-        // Other errors are transient — log and continue polling.
-        console.error('[telegram-poller] Poll error:', err);
+        // Other errors are transient — back off exponentially (honoring a 429
+        // retry_after hint) so a persistent failure does not hot-loop the API.
+        // Reset happens on the next successful poll (success branch above).
+        this.consecutiveErrors++;
+        const base = computePollBackoffMs(msg, this.consecutiveErrors, this.pollInterval, this.backoffCapMs);
+        const delay = base + Math.random() * this.pollInterval;
+        console.error(`[telegram-poller] Poll error (retry in ${Math.round(delay)}ms, attempt ${this.consecutiveErrors}):`, err);
+        await sleep(delay);
       }
-      await sleep(this.pollInterval);
     }
   }
 
