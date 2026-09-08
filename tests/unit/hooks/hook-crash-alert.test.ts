@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -70,7 +70,7 @@ describe('notifyAgents', () => {
       lastTask: 'building hooks',
       crashCount: 2,
       restartAttempted: true,
-      recipients: ['chief', 'analyst'],
+      recipients: ['the-analyst', 'the-orchestrator'],
     });
     expect(execFileMock).toHaveBeenCalledTimes(2);
   });
@@ -83,11 +83,35 @@ describe('notifyAgents', () => {
       lastTask: 't',
       crashCount: 1,
       restartAttempted: true,
-      recipients: ['chief'],
+      recipients: ['the-analyst'],
     });
     const [cmd, args] = execFileMock.mock.calls[0];
     expect(cmd).toBe('cortextos');
-    expect(args.slice(0, 4)).toEqual(['bus', 'send-message', 'chief', 'high']);
+    expect(args.slice(0, 4)).toEqual(['bus', 'send-message', 'the-analyst', 'high']);
+  });
+
+  it('routes crash bus alerts only to canonical recipients', () => {
+    notifyAgents({
+      agentName: 'dev',
+      endType: 'crash',
+      reason: 'r',
+      lastTask: 't',
+      crashCount: 1,
+      restartAttempted: true,
+      recipients: ['the-analyst', 'the-orchestrator'],
+    });
+    const recipients = execFileMock.mock.calls.map((call) => call[1][2]);
+    expect(recipients).toEqual(['the-analyst', 'the-orchestrator']);
+    expect(recipients).not.toContain('chief');
+    expect(recipients).not.toContain('analyst');
+  });
+
+  it('main crash route uses canonical recipients', () => {
+    const source = readFileSync(join(process.cwd(), 'src/hooks/hook-crash-alert.ts'), 'utf-8');
+    const callSite = source.match(/notifyAgents\(\{[\s\S]*?recipients: \[([^\]]+)\]/);
+    expect(callSite?.[1]).toBe("'the-analyst', 'the-orchestrator'");
+    expect(callSite?.[1]).not.toContain("'chief'");
+    expect(callSite?.[1]).not.toContain("'analyst'");
   });
 
   it('body includes all required fields', () => {
@@ -98,7 +122,7 @@ describe('notifyAgents', () => {
       lastTask: 'idle',
       crashCount: 3,
       restartAttempted: false,
-      recipients: ['analyst'],
+      recipients: ['the-analyst'],
     });
     const body: string = execFileMock.mock.calls[0][1][4];
     expect(body).toContain('agent=dev');
@@ -117,7 +141,7 @@ describe('notifyAgents', () => {
       lastTask: '',
       crashCount: 1,
       restartAttempted: true,
-      recipients: ['chief'],
+      recipients: ['the-analyst'],
     });
     expect(execFileMock.mock.calls[0][1][4]).toContain('restart attempted: yes');
   });
@@ -130,7 +154,7 @@ describe('notifyAgents', () => {
       lastTask: '',
       crashCount: 1,
       restartAttempted: true,
-      recipients: ['chief'],
+      recipients: ['the-analyst'],
     });
     const body: string = execFileMock.mock.calls[0][1][4];
     expect(body).toContain('reason: none');
@@ -146,7 +170,7 @@ describe('notifyAgents', () => {
       lastTask: '',
       crashCount: 1,
       restartAttempted: true,
-      recipients: ['chief', 'analyst'],
+      recipients: ['the-analyst', 'the-orchestrator'],
     })).not.toThrow();
     // Second recipient still attempted
     expect(execFileMock).toHaveBeenCalledTimes(2);
@@ -204,7 +228,7 @@ describe('readLatestCrashReason', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('uses the latest unplanned restart entry for real crash reasons', () => {
+  it('uses the latest temporally-matching unplanned restart entry for real crash reasons', () => {
     mkdirSync(tmp, { recursive: true });
     writeFileSync(join(tmp, 'restarts.log'), [
       '[2026-07-25T01:00:00Z] SELF-RESTART: routine',
@@ -212,7 +236,35 @@ describe('readLatestCrashReason', () => {
       '[2026-07-25T01:02:00Z] CRASH_LOOP: exit_code=1 crash_count=3 backoff_s=0',
     ].join('\n') + '\n', 'utf-8');
 
-    expect(readLatestCrashReason(tmp, 'crash', '')).toBe('CRASH_LOOP exit_code=1 crash_count=3 backoff_s=0');
+    expect(readLatestCrashReason(tmp, 'crash', '', new Date('2026-07-25T01:02:03Z'))).toBe(
+      'CRASH_LOOP exit_code=1 crash_count=3 backoff_s=0',
+    );
+  });
+
+  it('prefers none over a stale restart entry from a different crash', () => {
+    mkdirSync(tmp, { recursive: true });
+    writeFileSync(join(tmp, 'restarts.log'), [
+      '[2026-06-07T21:52:57Z] CRASH: exit_code=143 crash_count=1 backoff_s=5',
+    ].join('\n') + '\n', 'utf-8');
+
+    expect(readLatestCrashReason(tmp, 'crash', 'none', new Date('2026-07-25T01:02:03Z'))).toBe('none');
+  });
+
+  it('adds bounded stderr detail when available', () => {
+    mkdirSync(tmp, { recursive: true });
+    writeFileSync(join(tmp, 'restarts.log'), '[2026-07-25T01:01:00Z] CRASH: exit_code=1 crash_count=1 backoff_s=5\n', 'utf-8');
+    writeFileSync(join(tmp, 'stderr.log'), 'older\nTypeError: pty.write is not a function\nat worker-process.ts:93\n', 'utf-8');
+
+    expect(readLatestCrashReason(tmp, 'crash', '', new Date('2026-07-25T01:01:04Z'))).toBe(
+      'CRASH exit_code=1 crash_count=1 backoff_s=5 stderr_tail=older | TypeError: pty.write is not a function | at worker-process.ts:93',
+    );
+  });
+
+  it('does not attach stderr detail to an otherwise un-attributed crash', () => {
+    mkdirSync(tmp, { recursive: true });
+    writeFileSync(join(tmp, 'stderr.log'), 'old unrelated stderr\n', 'utf-8');
+
+    expect(readLatestCrashReason(tmp, 'crash', 'none', new Date('2026-07-25T01:01:04Z'))).toBe('none');
   });
 
   it('keeps marker reasons for non-crash end types and falls back when no crash detail exists', () => {
