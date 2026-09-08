@@ -61,30 +61,69 @@ interface ShellToken {
   expansionRegion: string;
 }
 
+type ShellQuote = 'single' | 'ansi-c-single' | 'double' | 'locale-double';
+
+interface ShellQuoteStep {
+  text: string;
+  quote: ShellQuote | null;
+  nextQuote: ShellQuote | null;
+  nextIndex: number;
+  expandable: boolean;
+}
+
+export interface ShellQuoteAnalysis {
+  finalQuote: ShellQuote | null;
+  expansionRegion: string;
+  balanced: boolean;
+}
+
 export interface SendCommandInfo {
   kind: GuardedBusCommand;
   bodyArg?: ShellToken;
   bodyArgs?: ShellToken[];
   optionAfterSeparatorArg?: ShellToken;
   bodyStatus: 'found' | 'not-found' | 'unparseable' | 'not-applicable';
+  chainedWithOtherCommand: boolean;
+  guardedRegion?: string;
+  unparseableReason?: string;
 }
 
 export type SendGuardDecision =
-  | { permissionDecision: 'allow' }
-  | { permissionDecision: 'deny'; permissionDecisionReason: string };
+  | {
+      permissionDecision: 'allow';
+      kind?: GuardedBusCommand;
+      allowReason?: 'compound-unparseable-region-clean' | 'region-indeterminate' | 'region-unparseable' | 'body-not-found';
+      chained?: true;
+    }
+  | {
+      permissionDecision: 'deny';
+      permissionDecisionReason: string;
+      kind?: GuardedBusCommand;
+      chained?: true;
+    };
+
+type HookDecisionOutput = { permissionDecision: 'allow' } | { permissionDecision: 'deny'; permissionDecisionReason: string };
 
 export function formatPreToolUseDecision(decision: SendGuardDecision): {
-  hookSpecificOutput: { hookEventName: 'PreToolUse' } & SendGuardDecision;
+  hookSpecificOutput: { hookEventName: 'PreToolUse' } & HookDecisionOutput;
 } {
+  const hookDecision: HookDecisionOutput = decision.permissionDecision === 'deny'
+    ? {
+        permissionDecision: 'deny',
+        permissionDecisionReason: decision.permissionDecisionReason,
+      }
+    : { permissionDecision: 'allow' };
+
   return {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
-      ...decision,
+      ...hookDecision,
     },
   };
 }
 
 export function outputPreToolUseDecision(decision: SendGuardDecision): void {
+  emitDecisionLogs(decision);
   process.stdout.write(JSON.stringify(formatPreToolUseDecision(decision)) + '\n');
 }
 
@@ -102,6 +141,9 @@ export function detectBusSendCommand(command: string): SendCommandInfo | null {
     optionAfterSeparatorArg: isOptionAfterSeparatorRiskCommand(parsed.kind)
       ? findOptionAfterSeparatorArg(parsed.args)
       : undefined,
+    chainedWithOtherCommand: parsed.chainedWithOtherCommand,
+    guardedRegion: parsed.guardedRegion,
+    unparseableReason: parsed.unparseableReason,
     bodyStatus: !isBodyGuardedCommand(parsed.kind)
       ? 'not-applicable'
       : parsed.args === null
@@ -112,10 +154,87 @@ export function detectBusSendCommand(command: string): SendCommandInfo | null {
   };
 }
 
+function nextShellQuoteStep(text: string, index: number, quote: ShellQuote | null): ShellQuoteStep {
+  const ch = text[index];
+  const next = text[index + 1];
+
+  if (quote === null) {
+    if (ch === '$' && next === "'") {
+      return { text: text.slice(index, index + 2), quote, nextQuote: 'ansi-c-single', nextIndex: index + 2, expandable: false };
+    }
+    if (ch === '$' && next === '"') {
+      return { text: text.slice(index, index + 2), quote, nextQuote: 'locale-double', nextIndex: index + 2, expandable: false };
+    }
+    if (ch === "'") {
+      return { text: ch, quote, nextQuote: 'single', nextIndex: index + 1, expandable: false };
+    }
+    if (ch === '"') {
+      return { text: ch, quote, nextQuote: 'double', nextIndex: index + 1, expandable: false };
+    }
+    if (ch === '\\' && index + 1 < text.length) {
+      return { text: text.slice(index, index + 2), quote, nextQuote: quote, nextIndex: index + 2, expandable: true };
+    }
+    return { text: ch, quote, nextQuote: quote, nextIndex: index + 1, expandable: true };
+  }
+
+  if (quote === 'single') {
+    return {
+      text: ch,
+      quote,
+      nextQuote: ch === "'" ? null : quote,
+      nextIndex: index + 1,
+      expandable: false,
+    };
+  }
+
+  if (quote === 'ansi-c-single') {
+    if (ch === '\\' && index + 1 < text.length) {
+      return { text: text.slice(index, index + 2), quote, nextQuote: quote, nextIndex: index + 2, expandable: false };
+    }
+    return {
+      text: ch,
+      quote,
+      nextQuote: ch === "'" ? null : quote,
+      nextIndex: index + 1,
+      expandable: false,
+    };
+  }
+
+  if (ch === '\\' && index + 1 < text.length) {
+    return { text: text.slice(index, index + 2), quote, nextQuote: quote, nextIndex: index + 2, expandable: true };
+  }
+
+  return {
+    text: ch,
+    quote,
+    nextQuote: ch === '"' ? null : quote,
+    nextIndex: index + 1,
+    expandable: ch !== '"',
+  };
+}
+
+export function analyzeShellQuoteText(text: string, initialQuote: ShellQuote | null = null): ShellQuoteAnalysis {
+  let quote = initialQuote;
+  let expansionRegion = '';
+
+  for (let i = 0; i < text.length;) {
+    const step = nextShellQuoteStep(text, i, quote);
+    if (step.expandable) expansionRegion += step.text;
+    quote = step.nextQuote;
+    i = step.nextIndex;
+  }
+
+  return {
+    finalQuote: quote,
+    expansionRegion,
+    balanced: quote === null,
+  };
+}
+
 function stripHeredocBodies(command: string): string {
   const lines = command.split('\n');
   const output: string[] = [];
-  let quote: '"' | "'" | null = null;
+  let quote: ShellQuote | null = null;
   for (let i = 0; i < lines.length; i++) {
     output.push(lines[i]);
     const heredocMatch = findHeredocOperator(lines[i], quote);
@@ -138,46 +257,22 @@ function stripHeredocBodies(command: string): string {
   return output.join('\n');
 }
 
-function findHeredocOperator(line: string, initialQuote: '"' | "'" | null): RegExpMatchArray | null {
+function findHeredocOperator(line: string, initialQuote: ShellQuote | null): RegExpMatchArray | null {
   let quote = initialQuote;
-  for (let i = 0; i < line.length; i++) {
+  for (let i = 0; i < line.length;) {
     const ch = line[i];
-    if (ch === '\\' && quote !== "'" && i + 1 < line.length) {
-      i++;
-      continue;
-    }
-    if (ch === "'" && quote !== '"') {
-      quote = quote === "'" ? null : "'";
-      continue;
-    }
-    if (ch === '"' && quote !== "'") {
-      quote = quote === '"' ? null : '"';
-      continue;
-    }
     if (!quote && ch === '<' && line[i + 1] === '<') {
       return line.slice(i).match(/^<<(-)?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z0-9_:-]+))/);
     }
+    const step = nextShellQuoteStep(line, i, quote);
+    quote = step.nextQuote;
+    i = step.nextIndex;
   }
   return null;
 }
 
-function updateQuoteState(line: string, initialQuote: '"' | "'" | null): '"' | "'" | null {
-  let quote = initialQuote;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '\\' && quote !== "'" && i + 1 < line.length) {
-      i++;
-      continue;
-    }
-    if (ch === "'" && quote !== '"') {
-      quote = quote === "'" ? null : "'";
-      continue;
-    }
-    if (ch === '"' && quote !== "'") {
-      quote = quote === '"' ? null : '"';
-    }
-  }
-  return quote;
+function updateQuoteState(line: string, initialQuote: ShellQuote | null): ShellQuote | null {
+  return analyzeShellQuoteText(line, initialQuote).finalQuote;
 }
 
 function tokenizeShellLine(line: string): ShellToken[] | null {
@@ -190,37 +285,27 @@ function tokenizeShellLine(line: string): ShellToken[] | null {
     if (i >= line.length) break;
 
     let raw = '';
-    let expansionRegion = '';
-    let quote: '"' | "'" | null = null;
+    let quote: ShellQuote | null = null;
     while (i < line.length) {
       const ch = line[i];
       if (!quote && /\s/.test(ch)) break;
       if (!quote && ch === ')') break;
 
-      raw += ch;
-      if (quote !== "'") expansionRegion += ch;
-      i++;
-
-      if (ch === '\\' && quote !== "'" && i < line.length) {
-        raw += line[i];
-        expansionRegion += line[i];
-        i++;
-        continue;
-      }
-      if (ch === "'" && quote !== '"') {
-        quote = quote === "'" ? null : "'";
-        continue;
-      }
-      if (ch === '"' && quote !== "'") {
-        quote = quote === '"' ? null : '"';
-      }
+      const step = nextShellQuoteStep(line, i, quote);
+      raw += step.text;
+      quote = step.nextQuote;
+      i = step.nextIndex;
     }
 
     if (quote) return null;
-    if (raw) tokens.push({ raw, expansionRegion });
+    if (raw) tokens.push({ raw, expansionRegion: expansionRegionForShellText(raw) });
   }
 
   return tokens;
+}
+
+function expansionRegionForShellText(line: string): string {
+  return analyzeShellQuoteText(line).expansionRegion;
 }
 
 function isBodyGuardedCommand(raw: string): raw is typeof BODY_GUARDED_BUS_COMMANDS[number] {
@@ -235,45 +320,55 @@ function isGuardedBusCommand(raw: string): raw is GuardedBusCommand {
   return (GUARDED_BUS_COMMANDS as readonly string[]).includes(raw);
 }
 
-function findGuardedBusCommand(command: string): { kind: GuardedBusCommand; args: string[] | null } | null {
+function findGuardedBusCommand(command: string): {
+  kind: GuardedBusCommand;
+  args: string[] | null;
+  chainedWithOtherCommand: boolean;
+  guardedRegion: string;
+  unparseableReason?: string;
+} | null {
   const withoutHeredocBodies = stripHeredocBodies(command);
   const start = findGuardedCommandStart(withoutHeredocBodies);
   if (!start) return null;
-  if (hasShellOperatorAfterCommand(withoutHeredocBodies.slice(start.index))) {
-    return { kind: start.kind, args: null };
-  }
+  const commandSlice = withoutHeredocBodies.slice(start.index);
+  const boundary = findFirstUnquotedShellOperatorIndex(commandSlice);
+  const guardedRegion = boundary.index === null ? commandSlice : commandSlice.slice(0, boundary.index);
+  const chainedWithOtherCommand = boundary.index !== null || hasUnquotedShellOperatorBeforeIndex(withoutHeredocBodies, start.index);
 
-  const tokens = tokenizeShellLine(withoutHeredocBodies.slice(start.index));
+  const tokens = tokenizeShellLine(guardedRegion);
   if (tokens && tokens.length >= 3 && tokens[0].raw === 'cortextos' && tokens[1].raw === 'bus' && isGuardedBusCommand(tokens[2].raw)) {
-    return { kind: tokens[2].raw, args: tokens.slice(3).map(token => `${token.raw}\0${token.expansionRegion}`) };
+    return {
+      kind: tokens[2].raw,
+      args: tokens.slice(3).map(token => `${token.raw}\0${token.expansionRegion}`),
+      chainedWithOtherCommand,
+      guardedRegion,
+    };
   }
 
-  return { kind: start.kind, args: null };
+  return {
+    kind: start.kind,
+    args: null,
+    chainedWithOtherCommand,
+    guardedRegion,
+    unparseableReason: boundary.quote
+      ? 'bus-send region indeterminate (unbalanced quotes); could not scan'
+      : 'command line unparseable by full tokenizer; narrow bus-send-region scan could not parse the guarded invocation',
+  };
 }
 
 function findGuardedCommandStart(command: string): { kind: GuardedBusCommand; index: number } | null {
-  let quote: '"' | "'" | null = null;
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i];
-    if (ch === '\\' && quote !== "'" && i + 1 < command.length) {
-      i++;
-      continue;
+  let quote: ShellQuote | null = null;
+  for (let i = 0; i < command.length;) {
+    if (!quote && command.startsWith('cortextos', i) && isCommandPosition(command, i)) {
+      const match = command.slice(i).match(/^cortextos\s+bus\s+([A-Za-z0-9-]+)/);
+      if (match && isGuardedBusCommand(match[1])) {
+        return { kind: match[1], index: i };
+      }
     }
-    if (ch === "'" && quote !== '"') {
-      quote = quote === "'" ? null : "'";
-      continue;
-    }
-    if (ch === '"' && quote !== "'") {
-      quote = quote === '"' ? null : '"';
-      continue;
-    }
-    if (quote || !command.startsWith('cortextos', i)) continue;
-    if (!isCommandPosition(command, i)) continue;
 
-    const match = command.slice(i).match(/^cortextos\s+bus\s+([A-Za-z0-9-]+)/);
-    if (match && isGuardedBusCommand(match[1])) {
-      return { kind: match[1], index: i };
-    }
+    const step = nextShellQuoteStep(command, i, quote);
+    quote = step.nextQuote;
+    i = step.nextIndex;
   }
   return null;
 }
@@ -289,29 +384,25 @@ function isCommandPosition(command: string, index: number): boolean {
   return ch === '(' && j > 0 && command[j - 1] === '$';
 }
 
-function hasShellOperatorAfterCommand(command: string): boolean {
-  let quote: '"' | "'" | null = null;
-  for (let i = 0; i < command.length; i++) {
+export function findFirstUnquotedShellOperatorIndex(command: string): { index: number | null; quote: ShellQuote | null } {
+  let quote: ShellQuote | null = null;
+  for (let i = 0; i < command.length;) {
     const ch = command[i];
-    if (ch === '\\' && quote !== "'" && i + 1 < command.length) {
-      i++;
-      continue;
+    if (!quote) {
+      if (ch === '\n') return { index: i, quote };
+      if (ch === '#') return { index: i, quote };
+      if (ch === '|' || ch === ';' || ch === '&') return { index: i, quote };
+      if ((ch === '>' || ch === '<') && command[i + 1] !== '(') return { index: i, quote };
     }
-    if (ch === "'" && quote !== '"') {
-      quote = quote === "'" ? null : "'";
-      continue;
-    }
-    if (ch === '"' && quote !== "'") {
-      quote = quote === '"' ? null : '"';
-      continue;
-    }
-    if (quote) continue;
-    if (ch === '\n') return true;
-    if (ch === '#') return true;
-    if (ch === '|' || ch === ';' || ch === '&') return true;
-    if (ch === '>' || ch === '<') return true;
+    const step = nextShellQuoteStep(command, i, quote);
+    quote = step.nextQuote;
+    i = step.nextIndex;
   }
-  return false;
+  return { index: null, quote };
+}
+
+function hasUnquotedShellOperatorBeforeIndex(command: string, endIndex: number): boolean {
+  return findFirstUnquotedShellOperatorIndex(command.slice(0, endIndex)).index !== null;
 }
 
 function splitToken(raw: string): ShellToken {
@@ -427,8 +518,33 @@ function isUnquotedVariableReference(raw: string): boolean {
   return /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(raw);
 }
 
-function logAllowAndContinue(kind: GuardedBusCommand, reason: string): void {
-  console.error(`send-guard: allowing ${kind} because ${reason}; body argument was not confidently inspectable.`);
+function emitDecisionLogs(decision: SendGuardDecision): void {
+  const kind = decision.kind ?? 'bus-send';
+
+  if (decision.chained) {
+    console.error(`send-guard: WARN ${kind} - bus-send is chained with other commands (unquoted operator in the command line). Bare, unchained sends are the standing fleet rule (2026-08-28 three mechanical rules); chaining is the anti-pattern.`);
+  }
+
+  if (decision.permissionDecision !== 'allow') return;
+
+  if (decision.allowReason === 'compound-unparseable-region-clean') {
+    console.error(`send-guard: ALLOW ${kind} - command line unparseable by full tokenizer; narrow bus-send-region scan found no command-substitution forms.`);
+    return;
+  }
+
+  if (decision.allowReason === 'region-indeterminate') {
+    console.error(`send-guard: ALLOW ${kind} - bus-send region indeterminate (unbalanced quotes); could not scan, allowing.`);
+    return;
+  }
+
+  if (decision.allowReason === 'region-unparseable') {
+    console.error(`send-guard: ALLOW ${kind} - bus-send region could not be parsed; allowing without claiming a clean body scan.`);
+    return;
+  }
+
+  if (decision.allowReason === 'body-not-found') {
+    console.error(`send-guard: allowing ${kind} because the guarded body argument could not be located; body argument was not confidently inspectable.`);
+  }
 }
 
 export function decideSendGuard(command: string, _opts?: unknown): SendGuardDecision {
@@ -436,8 +552,24 @@ export function decideSendGuard(command: string, _opts?: unknown): SendGuardDeci
   if (!busSend) return { permissionDecision: 'allow' };
 
   if (busSend.bodyStatus === 'unparseable') {
-    logAllowAndContinue(busSend.kind, 'the command line contains shell syntax after the guarded bus command or could not be parsed');
-    return { permissionDecision: 'allow' };
+    const allowReason = busSend.unparseableReason?.startsWith('bus-send region indeterminate')
+      ? 'region-indeterminate'
+      : 'region-unparseable';
+
+    const guardedRegion = busSend.guardedRegion ?? '';
+    if (
+      (allowReason === 'region-indeterminate' && hasShellExpansionSyntax(guardedRegion))
+      || (allowReason === 'region-unparseable' && hasShellExpansionSyntax(expansionRegionForShellText(guardedRegion)))
+    ) {
+      return { permissionDecision: 'deny', permissionDecisionReason: SHELL_EXPANSION_DENY_REASON };
+    }
+
+    return {
+      permissionDecision: 'allow',
+      kind: busSend.kind,
+      allowReason,
+      chained: busSend.chainedWithOtherCommand ? true : undefined,
+    };
   }
 
   if (busSend.optionAfterSeparatorArg) {
@@ -445,7 +577,12 @@ export function decideSendGuard(command: string, _opts?: unknown): SendGuardDeci
   }
 
   if (busSend.bodyStatus === 'not-found') {
-    logAllowAndContinue(busSend.kind, 'the guarded body argument could not be located');
+    return {
+      permissionDecision: 'allow',
+      kind: busSend.kind,
+      allowReason: 'body-not-found',
+      chained: busSend.chainedWithOtherCommand ? true : undefined,
+    };
   } else if (busSend.bodyArgs) {
     for (const bodyArg of busSend.bodyArgs) {
       if (isBareDoubleQuotedVariableReference(bodyArg.raw)) {
@@ -456,6 +593,15 @@ export function decideSendGuard(command: string, _opts?: unknown): SendGuardDeci
         return { permissionDecision: 'deny', permissionDecisionReason: SHELL_EXPANSION_DENY_REASON };
       }
     }
+  }
+
+  if (busSend.chainedWithOtherCommand) {
+    return {
+      permissionDecision: 'allow',
+      kind: busSend.kind,
+      allowReason: 'compound-unparseable-region-clean',
+      chained: true,
+    };
   }
 
   return { permissionDecision: 'allow' };
