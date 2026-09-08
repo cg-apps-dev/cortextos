@@ -58,6 +58,14 @@ DEFAULT_PREVIEW_CHARS = 300
 DEFAULT_EMBED_TIMEOUT_MS = 20000
 DEFAULT_EMBED_BACKOFFS = (1, 3, 5)
 
+# Ingest outcome contract for wrappers:
+# complete: exit 0 with existing "Done! Ingested N new chunk(s)" summary.
+# partial: exit 75 with "INGEST_PARTIAL done=<N> total=<M> remaining=<K>".
+# failed: any other non-zero exit or existing degraded/error handling.
+DEFAULT_INGEST_BUDGET_MS = 135_000
+MIN_INGEST_BUDGET_MS = 1_000
+INGEST_PARTIAL_EXIT_CODE = 75
+
 # Pricing (per 1M tokens)
 EMBEDDING_PRICE_PER_M = 0.20
 FLASH_INPUT_PRICE_PER_M = 0.15
@@ -78,6 +86,105 @@ _tracker = None  # module-level, set by cmd_ingest/cmd_query
 
 class EmbedUnavailableError(RuntimeError):
     """Raised when the embedder is degraded after bounded retry."""
+
+
+class IngestPhaseTiming:
+    """Aggregate passive timing for the ingest chunk loop."""
+
+    def __init__(self):
+        self.embed_s = 0.0
+        self.upsert_s = 0.0
+        self.chunks = 0
+        self.max_embed_s = 0.0
+        self.max_upsert_s = 0.0
+
+    def record_embed(self, elapsed_s):
+        self.embed_s += elapsed_s
+        self.max_embed_s = max(self.max_embed_s, elapsed_s)
+
+    def record_upsert(self, elapsed_s):
+        self.upsert_s += elapsed_s
+        self.max_upsert_s = max(self.max_upsert_s, elapsed_s)
+        self.chunks += 1
+
+    def summary_line(self):
+        return (
+            "PHASE_TIMING "
+            f"embed_s={self.embed_s:.3f} "
+            f"upsert_s={self.upsert_s:.3f} "
+            f"chunks={self.chunks} "
+            f"max_embed_s={self.max_embed_s:.3f} "
+            f"max_upsert_s={self.max_upsert_s:.3f}"
+        )
+
+
+class IngestRunContext:
+    def __init__(self, started_at=None, budget_ms=DEFAULT_INGEST_BUDGET_MS, timing=None):
+        self.started_at = time.monotonic() if started_at is None else started_at
+        self.budget_ms = budget_ms
+        self.timing = timing or IngestPhaseTiming()
+
+    def budget_exceeded(self):
+        elapsed_ms = (time.monotonic() - self.started_at) * 1000
+        return elapsed_ms >= self.budget_ms
+
+
+class IngestChunkResult:
+    def __init__(self, count, done, total, partial=False):
+        self.count = count
+        self.done = done
+        self.total = total
+        self.partial = partial
+
+    @property
+    def remaining(self):
+        return max(self.total - self.done, 0)
+
+    def __eq__(self, other):
+        if isinstance(other, int):
+            return self.count == other
+        return super().__eq__(other)
+
+    def __gt__(self, other):
+        if isinstance(other, int):
+            return self.count > other
+        return NotImplemented
+
+    def __radd__(self, other):
+        if isinstance(other, int):
+            return other + self.count
+        return NotImplemented
+
+    def __str__(self):
+        return str(self.count)
+
+
+def resolve_ingest_budget_ms(environ=None):
+    environ = os.environ if environ is None else environ
+    raw = environ.get("MMRAG_INGEST_BUDGET_MS")
+    if raw is None or raw.strip() == "":
+        return DEFAULT_INGEST_BUDGET_MS
+    try:
+        parsed = int(raw)
+    except ValueError:
+        print(
+            f"WARNING: invalid MMRAG_INGEST_BUDGET_MS={raw!r}; using default {DEFAULT_INGEST_BUDGET_MS}",
+            file=sys.stderr,
+        )
+        return DEFAULT_INGEST_BUDGET_MS
+    if parsed < MIN_INGEST_BUDGET_MS:
+        print(
+            f"WARNING: MMRAG_INGEST_BUDGET_MS below floor; using {MIN_INGEST_BUDGET_MS}",
+            file=sys.stderr,
+        )
+        return MIN_INGEST_BUDGET_MS
+    return parsed
+
+
+def ingest_count(result):
+    if isinstance(result, IngestChunkResult):
+        return result.count
+    return result
 
 
 class UsageTracker:
@@ -640,7 +747,16 @@ def _metadata_for_chunk(file_path, source, chunk, original_index, total_chunks, 
     return meta
 
 
-def ingest_content_chunks(client, config, collection, file_path, chunks, type_name, metadata_extra=None):
+def ingest_content_chunks(
+    client,
+    config,
+    collection,
+    file_path,
+    chunks,
+    type_name,
+    metadata_extra=None,
+    ingest_context=None,
+):
     """Ingest text-like chunks by content hash and delete stale chunks for the source."""
     file_path = Path(file_path)
     source = str(file_path.resolve())
@@ -672,9 +788,17 @@ def ingest_content_chunks(client, config, collection, file_path, chunks, type_na
             legacy_by_document[document] = existing_embeddings[idx]
 
     count = 0
+    done = 0
+    partial = False
+    upserted_new_this_run = 0
     total_chunks = len(records)
     for i, (original_index, chunk, doc_id) in enumerate(records):
+        if ingest_context and upserted_new_this_run > 0 and ingest_context.budget_exceeded():
+            partial = True
+            break
+
         if not args_force and doc_id in existing_ids:
+            done += 1
             continue
 
         meta = _metadata_for_chunk(
@@ -689,20 +813,34 @@ def ingest_content_chunks(client, config, collection, file_path, chunks, type_na
         )
         embedding = None if args_force else legacy_by_document.get(chunk)
         if embedding is None:
+            embed_started = time.perf_counter()
             embedding = embed_content(client, config, chunk)
+            if ingest_context:
+                ingest_context.timing.record_embed(time.perf_counter() - embed_started)
             count += 1
+        else:
+            if ingest_context:
+                ingest_context.timing.record_embed(0.0)
+        upsert_started = time.perf_counter()
         collection.upsert(
             ids=[doc_id],
             embeddings=[embedding],
             documents=[chunk],
             metadatas=[meta],
         )
+        if ingest_context:
+            ingest_context.timing.record_upsert(time.perf_counter() - upsert_started)
+        upserted_new_this_run += 1
+        done += 1
+        if ingest_context and done < total_chunks and ingest_context.budget_exceeded():
+            partial = True
+            break
 
-    if stale_ids:
+    if stale_ids and not partial:
         collection.delete(ids=stale_ids)
         print(f"  Deleted {len(stale_ids)} stale chunk(s)")
 
-    return count
+    return IngestChunkResult(count, done, total_chunks, partial)
 
 # ---------------------------------------------------------------------------
 # Ingest logic
@@ -715,7 +853,7 @@ def already_exists(collection, doc_id):
     return bool(existing and existing["ids"])
 
 
-def ingest_text_file(client, config, collection, file_path):
+def ingest_text_file(client, config, collection, file_path, ingest_context=None):
     """Ingest a text-based file."""
     file_path = Path(file_path)
     text = file_path.read_text(errors="replace")
@@ -729,7 +867,15 @@ def ingest_text_file(client, config, collection, file_path):
         overlap=config.get("text_chunk_overlap", DEFAULT_TEXT_CHUNK_OVERLAP),
     )
 
-    return ingest_content_chunks(client, config, collection, file_path, chunks, "text")
+    return ingest_content_chunks(
+        client,
+        config,
+        collection,
+        file_path,
+        chunks,
+        "text",
+        ingest_context=ingest_context,
+    )
 
 
 def ingest_image(client, config, collection, file_path):
@@ -976,7 +1122,7 @@ def ingest_audio(client, config, collection, file_path):
         return count
 
 
-def ingest_pdf(client, config, collection, file_path):
+def ingest_pdf(client, config, collection, file_path, ingest_context=None):
     """Ingest a PDF page-by-page using Gemini to extract content including visual elements."""
     file_path = Path(file_path)
     from google.genai import types
@@ -1039,6 +1185,7 @@ def ingest_pdf(client, config, collection, file_path):
         metadata_extra=lambda original_index, _chunk, _stored_index: {
             "page_number": original_index + 1,
         },
+        ingest_context=ingest_context,
     )
 
 
@@ -1109,7 +1256,7 @@ def extract_xlsx_text(file_path):
     return "\n\n".join(parts)
 
 
-def ingest_office_doc(client, config, collection, file_path):
+def ingest_office_doc(client, config, collection, file_path, ingest_context=None):
     """Ingest Office documents (.docx, .pptx, .xlsx) by extracting text locally."""
     file_path = Path(file_path)
     ext = file_path.suffix.lower()
@@ -1167,6 +1314,7 @@ def ingest_office_doc(client, config, collection, file_path):
         sections,
         type_name,
         metadata_extra=extra,
+        ingest_context=ingest_context,
     )
 
 
@@ -1174,7 +1322,7 @@ def ingest_office_doc(client, config, collection, file_path):
 args_force = False
 
 
-def ingest_file(client, config, collection, file_path):
+def ingest_file(client, config, collection, file_path, ingest_context=None):
     """Route a file to the appropriate ingest handler."""
     file_path = Path(file_path)
     ext = file_path.suffix.lower()
@@ -1213,16 +1361,16 @@ def ingest_file(client, config, collection, file_path):
     elif ext in IMAGE_EXTS:
         return ingest_image(client, config, collection, file_path)
     elif ext == ".pdf":
-        return ingest_pdf(client, config, collection, file_path)
+        return ingest_pdf(client, config, collection, file_path, ingest_context=ingest_context)
     elif ext in DOC_EXTS:
-        return ingest_office_doc(client, config, collection, file_path)
+        return ingest_office_doc(client, config, collection, file_path, ingest_context=ingest_context)
     elif ext in TEXT_EXTS:
-        return ingest_text_file(client, config, collection, file_path)
+        return ingest_text_file(client, config, collection, file_path, ingest_context=ingest_context)
     else:
         # Try as text for unknown extensions
         try:
             file_path.read_text(errors="strict")[:100]
-            return ingest_text_file(client, config, collection, file_path)
+            return ingest_text_file(client, config, collection, file_path, ingest_context=ingest_context)
         except (UnicodeDecodeError, Exception):
             print(f"  SKIP (binary/unsupported): {file_path}")
             return 0
@@ -1239,6 +1387,7 @@ def cmd_ingest(args):
     client = get_genai_client(get_api_key(config))
     collection_name = args.collection or config.get("default_collection", "default")
     collection = get_chroma_collection(collection_name)
+    ingest_context = IngestRunContext(budget_ms=resolve_ingest_budget_ms())
 
     if args_force:
         print(f"Force mode: will re-ingest existing files")
@@ -1247,9 +1396,12 @@ def cmd_ingest(args):
     skipped = 0
     skipped_degraded = 0
     errors = 0
+    partial_result = None
 
     try:
         for path_str in args.paths:
+            if partial_result:
+                break
             p = Path(path_str).resolve()
             if p.is_dir():
                 files = sorted(f for f in p.rglob("*") if f.is_file() and not f.name.startswith("."))
@@ -1257,12 +1409,16 @@ def cmd_ingest(args):
                 for f in files:
                     print(f"  Processing: {f.relative_to(p)}")
                     try:
-                        count = ingest_file(client, config, collection, f)
+                        result = ingest_file(client, config, collection, f, ingest_context=ingest_context)
+                        count = ingest_count(result)
                         total += count
                         if count > 0:
                             print(f"    Added {count} chunk(s)")
                         elif count == 0:
                             skipped += 1
+                        if isinstance(result, IngestChunkResult) and result.partial:
+                            partial_result = result
+                            break
                     except EmbedUnavailableError as e:
                         print(f"    WARNING: embedder degraded; skipped file: {e}")
                         skipped_degraded += 1
@@ -1272,10 +1428,13 @@ def cmd_ingest(args):
             elif p.is_file():
                 print(f"Ingesting: {p.name}")
                 try:
-                    count = ingest_file(client, config, collection, p)
+                    result = ingest_file(client, config, collection, p, ingest_context=ingest_context)
+                    count = ingest_count(result)
                     total += count
                     if count > 0:
                         print(f"  Added {count} chunk(s)")
+                    if isinstance(result, IngestChunkResult) and result.partial:
+                        partial_result = result
                 except EmbedUnavailableError as e:
                     print(f"  WARNING: embedder degraded; skipped file: {e}")
                     skipped_degraded += 1
@@ -1295,6 +1454,14 @@ def cmd_ingest(args):
     if errors:
         print(f"  Errors: {errors}")
     print(_tracker.summary_line())
+    print(ingest_context.timing.summary_line(), file=sys.stderr)
+    if partial_result:
+        print(
+            f"INGEST_PARTIAL done={partial_result.done} "
+            f"total={partial_result.total} "
+            f"remaining={partial_result.remaining}"
+        )
+        sys.exit(INGEST_PARTIAL_EXIT_CODE)
 
 
 def deduplicate_results(results, similarity_ratio=0.85):

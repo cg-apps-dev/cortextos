@@ -17,6 +17,16 @@ const INJECTION_SCANNER_REL =
   'orgs/clean-green-marketing/agents/security-agent/tools/injection-scan.js';
 
 /**
+ * Exit code mmrag.py returns for a budget-bounded PARTIAL ingest (durable
+ * per-chunk progress made, work remaining). Mirrors
+ * INGEST_PARTIAL_EXIT_CODE in knowledge-base/scripts/mmrag.py. Kept in sync by
+ * contract, not import (the Python side is the source of truth). 75 is
+ * EX_TEMPFAIL from sysexits.h - a temporary failure the caller should retry,
+ * which is exactly the resume semantics here.
+ */
+export const MMRAG_INGEST_PARTIAL_EXIT_CODE = 75;
+
+/**
  * Phase-1 injection-scan monitor (security-agent pairing). Scans one path
  * BEFORE it is embedded/stored and logs the outcome to the bus event stream.
  *
@@ -455,12 +465,37 @@ export function ingestKnowledgeBase(
       : KB_INGEST_TIMEOUT_DEFAULT_MS,
   );
 
-  execFileSync(pythonPath, args, {
-    encoding: 'utf-8',
-    timeout: ingestTimeoutMs,
-    env,
-    stdio: 'inherit',
-  });
+  // mmrag.py checkpoint-resume contract (see mmrag.py header + kb-ingest-verified.sh):
+  //   exit 0  = complete   (prints "Done! Ingested N new chunk(s)")
+  //   exit 75 = partial     (budget-bounded stop AFTER >=1 durable per-chunk
+  //             upsert; prints "INGEST_PARTIAL done=N total=M remaining=K")
+  //   other non-zero = failed.
+  // Partial is NOT a failure - the shell wrapper resumes on it. We must
+  // propagate 75 DISTINCTLY: if it collapsed to the generic non-zero (1), the
+  // wrapper would misread partial as failed; if it collapsed to 0, a partial
+  // would render as complete-green (the unearned-green class the wrapper's
+  // positive chunk-count check exists to prevent). stdio is 'inherit', so the
+  // INGEST_PARTIAL marker already reached the caller's stream from the child;
+  // we key on the exit status, which execFileSync surfaces on err.status.
+  try {
+    execFileSync(pythonPath, args, {
+      encoding: 'utf-8',
+      timeout: ingestTimeoutMs,
+      env,
+      stdio: 'inherit',
+    });
+  } catch (err) {
+    const status = (err as { status?: number | null } | undefined)?.status;
+    if (status === MMRAG_INGEST_PARTIAL_EXIT_CODE) {
+      // Durable progress was made; the ingest is incomplete and will resume on
+      // the next call. Preserve 75 verbatim so the wrapper can distinguish
+      // partial from failed. process.exit (not exitCode) is deterministic here:
+      // the CLI action does nothing after this call, and inherited stdio means
+      // there is no buffered stdout of ours to lose.
+      process.exit(MMRAG_INGEST_PARTIAL_EXIT_CODE);
+    }
+    throw err; // real failure or timeout - propagate unchanged (CLI exits non-zero)
+  }
 
   console.log(`\nIngest complete → collection: ${collection}`);
 }
