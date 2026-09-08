@@ -645,11 +645,13 @@ export function checkStaleTasks(paths: BusPaths): StaleTaskReport {
   const nowEpoch = Math.floor(Date.now() / 1000);
   const STALE_IN_PROGRESS = 7200;   // 2 hours
   const STALE_PENDING = 86400;      // 24 hours
+  const STALE_BLOCKED = 259200;     // 3 days
   const STALE_HUMAN = 86400;        // 24 hours
 
   const report: StaleTaskReport = {
     stale_in_progress: [],
     stale_pending: [],
+    stale_blocked: [],
     stale_human: [],
     overdue: [],
   };
@@ -673,6 +675,11 @@ export function checkStaleTasks(paths: BusPaths): StaleTaskReport {
     // Stale pending: created_at > 24 hours ago
     if (task.status === 'pending' && createdAge > STALE_PENDING) {
       report.stale_pending.push(task);
+    }
+
+    // Stale blocked: updated_at > 3 days ago (blocker likely stale/forgotten)
+    if (task.status === 'blocked' && age > STALE_BLOCKED) {
+      report.stale_blocked.push(task);
     }
 
     // Human tasks: assigned to "human" or "user", or in human-tasks project
