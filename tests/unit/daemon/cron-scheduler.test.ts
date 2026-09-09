@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -42,7 +42,8 @@ vi.mock('../../../src/daemon/cron-execution-log.js', () => ({
 
 import { GATE_RECHECK_MS } from '../../../src/daemon/cron-capacity-gate';
 import { CronScheduler, nextFireFromCron } from '../../../src/daemon/cron-scheduler';
-import type { CronDefinition } from '../../../src/types/index';
+import { updateHeartbeat } from '../../../src/bus/heartbeat';
+import type { BusPaths, CronDefinition } from '../../../src/types/index';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1082,6 +1083,23 @@ describe('CronScheduler', () => {
       );
     }
 
+    function heartbeatPaths(agentName: string): BusPaths {
+      const agentStateDir = join(tmpRoot, 'state', agentName);
+      mkdirSync(agentStateDir, { recursive: true });
+      return {
+        ctxRoot: tmpRoot,
+        inbox: join(tmpRoot, 'inbox'),
+        inflight: join(tmpRoot, 'inflight'),
+        processed: join(tmpRoot, 'processed'),
+        logDir: join(tmpRoot, 'logs'),
+        stateDir: agentStateDir,
+        taskDir: join(tmpRoot, 'tasks'),
+        approvalDir: join(tmpRoot, 'approvals'),
+        analyticsDir: join(tmpRoot, 'analytics'),
+        deliverablesDir: join(tmpRoot, 'deliverables'),
+      };
+    }
+
     function watchdogScheduler(opts: {
       agentName?: string;
       isAlive?: () => boolean;
@@ -1226,6 +1244,60 @@ describe('CronScheduler', () => {
 
       expect(writes.join('')).toContain('[WATCHDOG REINJECT');
       s.stop();
+    });
+
+    it('updateHeartbeat keeps watchdog mark-alive separate from functional staleness', async () => {
+      const agentName = 'test-agent';
+      const paths = heartbeatPaths(agentName);
+      const heartbeatPath = join(tmpRoot, 'state', agentName, 'heartbeat.json');
+
+      vi.setSystemTime(new Date('2026-09-09T10:00:00Z'));
+      updateHeartbeat(paths, agentName, 'online - real heartbeat', { org: 'test-org', timezone: 'UTC' });
+
+      vi.setSystemTime(new Date('2026-09-09T11:50:00Z'));
+      updateHeartbeat(paths, agentName, `[watchdog] ${agentName} alive - idle session 2026-09-09T11:50:00Z`, {
+        org: 'test-org',
+        timezone: 'UTC',
+      });
+
+      const afterWatchdog = JSON.parse(readFileSync(heartbeatPath, 'utf-8')) as {
+        last_heartbeat: string;
+        last_functional_beat?: string;
+      };
+      expect(afterWatchdog.last_heartbeat).toBe('2026-09-09T11:50:00Z');
+      expect(afterWatchdog.last_functional_beat).toBe('2026-09-09T10:00:00Z');
+
+      const watchdogWrites: string[] = [];
+      mockReadCrons.mockReturnValue([heartbeatCron()]);
+      const s = watchdogScheduler({ writes: watchdogWrites, recentStdout: () => throttleAbortTerminal });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(watchdogWrites).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(watchdogWrites.join('')).toContain('[WATCHDOG REINJECT');
+      s.stop();
+
+      CronScheduler.resetWatchdogGlobalStateForTests();
+      const realWrites: string[] = [];
+      vi.setSystemTime(new Date('2026-09-09T11:55:00Z'));
+      updateHeartbeat(paths, agentName, 'online - real heartbeat recovered', { org: 'test-org', timezone: 'UTC' });
+
+      const afterReal = JSON.parse(readFileSync(heartbeatPath, 'utf-8')) as {
+        last_heartbeat: string;
+        last_functional_beat?: string;
+      };
+      expect(afterReal.last_heartbeat).toBe('2026-09-09T11:55:00Z');
+      expect(afterReal.last_functional_beat).toBe('2026-09-09T11:55:00Z');
+
+      const recovered = watchdogScheduler({ writes: realWrites, recentStdout: () => throttleAbortTerminal });
+      recovered.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(realWrites).toEqual([]);
+      recovered.stop();
     });
 
     it('reads last_functional_beat for staleness even when last_heartbeat is fresh', async () => {

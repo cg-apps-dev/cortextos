@@ -73,8 +73,22 @@ export function updateHeartbeat(
 
   const ts = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
   const mode = options?.timezone ? detectDayNightMode(options.timezone) : detectDayNightMode('UTC');
+  const isWatchdogMarkAlive = status.startsWith('[watchdog]');
+  let lastFunctionalBeat: string | undefined;
+  if (isWatchdogMarkAlive) {
+    try {
+      const prior = JSON.parse(readFileSync(join(paths.stateDir, 'heartbeat.json'), 'utf-8')) as {
+        last_functional_beat?: unknown;
+      };
+      if (typeof prior.last_functional_beat === 'string') {
+        lastFunctionalBeat = prior.last_functional_beat;
+      }
+    } catch { /* no prior functional beat to preserve */ }
+  } else {
+    lastFunctionalBeat = ts;
+  }
 
-  const heartbeat: Heartbeat = {
+  const heartbeat: Heartbeat & { last_functional_beat?: string } = {
     agent: agentName,
     org: options?.org ?? '',
     ...(options?.displayName ? { display_name: options.displayName } : {}),
@@ -82,6 +96,7 @@ export function updateHeartbeat(
     current_task: options?.currentTask ?? '',
     mode,
     last_heartbeat: ts,
+    ...(lastFunctionalBeat ? { last_functional_beat: lastFunctionalBeat } : {}),
     loop_interval: options?.loopInterval ?? '',
   };
 
