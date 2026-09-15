@@ -8,7 +8,7 @@ import { checkInbox, ackInbox, sendMessage } from '../bus/message.js';
 import { getDueReminders, markReminderDelivered, type Reminder } from '../bus/reminders.js';
 import { updateApproval } from '../bus/approval.js';
 import { logEvent } from '../bus/event.js';
-import { readCronState, parseDurationMs } from '../bus/cron-state.js';
+import { readCronState, parseDurationMs, cronExpressionMinIntervalMs } from '../bus/cron-state.js';
 import { updateHeartbeat } from '../bus/heartbeat.js';
 import { AgentProcess } from './agent-process.js';
 import type { TelegramAPI } from '../telegram/api.js';
@@ -1448,9 +1448,21 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     const promptSignal = this.latestPromptSignal();
     if (promptSignal.latestAtMs <= writtenAtMs) return;
 
+    // Cron-less agents intentionally fall back to the 1h default floor: inbox-driven
+    // agents still need silent-death coverage even when no daemon cron cadence exists.
     const twoCronMs = promptSignal.twoCronMs ?? FastChecker.SILENT_DEATH_DEFAULT_TWO_CRON_MS;
     const frozenPastTwoCron = now - writtenAtMs >= twoCronMs;
     if (classification.className === 'unknown-silent' && !frozenPastTwoCron) return;
+    if (classification.className === 'unknown-silent') {
+      const lastRealActivityMs = this.latestAgentActivityEventAfter(writtenAtMs);
+      if (lastRealActivityMs !== null) {
+        this.log(
+          `Fleet health unknown-silent suppressed for ${this.agent.name}: `
+          + `event activity ${new Date(lastRealActivityMs).toISOString()} is newer than context_status`,
+        );
+        return;
+      }
+    }
 
     if (classification.className === 'tier-throttled' && !usage.accountWideCapped) {
       await this.sendSilentDeathAlert(classification, ageMs, writtenAtMs, now, [
@@ -1585,6 +1597,13 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
               shortestIntervalMs = shortestIntervalMs === undefined ? parsedInterval : Math.min(shortestIntervalMs, parsedInterval);
             }
           }
+          const schedule = typeof cron.schedule === 'string' ? cron.schedule : undefined;
+          if (schedule) {
+            const parsedSchedule = this.cronScheduleIntervalMs(schedule);
+            if (parsedSchedule !== undefined) {
+              shortestIntervalMs = shortestIntervalMs === undefined ? parsedSchedule : Math.min(shortestIntervalMs, parsedSchedule);
+            }
+          }
         }
       }
     } catch { /* non-fatal */ }
@@ -1595,6 +1614,64 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       latestAtMs,
       twoCronMs: shortestIntervalMs === undefined ? undefined : shortestIntervalMs * 2,
     };
+  }
+
+  private cronScheduleIntervalMs(schedule: string): number | undefined {
+    const parsedDuration = parseDurationMs(schedule);
+    if (Number.isFinite(parsedDuration) && parsedDuration > 0) return parsedDuration;
+    if (schedule.trim().split(/\s+/).length !== 5) return undefined;
+    const parsedCron = cronExpressionMinIntervalMs(schedule);
+    return Number.isFinite(parsedCron) && parsedCron > 0 ? parsedCron : undefined;
+  }
+
+  private latestAgentActivityEventAfter(writtenAtMs: number): number | null {
+    const eventsDir = join(this.paths.analyticsDir, 'events', this.agent.name);
+    if (!existsSync(eventsDir)) return null;
+
+    let files: string[];
+    try {
+      files = readdirSync(eventsDir).filter(file => file.endsWith('.jsonl') && !file.startsWith('.'));
+    } catch {
+      return null;
+    }
+
+    let latestAtMs: number | null = null;
+    for (const file of files) {
+      const path = join(eventsDir, file);
+      let lines: string[];
+      try {
+        lines = readFileSync(path, 'utf-8').split(/\r?\n/).filter(Boolean);
+      } catch {
+        continue;
+      }
+      for (const line of lines) {
+        let event: Record<string, unknown>;
+        try {
+          event = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (!this.isAgentEmittedActivityEvent(event)) continue;
+        const timestamp = typeof event.timestamp === 'string' ? event.timestamp : undefined;
+        if (!timestamp) continue;
+        const ts = new Date(timestamp).getTime();
+        if (!Number.isFinite(ts) || ts <= writtenAtMs) continue;
+        latestAtMs = latestAtMs === null ? ts : Math.max(latestAtMs, ts);
+      }
+    }
+    return latestAtMs;
+  }
+
+  private isAgentEmittedActivityEvent(event: Record<string, unknown>): boolean {
+    if (event.agent !== this.agent.name) return false;
+    const eventName = typeof event.event === 'string' ? event.event : '';
+    if (eventName.startsWith('fleet_health_') || eventName.startsWith('ctx_handoff_')) return false;
+    const sourceText = JSON.stringify({
+      category: event.category,
+      event: event.event,
+      metadata: event.metadata,
+    });
+    return !/\bwatchdog\b/i.test(sourceText);
   }
 
   private latestInboxDeliveryAtMs(): number {

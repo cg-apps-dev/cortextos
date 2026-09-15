@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 vi.mock('child_process', () => ({ execFile: vi.fn() }));
 import { execFile } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync, utimesSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { FastChecker } from '../../../src/daemon/fast-checker';
@@ -589,13 +589,12 @@ describe('FastChecker', () => {
       }));
     }
 
-    function writeCronAttempt(ts: string, interval = '15m'): void {
+    function writeCronAttempt(ts: string, schedule = '15m'): void {
       writeFileSync(join(paths.stateDir, 'crons.json'), JSON.stringify({
         updated_at: ts,
         crons: [{
           name: 'heartbeat',
-          schedule: interval,
-          interval,
+          schedule,
           prompt: 'heartbeat',
           last_fire_attempted_at: ts,
         }],
@@ -604,6 +603,36 @@ describe('FastChecker', () => {
 
     function writeStdout(text: string): void {
       writeFileSync(join(paths.logDir, 'stdout.log'), text);
+    }
+
+    function setStdoutMtime(ts: string): void {
+      const date = new Date(ts);
+      utimesSync(join(paths.logDir, 'stdout.log'), date, date);
+    }
+
+    function writeHeartbeat(ts: string, status = '[watchdog] alive'): void {
+      writeFileSync(join(paths.stateDir, 'heartbeat.json'), JSON.stringify({
+        agent: 'test-agent',
+        status,
+        last_heartbeat: ts,
+        org: 'clean-green-marketing',
+      }));
+    }
+
+    function writeAgentEvent(agentName: string, ts: string, eventName = 'task_completed'): void {
+      const eventsDir = join(paths.analyticsDir, 'events', agentName);
+      mkdirSync(eventsDir, { recursive: true });
+      const day = ts.split('T')[0];
+      writeFileSync(join(eventsDir, `${day}.jsonl`), JSON.stringify({
+        id: `test-${eventName}`,
+        agent: agentName,
+        org: 'clean-green-marketing',
+        timestamp: ts.replace(/\.\d{3}Z$/, 'Z'),
+        category: 'task',
+        event: eventName,
+        severity: 'info',
+        metadata: { source: 'agent-turn' },
+      }) + '\n');
     }
 
     function writeInboxDelivery(ts: string): void {
@@ -1129,6 +1158,90 @@ describe('FastChecker', () => {
       const text = expectFleetHealthNotify();
       expect(text).toContain('Class: unknown-silent');
       expectFleetHealthEvent('unknown-agent', 'unknown-silent');
+    });
+
+    it('alerts unknown-silent when only watchdog heartbeat is fresh', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('watchdog-only-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T20:00:00.000Z');
+      writeCronAttempt('2026-07-12T21:20:00.000Z', '15m');
+      writeHeartbeat('2026-07-12T21:29:00.000Z');
+      writeStdout('normal spinner noise only\n');
+
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
+      expect(text).toContain('Class: unknown-silent');
+      expectFleetHealthEvent('watchdog-only-agent', 'unknown-silent');
+    });
+
+    it('alerts unknown-silent when stdout advances from injection echo without agent events', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('injection-echo-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T20:00:00.000Z');
+      writeCronAttempt('2026-07-12T21:20:00.000Z', '15m');
+      writeHeartbeat('2026-07-12T21:29:00.000Z');
+      writeStdout('[CRON FIRED 2026-07-12T21:20:00.000Z] heartbeat: injected prompt echo\n');
+      setStdoutMtime('2026-07-12T21:29:00.000Z');
+
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      const text = expectFleetHealthNotify();
+      expect(text).toContain('Class: unknown-silent');
+      expectFleetHealthEvent('injection-echo-agent', 'unknown-silent');
+    });
+
+    it('suppresses unknown-silent when an agent event is newer than frozen context_status', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('active-event-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T20:00:00.000Z');
+      writeInboxDelivery('2026-07-12T21:20:00.000Z');
+      writeAgentEvent('active-event-agent', '2026-07-12T21:25:00.000Z');
+      writeStdout('normal spinner noise only\n');
+
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
+      expect(readFleetHealthEvents('active-event-agent')).not.toContain('fleet_health_silent_death_alert');
+    });
+
+    it('derives two-cron threshold from schedule duration and cron expression fields', async () => {
+      const api = createMockTelegramApi();
+      const durationChecker = new FastChecker(createMockAgent('duration-schedule-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T20:30:00.000Z');
+      writeCronAttempt('2026-07-12T21:20:00.000Z', '4h');
+      writeStdout('normal spinner noise only\n');
+
+      await runPollCycle(durationChecker);
+
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
+
+      vi.mocked(execFile).mockClear();
+      const cronExprChecker = new FastChecker(createMockAgent('cron-expression-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T20:30:00.000Z');
+      writeCronAttempt('2026-07-12T21:20:00.000Z', '0 7 * * *');
+      writeStdout('normal spinner noise only\n');
+
+      await runPollCycle(cronExprChecker);
+
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
+    });
+
+    it('does not alert unknown-silent when no prompt signal follows written_at', async () => {
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(createMockAgent('idle-unknown-agent'), paths, '/tmp/framework', { telegramApi: api });
+      writeContextStatus('2026-07-12T20:00:00.000Z');
+      writeStdout('normal spinner noise only\n');
+
+      await runPollCycle(checker);
+
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      expectNoFleetHealthNotify();
     });
   });
 
