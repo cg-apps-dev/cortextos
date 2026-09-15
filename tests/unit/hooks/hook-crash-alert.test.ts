@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 
 const execFileMock = vi.fn();
 vi.mock('child_process', () => ({
@@ -14,6 +14,7 @@ import {
   classifyFromMarkers,
   buildCrashLogEventArgs,
   readLatestCrashReason,
+  main,
 } from '../../../src/hooks/hook-crash-alert';
 import { clearEndMarkers } from '../../../src/bus/heartbeat';
 
@@ -397,5 +398,135 @@ describe('marker lifecycle (classify → clearEndMarkers → classify)', () => {
     clearEndMarkers(tmp); // successor's first heartbeat — marker still within grace
     expect(existsSync(join(tmp, '.session-refresh'))).toBe(true);
     expect(classifyFromMarkers(tmp, MARKERS).endType).toBe('session-refresh'); // firing #2 — no false crash
+  });
+});
+
+describe('main SessionEnd reason classification', () => {
+  const originalEnv = { ...process.env };
+  let roots: string[] = [];
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-06-16T19:00:00Z'));
+    execFileMock.mockReset();
+    execFileMock.mockImplementation((...args: unknown[]) => {
+      const cb = args[args.length - 1];
+      if (typeof cb === 'function') cb(null, '', '');
+      return {};
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    process.env = { ...originalEnv };
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+    roots = [];
+  });
+
+  async function runHook(payload: Record<string, unknown>, setup?: (paths: {
+    root: string;
+    stateDir: string;
+    logDir: string;
+    agentDir: string;
+  }) => void) {
+    const instanceId = `crashalert-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const root = join(homedir(), '.cortextos', instanceId);
+    const agentName = 'dev-agent';
+    const stateDir = join(root, 'state', agentName);
+    const logDir = join(root, 'logs', agentName);
+    const agentDir = mkdtempSync(join(tmpdir(), 'crashalert-agent-'));
+    roots.push(root, agentDir);
+    mkdirSync(stateDir, { recursive: true });
+    mkdirSync(logDir, { recursive: true });
+    writeFileSync(join(stateDir, 'heartbeat.json'), JSON.stringify({ status: 'idle' }), 'utf-8');
+    writeFileSync(join(agentDir, 'config.json'), JSON.stringify({ max_crashes_per_day: 10 }), 'utf-8');
+    setup?.({ root, stateDir, logDir, agentDir });
+
+    process.env.CTX_AGENT_NAME = agentName;
+    process.env.CTX_INSTANCE_ID = instanceId;
+    process.env.CTX_AGENT_DIR = agentDir;
+    process.env.CTX_FRAMEWORK_ROOT = '/tmp/fake-framework-root';
+
+    const done = main();
+    process.nextTick(() => {
+      process.stdin.emit('data', Buffer.from(JSON.stringify(payload)));
+      process.stdin.emit('end');
+    });
+    await done;
+
+    const crashLog = readFileSync(join(logDir, 'crashes.log'), 'utf-8').trim();
+    const countPath = join(stateDir, '.crash_count_today');
+    const countText = existsSync(countPath) ? readFileSync(countPath, 'utf-8') : '';
+    const calls = execFileMock.mock.calls.map((call) => ({
+      cmd: call[0],
+      args: call[1] as string[],
+    }));
+    return { stateDir, logDir, crashLog, countText, calls };
+  }
+
+  function cliArgs(calls: { args: string[] }[]): string[][] {
+    return calls.map((call) => call.args.slice(1));
+  }
+
+  it('reason=clear with no marker records session-end without crash count or notifyAgents', async () => {
+    const result = await runHook({ session_id: 's-clear', reason: 'clear' });
+
+    expect(result.crashLog).toContain('type=session-end');
+    expect(result.crashLog).toContain('session=s-clear');
+    expect(result.crashLog).toContain('end_reason=clear');
+    expect(result.countText).toBe('');
+    expect(cliArgs(result.calls).some((args) => args.includes('send-message'))).toBe(false);
+    const gracefulEvent = cliArgs(result.calls).find((args) => args.includes('graceful_session_end'));
+    expect(gracefulEvent).toBeTruthy();
+    expect(JSON.parse(gracefulEvent?.at(-1) ?? '{}')).toEqual({ agent: 'dev-agent', reason: 'clear' });
+  });
+
+  it.each(['resume', 'logout'])('reason=%s with no marker records session-end', async (reason) => {
+    const result = await runHook({ session_id: `s-${reason}`, reason });
+
+    expect(result.crashLog).toContain('type=session-end');
+    expect(result.crashLog).toContain(`end_reason=${reason}`);
+    expect(result.countText).toBe('');
+    expect(cliArgs(result.calls).some((args) => args.includes('send-message'))).toBe(false);
+  });
+
+  it('NEGATIVE CONTROL reason=other with no marker still records crash, increments count, and notifies agents', async () => {
+    const result = await runHook({ session_id: 's-other', reason: 'other' });
+
+    expect(result.crashLog).toContain('type=crash');
+    expect(result.crashLog).toContain('end_reason=other');
+    expect(result.countText).toMatch(/^\d{4}-\d{2}-\d{2}:1$/);
+    const sendMessageCalls = cliArgs(result.calls).filter((args) => args.includes('send-message'));
+    expect(sendMessageCalls).toHaveLength(2);
+    expect(sendMessageCalls.map((args) => args[2])).toEqual(['the-analyst', 'the-orchestrator']);
+  });
+
+  it('NEGATIVE CONTROL reason=prompt_input_exit with no marker still records crash', async () => {
+    const result = await runHook({ session_id: 's-prompt', reason: 'prompt_input_exit' });
+
+    expect(result.crashLog).toContain('type=crash');
+    expect(result.crashLog).toContain('end_reason=prompt_input_exit');
+    expect(result.countText).toMatch(/^\d{4}-\d{2}-\d{2}:1$/);
+  });
+
+  it('NEGATIVE CONTROL missing reason with no marker still records crash and end_reason=none', async () => {
+    const result = await runHook({ session_id: 's-missing' });
+
+    expect(result.crashLog).toContain('type=crash');
+    expect(result.crashLog).toContain('end_reason=none');
+    expect(result.countText).toMatch(/^\d{4}-\d{2}-\d{2}:1$/);
+  });
+
+  it('marker precedence: session-refresh marker wins even when reason=other', async () => {
+    const result = await runHook(
+      { session_id: 's-marker', reason: 'other' },
+      ({ stateDir }) => writeFileSync(join(stateDir, '.session-refresh'), 'rollover', 'utf-8'),
+    );
+
+    expect(result.crashLog).toContain('type=session-refresh');
+    expect(result.crashLog).toContain('reason=rollover');
+    expect(result.crashLog).toContain('end_reason=other');
+    expect(result.countText).toBe('');
+    expect(cliArgs(result.calls).some((args) => args.includes('context_session_refresh'))).toBe(true);
   });
 });

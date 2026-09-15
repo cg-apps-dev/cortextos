@@ -13,6 +13,11 @@
  *   - Deduplicates identical alerts for the same agent within 10 minutes so a
  *     broken watchdog loop results in at most one notification, not a buzz
  *     storm.
+ *
+ * Honest scope: Claude Code's SessionEnd hook fires after graceful cleanup; a
+ * hard kill/OOM almost certainly never reaches this code. The daemon PTY-exit
+ * path (agent-process.ts handleExit) is the actual crash detector. This hook is
+ * a graceful-session-end classifier + evidence recorder, not the crash catcher.
  */
 import { existsSync, readFileSync, writeFileSync, appendFileSync, unlinkSync, mkdirSync, statSync } from 'fs';
 import { join } from 'path';
@@ -30,12 +35,14 @@ const CRASH_REASON_WINDOW_MS = 10_000;           // restart marker must belong t
 const QUIET_SUPPRESSED_TYPES = new Set([
   'planned-restart',
   'session-refresh',
+  'session-end',
   'daemon-stop',
   'user-restart',
   'user-disable',
   'user-stop',
   'rate-limited',
 ]);
+const GRACEFUL_SESSION_END_REASONS = new Set(['clear', 'resume', 'logout']);
 
 export const END_TYPE_MARKERS = [
   { file: '.restart-planned', type: 'planned-restart' },
@@ -258,12 +265,13 @@ const MARKER_TTL_MS = 300_000; // 5 minutes
 
 /**
  * Read the hook's stdin JSON payload. Claude Code pipes a JSON object to
- * SessionEnd hooks containing `session_id` (the ending session's id) plus
- * other event fields. Mirrors the stdin-read in hook-context-status.ts.
- * Returns {} on any failure. The session_id is recorded in crashes.log for
- * audit; it is not used for classification.
+ * SessionEnd hooks containing `session_id` (the ending session's id), `reason`,
+ * and other event fields. Mirrors the stdin-read in hook-context-status.ts.
+ * Returns {} on any failure. The session_id and reason are recorded in
+ * crashes.log for audit; only documented graceful reasons influence the
+ * SessionEnd fallback classification.
  */
-async function readHookInput(): Promise<{ session_id?: string }> {
+async function readHookInput(): Promise<{ session_id?: string; reason?: string }> {
   const chunks: Buffer[] = [];
   await new Promise<void>((resolve) => {
     // Fallback so a stdin that never ends can't hang the hook. unref()'d and
@@ -329,7 +337,7 @@ export function classifyFromMarkers(
   return { endType: 'crash', reason: '' };
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const agentName = process.env.CTX_AGENT_NAME;
   const instanceId = process.env.CTX_INSTANCE_ID || 'default';
   if (!agentName) return;
@@ -347,6 +355,7 @@ async function main(): Promise<void> {
   // real session + one ephemeral. The fix is marker-handling, not id-dedup.)
   const hookInput = await readHookInput();
   const sessionId = typeof hookInput.session_id === 'string' ? hookInput.session_id : '';
+  const endReason = typeof hookInput.reason === 'string' ? hookInput.reason : '';
 
   // Determine end type from state markers (written by other parts of the
   // system before the Claude Code session exits). Markers are NOT consumed
@@ -365,11 +374,18 @@ async function main(): Promise<void> {
       reason = 'anthropic rate limit detected in stdout.log';
     }
   }
+  if (endType === 'crash' && GRACEFUL_SESSION_END_REASONS.has(endReason)) {
+    endType = 'session-end';
+  }
   const crashAt = new Date();
   reason = readLatestCrashReason(logDir, endType, reason, crashAt);
 
   // Track crash count (real crashes only).
   const today = crashAt.toISOString().split('T')[0];
+  // Footgun: there are two same-named counters with different meanings.
+  // This hook's state/<agent>/.crash_count_today is cosmetic/audit-only for
+  // the "crashes today" line. The daemon restart-limit counter lives at
+  // logs/<agent>/.crash_count_today and is written only on real PTY exit.
   const countFile = join(stateDir, '.crash_count_today');
   let crashCount = 0;
   if (endType === 'crash') {
@@ -407,7 +423,7 @@ async function main(): Promise<void> {
   // FP ever slips through, two crashes.log lines sharing a session value make
   // it provable after the fact.
   const timestamp = crashAt.toISOString();
-  const logLine = `${timestamp} type=${endType} reason=${reason || 'none'} session=${sessionId || 'unknown'} last_task=${lastTask}\n`;
+  const logLine = `${timestamp} type=${endType} reason=${reason || 'none'} session=${sessionId || 'unknown'} end_reason=${endReason || 'none'} last_task=${lastTask}\n`;
   try {
     appendFileSync(join(logDir, 'crashes.log'), logLine);
   } catch { /* ignore */ }
@@ -474,6 +490,9 @@ async function main(): Promise<void> {
     case 'session-refresh':
       message = `♻️ ${agentName} session refresh (context exhaustion). Restarting with fresh session.`;
       break;
+    case 'session-end':
+      message = '';
+      break;
     case 'user-restart':
       message = `🔄 ${agentName} restarted by user: ${reason || 'no reason given'}`;
       break;
@@ -518,6 +537,8 @@ async function main(): Promise<void> {
   //                                    bus is UP, only inference-throttled).
   //   session-refresh               -> SUPPRESS the notify + emit an INTERNAL log-event (high-freq --continue
   //                                    routine, like compaction; the log disambiguates a long refresh from death).
+  //   session-end                   -> SUPPRESS the notify + emit an INTERNAL log-event (Claude Code graceful
+  //                                    in-process rotation such as /clear, resume, logout; process did not die).
   //   planned-restart / daemon-stop -> SUPPRESS (intentional/scheduled = the operator already knows; daemon-stop
   //                                    must NOT ops-route — the bus may be down mid-stop so it would silently
   //                                    not-deliver = false-confidence, worse than an honest no-alert).
@@ -528,6 +549,9 @@ async function main(): Promise<void> {
   } else if (endType === 'session-refresh') {
     await runCli(['bus', 'log-event', 'action', 'context_session_refresh', 'info',
       '--meta', JSON.stringify({ agent: agentName })]);
+  } else if (endType === 'session-end') {
+    await runCli(['bus', 'log-event', 'action', 'graceful_session_end', 'info',
+      '--meta', JSON.stringify({ agent: agentName, reason: endReason })]);
   }
   // crash/daemon-crashed (notifyAgents above) + planned-restart/daemon-stop/user-* (suppress) -> no send here.
 }
