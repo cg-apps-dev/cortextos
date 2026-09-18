@@ -58,11 +58,13 @@ claude.ai MCP **bridge connectors only work in login mode**; bearer kills the br
 
 ## 3. PER-ACCOUNT SETUP-TOKEN PROCEDURE
 
-**Account ↔ email map** (Clean Green fleet; the billing account name is what `list-agent-accounts`/`usage_account` use):
-- `cg-team-seat` = adam@cleangreen.com (metered, extra-usage ON)
-- `icloud-max-20x` = afolker@icloud.com (metered, extra-usage ON)
+**Account ↔ email map** (Clean Green fleet; the billing account name is what `list-agent-accounts`/`usage_account` use). The email↔account mapping is stable; the **meter (extra-usage) toggle is VOLATILE** - Adam flips it per capacity policy - so NEVER trust the state below for a live gating/attribution decision. Verify fresh: `cortextos bus refresh-usage` then read `extra_usage.is_enabled` per account in `state/usage/multi-account-usage.json` (or `check-all-usage`). States below are current as of 2026-09-18 (live-verified):
+- `cg-team-seat` = adam@cleangreen.com (metered, extra-usage ON; post-2026-09-18 fleet migration this seat is empty of agents)
+- `icloud-max-20x` = afolker@icloud.com (NOT metered, extra-usage OFF - deliberate hardcap; **corrected 2026-09-18**, was wrongly listed "metered/ON" - it has read OFF since Adam flipped it 2026-06-23)
 - `me-com-max` = afolker@me.com (NOT metered, extra-usage OFF)
-- `moonlight-max` = the moonlight account (extra-usage OFF)
+- `moonlight-max` = the moonlight account (NOT metered, extra-usage OFF)
+
+> Capacity semantics that follow from the toggle: a metered (extra-usage ON) account has an overage valve - a cap is a bill, not a stop. A NOT-metered (OFF) account is a HARD STOP - a cap there is an availability event, not a bill. Post-2026-09-18 migration there is no metered valve left carrying agents fleet-wide (cg-team empty), so both live hard-stop seats (icloud, me-com) are watched for 7d/scoped-limit headroom as availability constraints, not spend.
 
 **Steps (per account):**
 1. **(HUMAN GATE - Adam) mint a FRESH `claude setup-token` AS the target account.** Authenticate as THAT account identity (incognito/clean browser signed into that account, or pick it on the consent screen). Output: `sk-ant-oat01-...`. Must be fresh + minted-as-the-account (a reused/stored token is dead-for-runtime).

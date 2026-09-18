@@ -60,11 +60,13 @@ claude.ai MCP **bridge connectors only work in login mode**; bearer kills the br
 
 **CHECK BEFORE YOU ASK (Adam hard rule, 2026-07-24) - do this before step 1.** Agent setup-tokens already exist on-machine in almost every case; a human ask is the LAST resort, never the first move. Check order: (1) the vault - `state/oauth/setup-tokens/<ACCOUNT>.token`; (2) `state/oauth/accounts.json` (`.accounts.<NAME>`); (3) `cortextos list-vault-accounts`. Only mint a fresh token (step 1 below) if all three come up empty for that account. To MOVE an already-provisioned agent between accounts, use the gated `cortextos switch-agent-account <agent> <account>` ([fleet/switch-agent-account.md](../../../playbooks/fleet/switch-agent-account.md) - both-halves flip + restart + verify + rollback + functional-sweep) instead of a hand-edited `.env`. Origin: 2026-07-24, the orchestrator wrongly asked Adam for the icloud setup-token that had existed in the vault since 2026-07-09.
 
-**Account ↔ email map** (Clean Green fleet; the billing account name is what `list-agent-accounts`/`usage_account` use):
-- `cg-team-seat` = adam@cleangreen.com (metered, extra-usage ON)
-- `icloud-max-20x` = afolker@icloud.com (metered, extra-usage ON)
+**Account ↔ email map** (Clean Green fleet; the billing account name is what `list-agent-accounts`/`usage_account` use). The email↔account mapping is stable; the **meter (extra-usage) toggle is VOLATILE** - Adam flips it per capacity policy - so NEVER trust the state below for a live gating/attribution decision. Verify fresh: `cortextos bus refresh-usage` then read `extra_usage.is_enabled` per account in `state/usage/multi-account-usage.json` (or `check-all-usage`). States below are current as of 2026-09-18 (live-verified):
+- `cg-team-seat` = adam@cleangreen.com (metered, extra-usage ON; post-2026-09-18 fleet migration this seat is empty of agents)
+- `icloud-max-20x` = afolker@icloud.com (NOT metered, extra-usage OFF - deliberate hardcap; **corrected 2026-09-18**, was wrongly listed "metered/ON" - it has read OFF since Adam flipped it 2026-06-23)
 - `me-com-max` = afolker@me.com (NOT metered, extra-usage OFF)
-- `moonlight-max` = the moonlight account (extra-usage OFF)
+- `moonlight-max` = the moonlight account (NOT metered, extra-usage OFF)
+
+> Capacity semantics that follow from the toggle: a metered (extra-usage ON) account has an overage valve - a cap is a bill, not a stop. A NOT-metered (OFF) account is a HARD STOP - a cap there is an availability event, not a bill. Post-2026-09-18 migration there is no metered valve left carrying agents fleet-wide (cg-team empty), so both live hard-stop seats (icloud, me-com) are watched for 7d/scoped-limit headroom as availability constraints, not spend.
 
 **Steps (per account, once the check above confirms a fresh mint is genuinely needed):**
 1. **(HUMAN GATE - Adam) mint a FRESH `claude setup-token` AS the target account.** Authenticate as THAT account identity (incognito/clean browser signed into that account, or pick it on the consent screen). Output: `sk-ant-oat01-...`. Must be fresh + minted-as-the-account (a reused/stored token is dead-for-runtime).
