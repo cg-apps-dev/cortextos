@@ -16,3 +16,13 @@
 
 ## Incident of record
 Stale meter-state line in the `agent-auth` skill (`icloud-max-20x` listed "metered/ON"; live = OFF, deliberate hardcap since 2026-06-23). First pass fixed ONLY `community/skills/agent-auth/SKILL.md` and claimed "live doc agents read is already correct" - WRONG. the-sop-keeper's completeness check found the `templates/agent` spawn source + 4 live per-agent dist copies (the-production-house, vitalis, the-sop-keeper, the-axon-agent) all still stale. Full fix = 6 copies; the 2 tracked committed as `ede875ae`, the 4 live runtime-fixed directly. Pairs with [[verify-then-contain]] (a fix must cover EXISTING STATE across ALL instances, not just going-forward / not just one surface).
+
+## Detector-coverage defect: check-skill-drift is a not-scanned-zero for canonical skills (gap c)
+
+`cortextos bus check-skill-drift` (`src/bus/skill-drift.ts`) enumerates a HARDCODED `SKILL_SYNC_PAIRS` list containing exactly ONE pair (meta-intake / meta-ads-agent). It does not scan `agent-auth` or any other skill, so its "0 drift" for agent-auth is a NOT-SCANNED-zero, not an in-sync-zero - a silent fail-open on a security-relevant detector for every canonical skill but meta-intake. (Verified by claude-dev: source read + live run = 15 drift files, all meta-intake, zero agent-auth, 2026-09-18.) This is the CONSTANT-0 / dead-scan-smell class: a scanner that has never returned >0 for a class is suspect; never infer health from a 0 you have not proven the scanner can PRODUCE.
+
+**Acceptance gate for any fix (the fix must not itself fail-open):**
+- Detector-scope (extend enumeration to the canonical-skill set fleet-wide): prove it DISCRIMINATES - plant a stale line in a live canonical copy AND keep a known-in-sync control; require flag-the-planted + pass-the-control (a broken detector returns nonzero trivially). Plant across >=2 agents, because a detector that scans agent X but not agent Y passes a single-agent plant and still misses Y - prove the enumeration over the TRUE universe, not one sampled agent.
+- Reconcile (auto-sync canonical, flag-not-clobber diverged): TWO plants, both sides. (1) a stale-drifted canonical copy must be REACHED and synced. (2) an intentionally-diverged (locally-edited) canonical copy must be FLAGGED, never clobbered. The clobber-safety half is the one that fails silently, so it needs the adversarial plant.
+
+Fix design lives in claude-dev's post-jitter spec (`task_1789744919499`), which cites this record as the defect it closes.
