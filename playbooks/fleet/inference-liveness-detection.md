@@ -14,8 +14,7 @@ agents. It is **inference-death, not delivery-death**: every cron kept firing on
 (`status=fired error=null`) the whole time - the daemon delivered, the turn did not process. It went
 undetected because the fast-checker watchdog mark-alive (`[watchdog] <agent> alive`) kept
 `last_heartbeat` fresh, so the heartbeat-staleness watchdog never saw staleness. Full root cause,
-facts, and hypotheses: the claude-dev FINDINGS `FINDINGS-fleet-session-rollover-wedge-2026-09-17.md`
-(authored, but NOT yet on main as of 2026-09-19 - named not linked until it lands in the tracked tree).
+facts, and hypotheses: the claude-dev FINDINGS [FINDINGS-fleet-session-rollover-wedge-2026-09-17.md](FINDINGS-fleet-session-rollover-wedge-2026-09-17.md).
 
 ## Coverage map - which instrument catches which shape (READ FIRST)
 
@@ -108,9 +107,8 @@ that also describes the healthy case is not a detector.
 
 ## Cross-refs
 
-- `FINDINGS-fleet-session-rollover-wedge-2026-09-17.md` - root cause, confirmed facts, hypotheses
-  (claude-dev-agent). Authored but NOT yet on main (pending merge as of 2026-09-19); convert this to a
-  link once it lands in the tracked tree.
+- [FINDINGS-fleet-session-rollover-wedge-2026-09-17.md](FINDINGS-fleet-session-rollover-wedge-2026-09-17.md)
+  - root cause, confirmed facts, hypotheses (claude-dev-agent).
 - [heartbeat-staleness-watchdog.md](heartbeat-staleness-watchdog.md) - the watchdog whose
   process-alive/inference-dead LIMIT this detection set begins to close.
 - the-analyst's `inference-liveness-validation.md` (threshold evidence, shadow samples, arm decision) -
