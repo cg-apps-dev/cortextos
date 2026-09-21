@@ -84,6 +84,8 @@ const DEFAULT_TARGETS: Target[] = [
   { org: 'clean-green-marketing', agent: 'vitalis', group: 'seventy-one-hour' },
 ];
 
+const DEFAULT_GROUPS = new Set(DEFAULT_TARGETS.map(target => target.group));
+
 function positiveModulo(value: number, modulo: number): number {
   return ((value % modulo) + modulo) % modulo;
 }
@@ -350,8 +352,8 @@ export function runSelfTest(): string[] {
   ];
 
   try {
-    seedSelfTestAgent(root, logsRoot, targets[0], 86400, '2026-09-21T19:00:30.000Z');
-    seedSelfTestAgent(root, logsRoot, targets[1], 86400, '2026-09-21T19:00:10.000Z');
+    seedSelfTestAgent(root, logsRoot, targets[0], 86400, '2026-09-21T19:00:10.000Z');
+    seedSelfTestAgent(root, logsRoot, targets[1], 86400, '2026-09-21T19:00:30.000Z');
     seedSelfTestAgent(root, logsRoot, targets[2], 86400, '2026-09-21T19:00:20.000Z');
 
     const opts: JitterOptions = { repoRoot: root, logsRoot, statePath, targets };
@@ -359,7 +361,7 @@ export function runSelfTest(): string[] {
     if (plan.verdict !== 'PASS') throw new Error(`healthy plan failed: ${plan.errors.join(', ')}`);
     const alpha = plan.rows.find(row => row.agent === 'alpha');
     const zeta = plan.rows.find(row => row.agent === 'zeta');
-    if (!alpha || !zeta || alpha.offsetSeconds !== FLOOR_SECONDS || zeta.offsetSeconds !== FLOOR_SECONDS + 2 * STEP_SECONDS) {
+    if (!alpha || !zeta || zeta.offsetSeconds !== FLOOR_SECONDS || alpha.offsetSeconds !== FLOOR_SECONDS + 2 * STEP_SECONDS) {
       throw new Error('phase-rank offsets were not assigned by current phase');
     }
 
@@ -369,7 +371,7 @@ export function runSelfTest(): string[] {
     const appliedAt = new Date('2026-09-21T20:00:00.000Z');
     applyPhase1(opts, appliedAt);
     const phase1Cfg = readJson(configPath(root, targets[0]));
-    if (phase1Cfg.max_session_seconds !== 86400 + FLOOR_SECONDS + 2 * STEP_SECONDS) {
+    if (phase1Cfg.max_session_seconds !== 86400 + FLOOR_SECONDS) {
       throw new Error('apply did not write expected phase1 value');
     }
 
@@ -403,15 +405,33 @@ export function runSelfTest(): string[] {
   }
 }
 
+export function defaultStatePath(runtimeRoot: string, group?: string): string {
+  const suffix = group ? group.replace(/[^a-z0-9_.-]/gi, '-') : 'all';
+  return join(runtimeRoot, 'state', `session-rollover-jitter-${suffix}.json`);
+}
+
+function selectedGroup(argv: string[]): string | undefined {
+  const group = argValue(argv, '--group');
+  if (group && !DEFAULT_GROUPS.has(group)) {
+    throw new Error(`invalid --group ${group}; expected one of ${[...DEFAULT_GROUPS].sort().join(', ')}`);
+  }
+  return group;
+}
+
 function defaultOptions(argv: string[]): JitterOptions {
   const repoRoot = argValue(argv, '--repo-root') ?? process.env.CTX_FRAMEWORK_ROOT ?? process.cwd();
-  const logsRoot = argValue(argv, '--logs-root') ?? join(process.env.CTX_ROOT ?? join(process.env.HOME ?? '', '.cortextos', 'default'), 'logs');
-  const statePath = argValue(argv, '--state') ?? join(repoRoot, '.cortextOS', 'state', 'session-rollover-jitter.json');
+  const runtimeRoot = process.env.CTX_ROOT ?? join(process.env.HOME ?? '', '.cortextos', 'default');
+  const logsRoot = argValue(argv, '--logs-root') ?? join(runtimeRoot, 'logs');
+  const group = selectedGroup(argv);
+  const statePath = argValue(argv, '--state') ?? defaultStatePath(runtimeRoot, group);
+  const targets = group
+    ? DEFAULT_TARGETS.filter(target => target.group === group)
+    : DEFAULT_TARGETS;
   return {
     repoRoot: resolve(repoRoot),
     logsRoot: resolve(logsRoot),
     statePath: resolve(statePath),
-    targets: DEFAULT_TARGETS,
+    targets,
   };
 }
 
@@ -423,7 +443,8 @@ function argValue(argv: string[], flag: string): string | undefined {
 function usage(): string {
   return [
     'Usage: npx tsx scripts/session-rollover-jitter.ts --plan|--apply-phase1|--revert|--self-test',
-    'Optional: --repo-root <path> --logs-root <path> --state <path>',
+    'Optional: --group daily|seventy-one-hour --repo-root <path> --logs-root <path> --state <path>',
+    'Apply and revert require --group so cadence groups can be reverted independently.',
   ].join('\n');
 }
 
@@ -450,6 +471,9 @@ if (isMain) {
     }
 
     const opts = defaultOptions(argv);
+    if ((modes[0] === '--apply-phase1' || modes[0] === '--revert') && !selectedGroup(argv)) {
+      throw new Error('refusing apply/revert without --group; run one cadence group at a time');
+    }
     if (modes[0] === '--plan') {
       const plan = buildPlan(opts);
       console.log(formatPlan(plan));

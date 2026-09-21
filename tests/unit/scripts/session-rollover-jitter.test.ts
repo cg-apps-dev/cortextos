@@ -5,6 +5,7 @@ import { dirname, join } from 'path';
 import {
   applyPhase1,
   buildPlan,
+  defaultStatePath,
   latestSessionRefreshAt,
   revertPhase1,
   runSelfTest,
@@ -59,17 +60,23 @@ describe('session-rollover-jitter', () => {
       { org: 'org', agent: 'a-agent', group: 'daily' },
       { org: 'org', agent: 'm-agent', group: 'daily' },
     ];
-    seed(targets[0], 86400, '2026-09-21T19:00:30.000Z');
-    seed(targets[1], 86400, '2026-09-21T19:00:10.000Z');
+    seed(targets[0], 86400, '2026-09-21T19:00:10.000Z');
+    seed(targets[1], 86400, '2026-09-21T19:00:30.000Z');
     seed(targets[2], 86400, '2026-09-21T19:00:20.000Z');
 
     const plan = buildPlan({ repoRoot: root, logsRoot, statePath, targets });
     expect(plan.verdict).toBe('PASS');
     expect(plan.rows.map(row => [row.agent, row.offsetSeconds])).toEqual([
-      ['a-agent', 120],
+      ['z-agent', 120],
       ['m-agent', 210],
-      ['z-agent', 300],
+      ['a-agent', 300],
     ]);
+  });
+
+  it('keeps default state outside the repository runtime checkout and splits by group', () => {
+    expect(defaultStatePath('/runtime/root', 'daily')).toBe('/runtime/root/state/session-rollover-jitter-daily.json');
+    expect(defaultStatePath('/runtime/root', 'seventy-one-hour')).toBe('/runtime/root/state/session-rollover-jitter-seventy-one-hour.json');
+    expect(defaultStatePath('/runtime/root')).toBe('/runtime/root/state/session-rollover-jitter-all.json');
   });
 
   it('fails the plan when a planted tight pair remains below the minimum landed gap', () => {
