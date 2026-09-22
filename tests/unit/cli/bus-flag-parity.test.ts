@@ -206,6 +206,33 @@ describe('bus CLI flag parity', () => {
     expect(tasks.map((t) => t.id).sort()).toEqual(['task_org_a_match', 'task_org_b_match']);
   });
 
+  it('list-tasks --project filters by project without false-zero unknown-option behavior', async () => {
+    writeTask('org-a', { id: 'task_human', org: 'org-a', project: 'human-tasks', created_at: '2026-08-24T03:00:00Z' });
+    writeTask('org-a', { id: 'task_dev', org: 'org-a', project: 'dev', created_at: '2026-08-24T02:00:00Z' });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await busCommand.parseAsync(['node', 'bus', 'list-tasks', '--project', 'human-tasks', '--format', 'json']);
+
+    const tasks = parseLoggedJson<Array<{ id: string; project: string }>>(logSpy);
+    expect(tasks.map((t) => t.id)).toEqual(['task_human']);
+    expect(tasks[0].project).toBe('human-tasks');
+  });
+
+  it('list-tasks --all-orgs threads project and priority filters together', async () => {
+    writeTask('org-a', { id: 'task_org_a_match', org: 'org-a', project: 'human-tasks', priority: 'high' });
+    writeTask('org-a', { id: 'task_org_a_project_skip', org: 'org-a', project: 'dev', priority: 'high' });
+    writeTask('org-b', { id: 'task_org_b_match', org: 'org-b', project: 'human-tasks', priority: 'high' });
+    writeTask('org-b', { id: 'task_org_b_priority_skip', org: 'org-b', project: 'human-tasks', priority: 'normal' });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await busCommand.parseAsync([
+      'node', 'bus', 'list-tasks', '--all-orgs', '--project', 'human-tasks', '--priority', 'high', '--format', 'json',
+    ]);
+
+    const tasks = parseLoggedJson<Array<{ id: string }>>(logSpy);
+    expect(tasks.map((t) => t.id).sort()).toEqual(['task_org_a_match', 'task_org_b_match']);
+  });
+
   it('check-stale-tasks no flag stays scoped to the current org', async () => {
     writeTask('org-a', { id: 'task_org_a_stale', org: 'org-a', status: 'in_progress', updated_at: '2020-01-01T00:00:00Z' });
     writeTask('org-b', { id: 'task_org_b_stale', org: 'org-b', status: 'in_progress', updated_at: '2020-01-01T00:00:00Z' });

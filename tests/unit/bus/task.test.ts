@@ -166,6 +166,22 @@ describe('Task Management', () => {
       const pending = listTasks(paths, { status: 'pending' });
       expect(pending.length).toBe(1);
     });
+
+    it('filters by project', () => {
+      createTask(paths, 'paul', 'acme', 'Human task', { project: 'human-tasks' });
+      createTask(paths, 'paul', 'acme', 'Dev task', { project: 'dev' });
+
+      const humanTasks = listTasks(paths, { project: 'human-tasks' });
+      expect(humanTasks.map((task) => task.title)).toEqual(['Human task']);
+    });
+
+    it('filters by priority', () => {
+      createTask(paths, 'paul', 'acme', 'Urgent task', { priority: 'urgent' });
+      createTask(paths, 'paul', 'acme', 'Normal task', { priority: 'normal' });
+
+      const urgentTasks = listTasks(paths, { priority: 'urgent' });
+      expect(urgentTasks.map((task) => task.title)).toEqual(['Urgent task']);
+    });
   });
 });
 

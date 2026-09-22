@@ -655,10 +655,12 @@ busCommand
   .command('list-tasks')
   .option('--agent <name>', 'Filter by agent')
   .option('--status <s>', 'Filter by status')
+  .option('--priority <p>', 'Filter by priority')
+  .option('--project <name>', 'Filter by project')
   .option('--format <fmt>', 'Output format: json or text', 'text')
   .option('--respect-deps', 'Sort DAG-aware: unblocked tasks first, blocked tasks last')
   .option('--all-orgs', 'Scan all orgs under CTX_ROOT (matches dashboard view)', false)
-  .action((opts: { agent?: string; status?: string; format?: string; respectDeps?: boolean; allOrgs?: boolean }) => {
+  .action((opts: { agent?: string; status?: string; priority?: string; project?: string; format?: string; respectDeps?: boolean; allOrgs?: boolean }) => {
     const env = resolveEnv();
     let tasks: Task[] = [];
 
@@ -669,6 +671,8 @@ busCommand
         tasks = tasks.concat(listTasks(orgPaths, {
           agent: opts.agent,
           status: opts.status as TaskStatus,
+          priority: opts.priority as Priority,
+          project: opts.project,
           respectDeps: opts.respectDeps ?? false,
         }));
       }
@@ -677,6 +681,8 @@ busCommand
       tasks = listTasks(paths, {
         agent: opts.agent,
         status: opts.status as TaskStatus,
+        priority: opts.priority as Priority,
+        project: opts.project,
         respectDeps: opts.respectDeps ?? false,
       });
     }
