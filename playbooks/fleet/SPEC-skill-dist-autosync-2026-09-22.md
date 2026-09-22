@@ -40,6 +40,7 @@ For each canonical skill, compare each live per-agent dist copy against the curr
 | **clean older-source-version** | Live copy == an OLDER source version (ff-equivalent: live is an ancestor of source, no local edits) - genuinely stale | **AUTO-SYNC** - source-wins fast-forward. |
 | **diverged** | Live copy independently edited - NOT an ancestor of source | **PRESERVE + FLAG** - never clobber; surface for human/owner reconcile. |
 | **live-only** | Skill exists live but not in source | **NEVER-DELETE + FLAG for sync-back** - may be a bespoke skill that needs homing to source (see auto-skill sync-back SOP). |
+| **clean-current, stale base** | Live == source-current, but the persisted base (source-at-last-sync) is older - an in-sync manual copy happened outside the mechanism | **NO-OP + REFRESH BASE** - content is already current, so no sync and NO flag; update the persisted base to source-current. Without this, the stale base rots and a later read mis-classifies this same copy as diverged. |
 
 ## Safety design: detection is unconditional; classification only sets urgency
 
@@ -47,6 +48,13 @@ The load-bearing rule, and the one a reviewer must hold:
 
 - **Divergence DETECTION runs UNCONDITIONALLY** and is what gates the destructive op (the auto-sync fast-forward / any clobber). Auto-sync source-wins fires ONLY in the "clean older-source-version" case (ff-equivalent = provably stale, safe to fast-forward). ANY independent divergence -> FLAG, never clobber - the same ff-only-vs-diverged discipline used for branches.
 - **The fail-open / fail-closed CLASSIFICATION sets URGENCY / priority ONLY.** It never grants permission to skip the detection check. A branch being "rare" or "near-empty" today is a distribution, not an invariant - a guard justified by a rare distribution fails silently the first time the population shifts. The "diverged -> preserve + flag" branch stays ACTIVE and its detection runs unconditionally even if intentional per-agent skill divergence is believed rare, because dev confirmed it does exist. (Rationale banked: gate a destructive op on an unconditional correctness check, never on a statistical assumption about how often the unsafe case occurs.)
+
+## Flag sink and cadence (a flag needs a named consumer)
+
+The two flag dispositions (`diverged -> preserve + flag`, `live-only -> never-delete + flag-syncback`) each need a NAMED SURFACE and a stated read cadence, or a flag with no consumer decays into preserve-and-silence (the silent-queue class - the thing sits flagged forever and nobody acts).
+
+- **Sink:** each flag emits (1) a line in the `check-skill-drift` report (the machine-readable surface) AND (2) a per-divergence owner task routed to the agent that owns the live copy (diverged) or to the-orchestrator for placement (live-only bespoke, per the auto-skill sync-back SOP).
+- **Cadence:** the drift report is read at a stated interval (the detector's own run cadence, surfaced in the owning agent's heartbeat / the fleet briefing), so a standing flag is seen and dispositioned, not accumulated. A flag that is not on a surface someone reads on a schedule is not a flag.
 
 ## The 3-way compare and its base-persistence dependency
 
@@ -57,6 +65,8 @@ Distinguishing "clean older-source-version" (safe to auto-sync) from "independen
 3. **source-at-last-sync (the BASE)** - the source version this live copy was last synced from.
 
 With only source-current and live, an old-but-clean copy and a locally-edited copy can look identical (both "differ from source"). The BASE is what makes the ancestry test decidable: live == base -> clean, fast-forward; live != base AND live != source -> diverged, flag. **Persisting source-at-last-sync per live copy is the base-persistence dependency owned by dev.**
+
+**Compare primitive: content-hash / byte-parity (normalized), NEVER a version-string field.** Every equality and ancestry test in the matrix (live==base, live==source-current, live-is-ancestor-of-source) compares normalized content hashes, not a declared `version:` field. A version field can match while the body has drifted (banked fleet rule from the brain-mirror currency checks: compare byte-parity, not the version string), so a version-field compare is a cheap-but-wrong implementation that would auto-sync or clear-flag a copy whose content actually diverged.
 
 ## Dependencies + review-vs-implement gating
 
