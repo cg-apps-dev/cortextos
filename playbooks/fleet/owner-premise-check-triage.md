@@ -52,6 +52,7 @@ Triage in order of how HARMFUL a stale item is if it sits:
     - **Deadline proximity:** an item entering a genuinely-expiring window (a dated deadline within ~72h) gets one fresh verify stamp before riding a consolidated Adam message.
     - **Verify-before-quoting takes precedence (unchanged):** quoting a figure or availability to Adam requires quote-time freshness regardless of the window - that is a quote rule, not a premise re-check.
     - **Owner-initiated re-stamps** on the owner's own cadence are always welcome and are not premise-checks (e.g. an ad-strategist Foreplay heartbeat re-stamp).
+    - **Mechanical pre-step (this IS the enforcement, not a reminder):** BEFORE routing any premise-check, grep your own memory / daily files for the task id. If your records show an owner confirmed it still-live within the last 7 days and no override above applies, do NOT route - give it a forcing function instead. The grep is the enforcement: a rule that relies on remembering to apply it is not enforced - the-orchestrator violated this rule the same day it landed (2026-09-22, secrets-folder task 1789572071943, 2nd instance of the class), which is exactly why the pre-step is mechanical rather than a stated discipline.
 - **Trust the enumeration, not the tally.** The enumerated ID list is the artifact; a running count is a label that drifts (an untagged close never touches a scoped tally). Re-enumerate rather than trust the running number.
 - **Answers labeled at evidence strength, boundaries stated** (measured vs plausible vs confirmed).
 
