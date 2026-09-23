@@ -106,12 +106,14 @@ function logPath(logsRoot: string, target: Target): string {
   return join(logsRoot, target.agent, 'crashes.log');
 }
 
-export function latestSessionRefreshAt(path: string): Date | null {
+const SESSION_BOUNDARY_RE = /\btype=(session-refresh|planned-restart|hard-restart)\b/;
+
+function latestMatchingSessionEventAt(path: string, eventRe: RegExp): Date | null {
   if (!existsSync(path)) return null;
 
   let latest: Date | null = null;
   for (const line of readFileSync(path, 'utf-8').split(/\r?\n/)) {
-    if (!line.includes('type=session-refresh')) continue;
+    if (!eventRe.test(line)) continue;
     const match = line.match(/^(\d{4}-\d{2}-\d{2}T[^\s]+)/);
     if (!match) continue;
     const parsed = new Date(match[1]);
@@ -119,6 +121,14 @@ export function latestSessionRefreshAt(path: string): Date | null {
     if (latest === null || parsed > latest) latest = parsed;
   }
   return latest;
+}
+
+export function latestSessionRefreshAt(path: string): Date | null {
+  return latestMatchingSessionEventAt(path, /\btype=session-refresh\b/);
+}
+
+export function latestSessionBoundaryAt(path: string): Date | null {
+  return latestMatchingSessionEventAt(path, SESSION_BOUNDARY_RE);
 }
 
 export function buildPlan(opts: JitterOptions): PlanResult {
@@ -314,11 +324,11 @@ export function revertPhase1(opts: Pick<JitterOptions, 'statePath'>): JitterStat
 
   const appliedAtMs = Date.parse(state.appliedAt);
   const unobserved = state.entries.filter(entry => {
-    const latest = latestSessionRefreshAt(entry.logPath);
+    const latest = latestSessionBoundaryAt(entry.logPath);
     return latest === null || latest.getTime() <= appliedAtMs;
   });
   if (unobserved.length > 0) {
-    throw new Error(`refusing revert: missing post-write session-refresh for ${unobserved.map(e => `${e.org}/${e.agent}`).join(', ')}`);
+    throw new Error(`refusing revert: missing post-write session boundary for ${unobserved.map(e => `${e.org}/${e.agent}`).join(', ')}`);
   }
 
   for (const entry of state.entries) {
@@ -339,6 +349,44 @@ function seedSelfTestAgent(root: string, logsRoot: string, target: Target, basel
   const crashPath = logPath(logsRoot, target);
   mkdirSync(dirname(crashPath), { recursive: true });
   writeFileSync(crashPath, `${refreshIso} type=session-refresh reason=session-time-cap rollover session=self-test\n`);
+}
+
+function seedRevertGuardFixture(root: string, logsRoot: string, statePath: string, target: Target, appliedAt: string, events: string[]): void {
+  const cfgPath = configPath(root, target);
+  const crashPath = logPath(logsRoot, target);
+  mkdirSync(dirname(cfgPath), { recursive: true });
+  mkdirSync(dirname(crashPath), { recursive: true });
+  writeFileSync(cfgPath, JSON.stringify({ agent_name: target.agent, enabled: true, max_session_seconds: 86520 }, null, 2) + '\n');
+  writeFileSync(crashPath, events.join('\n') + '\n');
+  writeJsonAtomic(statePath, {
+    appliedAt,
+    entries: [{
+      ...target,
+      configPath: cfgPath,
+      logPath: crashPath,
+      baselineSeconds: 86400,
+      phase1Seconds: 86520,
+      offsetSeconds: 120,
+    }],
+  });
+}
+
+function assertRevertRefused(statePath: string, label: string): void {
+  let refused = false;
+  try {
+    revertPhase1({ statePath });
+  } catch {
+    refused = true;
+  }
+  if (!refused) throw new Error(`${label} unexpectedly reverted`);
+}
+
+function assertRevertProceeds(statePath: string, label: string): void {
+  try {
+    revertPhase1({ statePath });
+  } catch (err) {
+    throw new Error(`${label} unexpectedly refused: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 export function runSelfTest(): string[] {
@@ -392,6 +440,42 @@ export function runSelfTest(): string[] {
       throw new Error('revert did not restore baseline');
     }
 
+    const guardAppliedAt = '2026-09-21T20:00:00.000Z';
+    const plannedRestartTarget: Target = { org: 'org', agent: 'planned-restart-observed', group: 'seventy-one-hour' };
+    const plannedRestartState = join(root, '.cortextOS', 'state', 'planned-restart.json');
+    seedRevertGuardFixture(root, logsRoot, plannedRestartState, plannedRestartTarget, guardAppliedAt, [
+      '2026-09-21T20:01:00.000Z type=planned-restart reason=context-shed session=self-test',
+    ]);
+    assertRevertProceeds(plannedRestartState, 'planned-restart guard');
+
+    const sessionRefreshTarget: Target = { org: 'org', agent: 'session-refresh-observed', group: 'seventy-one-hour' };
+    const sessionRefreshState = join(root, '.cortextOS', 'state', 'session-refresh.json');
+    seedRevertGuardFixture(root, logsRoot, sessionRefreshState, sessionRefreshTarget, guardAppliedAt, [
+      '2026-09-21T20:01:00.000Z type=session-refresh reason=session-time-cap rollover session=self-test',
+    ]);
+    assertRevertProceeds(sessionRefreshState, 'session-refresh guard');
+
+    const hardRestartTarget: Target = { org: 'org', agent: 'hard-restart-observed', group: 'seventy-one-hour' };
+    const hardRestartState = join(root, '.cortextOS', 'state', 'hard-restart.json');
+    seedRevertGuardFixture(root, logsRoot, hardRestartState, hardRestartTarget, guardAppliedAt, [
+      '2026-09-21T20:01:00.000Z type=hard-restart reason=operator-request session=self-test',
+    ]);
+    assertRevertProceeds(hardRestartState, 'hard-restart guard');
+
+    const missingBoundaryTarget: Target = { org: 'org', agent: 'missing-boundary', group: 'seventy-one-hour' };
+    const missingBoundaryState = join(root, '.cortextOS', 'state', 'missing-boundary.json');
+    seedRevertGuardFixture(root, logsRoot, missingBoundaryState, missingBoundaryTarget, guardAppliedAt, [
+      '2026-09-21T19:59:00.000Z type=session-refresh reason=session-time-cap rollover session=self-test',
+    ]);
+    assertRevertRefused(missingBoundaryState, 'missing-boundary guard');
+
+    const staleRestartTarget: Target = { org: 'org', agent: 'stale-restart', group: 'seventy-one-hour' };
+    const staleRestartState = join(root, '.cortextOS', 'state', 'stale-restart.json');
+    seedRevertGuardFixture(root, logsRoot, staleRestartState, staleRestartTarget, guardAppliedAt, [
+      '2026-09-21T19:59:00.000Z type=planned-restart reason=context-shed session=self-test',
+    ]);
+    assertRevertRefused(staleRestartState, 'stale-restart guard');
+
     return [
       'self-test healthy plan PASS',
       'self-test phase-rank PASS',
@@ -399,6 +483,7 @@ export function runSelfTest(): string[] {
       'self-test apply PASS',
       'self-test guarded revert PASS',
       'self-test revert restore PASS',
+      'self-test restart boundary guard PASS',
     ];
   } finally {
     rmSync(root, { recursive: true, force: true });
