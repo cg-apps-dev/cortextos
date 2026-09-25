@@ -28,7 +28,7 @@ A 24/7 agent on interactive-login auth breaks on a timer, and we kept band-aidin
 
 **Three credentials people confuse - they are NOT interchangeable** ([[reference_runtime-token-vs-usage-credential]]):
 - **Runtime token** = the setup-token in `.env CLAUDE_CODE_OAUTH_TOKEN`. RUNS the agent (inference). `sk-ant-oat01`, minted `claude setup-token`.
-- **Usage/PKCE credential** = in `oauth/accounts.json`, used ONLY to read `/api/oauth/usage` (per-account 5h/7d). Login-class (has `user:profile`). A setup-token gets 403 on the usage API. A valid usage-cred does NOT run an agent.
+- **Usage/PKCE credential** = in `oauth/accounts.json`, used ONLY to read `/api/oauth/usage` (per-account 5h/7d). Login-class (has `user:profile`). A setup-token gets 403 on the usage API. A valid usage-cred does NOT run an agent. Re-mint when it hits the ~27-30d refresh-token wall (dashboard UNREACHABLE + HTTP 400): `playbooks/fleet/RUNBOOK-usage-cred-remint.md`.
 - **Stored access_token** = a cached short-lived token; not a runtime token.
 A reused/stored/PKCE token put in `.env` will NOT run the agent (it is "dead for runtime"). Mint a FRESH setup-token AS the account.
 

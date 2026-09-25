@@ -37,6 +37,8 @@ Runtime setup-tokens live in the vault: `~/.cortextos/default/state/oauth/setup-
 
 ## Re-mint (rotation / post-revocation) - bank-to-store is mandatory, and reconcile
 
+> This section is the **RUNTIME setup-token** re-mint. The **usage-monitoring credential** (`oauth/accounts.json`, a distinct credential class) has its own procedure: [RUNBOOK-usage-cred-remint.md](RUNBOOK-usage-cred-remint.md) (PKCE-over-Telegram variant). Do not use this section for a usage-cred re-mint.
+
 A SWITCH moves an agent between accounts whose tokens already sit in the vault. A RE-MINT is different: the same account's token is replaced (revocation, rotation, or leak response), Adam mints a fresh one, and the fleet redeploys. The failure mode this section prevents: the redeploy flips `.env` (both halves) but never updates the vault, so the vault silently drifts from what agents actually run.
 
 - **Bank BEFORE (or as part of) the redeploy, never after.** A fresh mint is written to the vault as `<account>.token` (0600) BEFORE it lands in any agent `.env`. The `.env` redeploy is a COPY-FROM-VAULT, never a direct paste that skips the vault. An incident redeploy under time pressure is exactly when this is skipped - so it is a hard step, not a cleanup.
