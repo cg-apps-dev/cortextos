@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { atomicWriteSync } from '../../../src/utils/atomic';
 import { shortTokenHash } from '../../../src/utils/live-token-hash';
 import { checkInbox, sendMessage } from '../../../src/bus/message';
+import { classifyFromMarkers, END_TYPE_MARKERS } from '../../../src/hooks/hook-crash-alert';
 import {
   cleanupSwitchProbeInbox,
   isAcceptedProbeReply,
@@ -259,6 +260,80 @@ describe('switch-agent-account', () => {
     expect(result.warnings.some((w) => w.toLowerCase().includes('probe'))).toBe(false);
   });
 
+  it('writes a planned-restart marker to the target agent before stopping', async () => {
+    const originalStop = ops.stopAgent;
+    ops.stopAgent = async (agent: string): Promise<IPCResponse> => {
+      expect(existsSync(join(ctxRoot, 'state', agent, '.restart-planned'))).toBe(true);
+      return originalStop(agent);
+    };
+
+    const result = await runSwitch({ operatorAgent: 'worker-b', agent: 'worker-a' });
+
+    expect(result.status).toBe('success');
+    const markerPath = join(ctxRoot, 'state', 'worker-a', '.restart-planned');
+    expect(existsSync(markerPath)).toBe(true);
+    expect(readFileSync(markerPath, 'utf-8')).toBe('account switch\n');
+    expect(existsSync(join(ctxRoot, 'state', 'worker-b', '.restart-planned'))).toBe(false);
+
+    expect(classifyFromMarkers(join(ctxRoot, 'state', 'worker-a'), END_TYPE_MARKERS).endType).toBe('planned-restart');
+    expect(classifyFromMarkers(join(ctxRoot, 'state', 'worker-a'), END_TYPE_MARKERS).endType).toBe('planned-restart');
+    expect(existsSync(markerPath)).toBe(true);
+  });
+
+  it('treats a restart IPC timeout as success when post-timeout state verifies the target', async () => {
+    ops.startAgent = async (agent: string): Promise<IPCResponse> => {
+      startCalls.push(agent);
+      running = true;
+      pid += 100;
+      const err = new Error('IPC request timed out: start-agent') as Error & { code: string };
+      err.code = 'IPC_TIMEOUT';
+      throw err;
+    };
+
+    const result = await runSwitch();
+
+    expect(result.status).toBe('success');
+    expect(result.warnings).toContain('WARN: restart IPC timed out or was unreachable, but post-timeout state verified the target account; treating switch as success and skipping rollback.');
+    expect(readFileSync(envPath, 'utf-8')).toContain(TARGET_TOKEN);
+    expect(JSON.parse(readFileSync(configPath, 'utf-8')).usage_account).toBe('moonlight-max');
+    expect(stopCalls).toEqual(['worker-a']);
+    expect(startCalls).toEqual(['worker-a']);
+  });
+
+  it('rolls back when a restart IPC timeout does not verify the target state', async () => {
+    let startAttempts = 0;
+    ops.hasProcessEnvVar = () => false;
+    ops.startAgent = async (agent: string): Promise<IPCResponse> => {
+      startAttempts += 1;
+      startCalls.push(agent);
+      if (startAttempts === 1) {
+        running = true;
+        pid += 100;
+        const err = new Error('IPC request timed out: start-agent') as Error & { code: string };
+        err.code = 'IPC_TIMEOUT';
+        throw err;
+      }
+      running = true;
+      pid += 100;
+      return { success: true, data: 'Starting' };
+    };
+    ops.resolveAgentAccount = (dir) => {
+      if (dir.includes('worker-a') && startAttempts === 1) return { label: 'me-com-max' };
+      const config = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8')) as { usage_account: string };
+      return { label: config.usage_account };
+    };
+
+    await expect(runSwitch()).rejects.toMatchObject({
+      code: 'DAEMON_UNRESPONSIVE',
+      rolledBack: true,
+      failureClass: 'daemon',
+    });
+    expect(readFileSync(envPath, 'utf-8')).toContain(OLD_TOKEN);
+    expect(JSON.parse(readFileSync(configPath, 'utf-8')).usage_account).toBe('me-com-max');
+    expect(stopCalls).toEqual(['worker-a', 'worker-a']);
+    expect(startCalls).toEqual(['worker-a', 'worker-a']);
+  });
+
   // SYMMETRIC PAIR (half 1 - the auto-revert this fix kills): a HEALTHY switch
   // whose authoritative gates all pass but whose post-restart heartbeat is not yet
   // fresh (heavy-boot) must return SUCCESS-with-warning and MUST NOT restoreSnapshot.
@@ -445,6 +520,14 @@ describe('switch-agent-account', () => {
     expect(existsSync(delivery)).toBe(false);
   });
 
+  it('names CTX_ORG in the missing-agent error and gives the cross-org fix', async () => {
+    await expect(runSwitch({ agent: 'missing-agent' })).rejects.toMatchObject({
+      code: 'MISSING_AGENT',
+      rolledBack: false,
+      message: "agent 'missing-agent' not found in org 'clean-green-marketing'. For a cross-org target, set CTX_ORG=<its-org> (org-qualified names are not accepted here).",
+    });
+  });
+
   it('vaults and removes a delivered token after a successful switch', async () => {
     const delivery = join(ctxRoot, 'delivered.token');
     const deliveredToken = DELIVERED_TOKEN;
@@ -459,15 +542,74 @@ describe('switch-agent-account', () => {
     expect(readFileSync(envPath, 'utf-8')).toContain(deliveredToken);
   });
 
-  it('batch --all-from runs sequentially and stops on first failure', async () => {
+  it('batch --all-from continues after an agent-specific failure', async () => {
     const workerB = join(frameworkRoot, 'orgs', 'clean-green-marketing', 'agents', 'worker-b');
+    const workerC = join(frameworkRoot, 'orgs', 'clean-green-marketing', 'agents', 'worker-c');
     mkdirSync(workerB, { recursive: true });
+    mkdirSync(workerC, { recursive: true });
     writeFileSync(join(workerB, '.env'), `CLAUDE_CODE_OAUTH_TOKEN=${OLD_TOKEN}\n`, { mode: 0o600 });
+    writeFileSync(join(workerC, '.env'), `CLAUDE_CODE_OAUTH_TOKEN=${OLD_TOKEN}\n`, { mode: 0o600 });
     atomicWriteSync(join(workerB, 'config.json'), JSON.stringify({ usage_account: 'me-com-max' }, null, 2) + '\n');
+    atomicWriteSync(join(workerC, 'config.json'), JSON.stringify({ usage_account: 'me-com-max' }, null, 2) + '\n');
+    ops.getStatuses = async (): Promise<AgentStatus[]> => ['worker-a', 'worker-b', 'worker-c'].map((name, index) => ({
+      name,
+      status: running ? 'running' : 'stopped',
+      ...(running ? { pid: pid + index } : {}),
+      uptime: 10,
+      lastHeartbeat: '2026-07-09T17:01:00.000Z',
+    }));
+    ops.hasProcessEnvVar = () => false;
     ops.resolveAgentAccount = (dir) => {
       // worker-b never reflects the flip -> its attribution gate fails, so its
-      // switch reverts and reports 'failed', stopping the batch after it. (The old
-      // probe-driven failure path this replaced no longer exists.)
+      // switch reverts and reports 'failed'. The batch continues because the
+      // failure is agent-specific, not daemon-wide.
+      if (dir.includes('worker-b')) return { label: 'me-com-max' };
+      const config = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8')) as { usage_account: string };
+      return { label: config.usage_account };
+    };
+
+    const result = await switchAllFrom({
+      ctxRoot,
+      frameworkRoot,
+      org: 'clean-green-marketing',
+      instanceId: 'default',
+      operatorAgent: 'the-orchestrator',
+      sourceAccount: 'me-com-max',
+      targetAccount: 'moonlight-max',
+      ops,
+      nowMs: () => Date.parse('2026-07-09T17:00:00.000Z'),
+      sleepMs: async () => {},
+    });
+
+    expect(result.results).toHaveLength(3);
+    expect(result.results[0]).toMatchObject({ agent: 'worker-a', status: 'success', endState: 'verified-on-target' });
+    expect(result.results[1]).toMatchObject({ agent: 'worker-b', status: 'failed', endState: 'rolled-back-verified' });
+    expect(result.results[2].error).toBeUndefined();
+    expect(result.results[2]).toMatchObject({ agent: 'worker-c', status: 'success', endState: 'verified-on-target' });
+    expect(result.warnings.some((w) => w.startsWith('ABORT:'))).toBe(false);
+    expect(result.warnings.some((w) => w.includes('INDETERMINATE'))).toBe(false);
+  });
+
+  it('batch --all-from aborts after a daemon-wide failure and defers remaining agents', async () => {
+    const workerB = join(frameworkRoot, 'orgs', 'clean-green-marketing', 'agents', 'worker-b');
+    const workerC = join(frameworkRoot, 'orgs', 'clean-green-marketing', 'agents', 'worker-c');
+    mkdirSync(workerB, { recursive: true });
+    mkdirSync(workerC, { recursive: true });
+    writeFileSync(join(workerB, '.env'), `CLAUDE_CODE_OAUTH_TOKEN=${OLD_TOKEN}\n`, { mode: 0o600 });
+    writeFileSync(join(workerC, '.env'), `CLAUDE_CODE_OAUTH_TOKEN=${OLD_TOKEN}\n`, { mode: 0o600 });
+    atomicWriteSync(join(workerB, 'config.json'), JSON.stringify({ usage_account: 'me-com-max' }, null, 2) + '\n');
+    atomicWriteSync(join(workerC, 'config.json'), JSON.stringify({ usage_account: 'me-com-max' }, null, 2) + '\n');
+    ops.stopAgent = async (agent: string): Promise<IPCResponse> => {
+      stopCalls.push(agent);
+      if (agent === 'worker-b') {
+        const err = new Error('IPC request timed out: stop-agent') as Error & { code: string };
+        err.code = 'IPC_TIMEOUT';
+        throw err;
+      }
+      running = false;
+      return { success: true, data: 'Stopping' };
+    };
+    ops.resolveAgentAccount = (dir) => {
       if (dir.includes('worker-b')) return { label: 'me-com-max' };
       const config = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8')) as { usage_account: string };
       return { label: config.usage_account };
@@ -487,8 +629,68 @@ describe('switch-agent-account', () => {
     });
 
     expect(result.results).toHaveLength(2);
-    expect(result.results[0]).toMatchObject({ agent: 'worker-a', status: 'success' });
-    expect(result.results[1]).toMatchObject({ agent: 'worker-b', status: 'failed' });
+    expect(result.results[0]).toMatchObject({ agent: 'worker-a', status: 'success', endState: 'verified-on-target' });
+    expect(result.results[1]).toMatchObject({
+      agent: 'worker-b',
+      status: 'failed',
+      endState: 'INDETERMINATE-needs-attention',
+      error: expect.stringContaining('stop IPC timed out'),
+    });
+    expect(result.results.some((entry) => entry.agent === 'worker-c')).toBe(false);
+    expect(result.warnings).toContain('ATTENTION: worker-b ended INDETERMINATE-needs-attention after failure: stop IPC timed out: IPC request timed out: stop-agent');
+    expect(result.warnings).toContain('ABORT: daemon/IPC failure while switching worker-b; 1 remaining agent(s) deferred.');
+  });
+
+  it('batch --all-from treats a structured daemon-down stop response as daemon-wide abort', async () => {
+    const workerB = join(frameworkRoot, 'orgs', 'clean-green-marketing', 'agents', 'worker-b');
+    const workerC = join(frameworkRoot, 'orgs', 'clean-green-marketing', 'agents', 'worker-c');
+    mkdirSync(workerB, { recursive: true });
+    mkdirSync(workerC, { recursive: true });
+    writeFileSync(join(workerB, '.env'), `CLAUDE_CODE_OAUTH_TOKEN=${OLD_TOKEN}\n`, { mode: 0o600 });
+    writeFileSync(join(workerC, '.env'), `CLAUDE_CODE_OAUTH_TOKEN=${OLD_TOKEN}\n`, { mode: 0o600 });
+    atomicWriteSync(join(workerB, 'config.json'), JSON.stringify({ usage_account: 'me-com-max' }, null, 2) + '\n');
+    atomicWriteSync(join(workerC, 'config.json'), JSON.stringify({ usage_account: 'me-com-max' }, null, 2) + '\n');
+    ops.stopAgent = async (agent: string): Promise<IPCResponse> => {
+      stopCalls.push(agent);
+      if (agent === 'worker-b') {
+        return {
+          success: false,
+          code: 'DAEMON_DOWN',
+          error: 'Daemon message changed but code is stable',
+        };
+      }
+      running = false;
+      return { success: true, data: 'Stopping' };
+    };
+    ops.resolveAgentAccount = (dir) => {
+      if (dir.includes('worker-b')) return { label: 'me-com-max' };
+      const config = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8')) as { usage_account: string };
+      return { label: config.usage_account };
+    };
+
+    const result = await switchAllFrom({
+      ctxRoot,
+      frameworkRoot,
+      org: 'clean-green-marketing',
+      instanceId: 'default',
+      operatorAgent: 'the-orchestrator',
+      sourceAccount: 'me-com-max',
+      targetAccount: 'moonlight-max',
+      ops,
+      nowMs: () => Date.parse('2026-07-09T17:00:00.000Z'),
+      sleepMs: async () => {},
+    });
+
+    expect(result.results).toHaveLength(2);
+    expect(result.results[1]).toMatchObject({
+      agent: 'worker-b',
+      status: 'failed',
+      endState: 'INDETERMINATE-needs-attention',
+      error: 'stop failed: daemon is not running',
+    });
+    expect(result.results.some((entry) => entry.agent === 'worker-c')).toBe(false);
+    expect(result.warnings).toContain('ATTENTION: worker-b ended INDETERMINATE-needs-attention after failure: stop failed: daemon is not running');
+    expect(result.warnings).toContain('ABORT: daemon/IPC failure while switching worker-b; 1 remaining agent(s) deferred.');
   });
 
   it('batch --all-from skips the operator when it is in the source account', async () => {
@@ -515,7 +717,7 @@ describe('switch-agent-account', () => {
     });
 
     expect(result.warnings).toEqual(['WARN: skipping self: worker-a cannot switch its own account in a batch.']);
-    expect(result.results).toEqual([{ agent: 'worker-b', status: 'success', taskId: 'task_sweep' }]);
+    expect(result.results).toEqual([{ agent: 'worker-b', status: 'success', endState: 'verified-on-target', taskId: 'task_sweep' }]);
     expect(readFileSync(envPath, 'utf-8')).toContain(OLD_TOKEN);
     expect(readFileSync(join(workerB, '.env'), 'utf-8')).toContain(TARGET_TOKEN);
     expect(stopCalls).toEqual(['worker-b']);

@@ -99,9 +99,17 @@ export interface SwitchAgentAccountResult {
 export interface SwitchBatchResult {
   sourceAccount: string;
   targetAccount: string;
-  results: Array<{ agent: string; status: 'success' | 'failed'; error?: string; taskId?: string }>;
+  results: Array<{
+    agent: string;
+    status: 'success' | 'failed';
+    endState: 'verified-on-target' | 'rolled-back-verified' | 'INDETERMINATE-needs-attention';
+    error?: string;
+    taskId?: string;
+  }>;
   warnings: string[];
 }
+
+export type SwitchAgentAccountFailureClass = 'agent' | 'daemon';
 
 export interface SwitchAgentAccountOps {
   getStatuses(): Promise<AgentStatus[]>;
@@ -122,6 +130,7 @@ export class SwitchAgentAccountError extends Error {
     message: string,
     public readonly code: string,
     public readonly rolledBack = false,
+    public readonly failureClass: SwitchAgentAccountFailureClass = classifySwitchFailureCode(code),
   ) {
     super(message);
   }
@@ -277,8 +286,39 @@ export async function switchAgentAccount(options: SwitchAgentAccountOptions): Pr
       applyBothHalves(options, ops, envPath, configPath, target.token);
       const envFlipMtimeMs = statSync(envPath).mtimeMs;
       flipped = true;
-      await restartAgent(options.agent, ops, sleepMs, DEFAULT_STOP_WAIT_MS, snapshot.pid);
-      const restartAtMs = nowMs();
+      let restartAtMs = nowMs();
+      try {
+        await restartAgent(options.agent, options.ctxRoot, ops, sleepMs, DEFAULT_STOP_WAIT_MS, snapshot.pid);
+        restartAtMs = nowMs();
+      } catch (restartErr) {
+        if (!isDaemonFailure(restartErr)) throw restartErr;
+        restartAtMs = nowMs();
+        await sleepMs(DEFAULT_BOOT_VERIFY_WAIT_MS);
+        const postTimeoutVerify = await verifySwitched({
+          agent: options.agent,
+          targetAccount: options.targetAccount,
+          tokenFingerprint: target.fingerprint,
+          restartAtMs,
+          envFlipMtimeMs,
+          envPath,
+        }, agentDir, options.ctxRoot, ops, nowMs, sleepMs).catch(() => null);
+        if (postTimeoutVerify?.ok) {
+          warnings.push('WARN: restart IPC timed out or was unreachable, but post-timeout state verified the target account; treating switch as success and skipping rollback.');
+          warnings.push(...(postTimeoutVerify.warnings ?? []));
+          const taskId = ops.createFunctionalSweepTask(options.agent, options.targetAccount);
+          return {
+            agent: options.agent,
+            targetAccount: options.targetAccount,
+            fingerprint: target.fingerprint,
+            status: 'success',
+            warnings,
+            runtimeProof: postTimeoutVerify.primary,
+            functionalSweepTaskId: taskId,
+            message: successMessage(options.agent, options.targetAccount, target.fingerprint, taskId),
+          };
+        }
+        throw restartErr;
+      }
       await sleepMs(DEFAULT_BOOT_VERIFY_WAIT_MS);
       const verify = await verifySwitched({
         agent: options.agent,
@@ -307,7 +347,7 @@ export async function switchAgentAccount(options: SwitchAgentAccountOptions): Pr
       if (flipped) {
         try {
           restoreSnapshot(envPath, configPath, snapshot);
-          await restartAgent(options.agent, ops, sleepMs, DEFAULT_STOP_WAIT_MS);
+          await restartAgent(options.agent, options.ctxRoot, ops, sleepMs, DEFAULT_STOP_WAIT_MS);
           const rollbackEnvMtimeMs = statSync(envPath).mtimeMs;
           const rollbackAtMs = nowMs();
           await sleepMs(DEFAULT_BOOT_VERIFY_WAIT_MS);
@@ -337,7 +377,7 @@ export async function switchAgentAccount(options: SwitchAgentAccountOptions): Pr
         }
       }
       if (err instanceof SwitchAgentAccountError) {
-        throw new SwitchAgentAccountError(err.message, err.code, flipped);
+        throw new SwitchAgentAccountError(err.message, err.code, flipped, err.failureClass);
       }
       throw new SwitchAgentAccountError(err instanceof Error ? err.message : String(err), 'SWITCH_FAILED', flipped);
     }
@@ -375,10 +415,18 @@ export async function switchAllFrom(options: SwitchAllFromOptions): Promise<Swit
     try {
       const result = await switchAgentAccount({ ...options, tokenFile, agent, targetAccount: options.targetAccount });
       tokenFile = undefined;
-      results.push({ agent, status: 'success', taskId: result.functionalSweepTaskId });
+      results.push({ agent, status: 'success', endState: 'verified-on-target', taskId: result.functionalSweepTaskId });
     } catch (err) {
-      results.push({ agent, status: 'failed', error: err instanceof Error ? err.message : String(err) });
-      break;
+      const endState = batchFailureEndState(err);
+      const error = err instanceof Error ? err.message : String(err);
+      results.push({ agent, status: 'failed', endState, error });
+      if (endState === 'INDETERMINATE-needs-attention') {
+        warnings.push(`ATTENTION: ${agent} ended INDETERMINATE-needs-attention after failure: ${error}`);
+      }
+      if (shouldAbortBatch(err)) {
+        warnings.push(`ABORT: daemon/IPC failure while switching ${agent}; ${agents.length - results.length} remaining agent(s) deferred.`);
+        break;
+      }
     }
   }
   return { sourceAccount: options.sourceAccount, targetAccount: options.targetAccount, results, warnings };
@@ -412,7 +460,12 @@ async function preflight(input: {
   warnings: string[];
 }): Promise<Snapshot> {
   const { options, agentDir, envPath, configPath, target, ops, nowMs, warnings } = input;
-  if (!existsSync(agentDir)) throw new SwitchAgentAccountError(`agent not found: ${options.agent}`, 'MISSING_AGENT');
+  if (!existsSync(agentDir)) {
+    throw new SwitchAgentAccountError(
+      `agent '${options.agent}' not found in org '${options.org}'. For a cross-org target, set CTX_ORG=<its-org> (org-qualified names are not accepted here).`,
+      'MISSING_AGENT',
+    );
+  }
   if (!existsSync(configPath)) throw new SwitchAgentAccountError(`config.json missing for ${options.agent}`, 'MISSING_CONFIG');
   if (!existsSync(envPath)) throw new SwitchAgentAccountError(`.env missing for ${options.agent}`, 'MISSING_ENV');
   if (ops.hasAuthWobble(options.ctxRoot, nowMs())) {
@@ -514,12 +567,17 @@ function restoreSnapshot(envPath: string, configPath: string, snapshot: Snapshot
 
 async function restartAgent(
   agent: string,
+  ctxRoot: string,
   ops: SwitchAgentAccountOps,
   sleepMs: (ms: number) => Promise<void>,
   stopWaitMs: number,
   oldPid?: number,
 ): Promise<void> {
-  const stop = await ops.stopAgent(agent);
+  writeRestartPlannedMarker(ctxRoot, agent);
+  const stop = await callRestartIpc(() => ops.stopAgent(agent), 'stop');
+  if (!stop.success && isDaemonNotRunning(stop)) {
+    throw new SwitchAgentAccountError('stop failed: daemon is not running', 'DAEMON_UNREACHABLE', false, 'daemon');
+  }
   if (!stop.success && stop.code !== 'NOT_RUNNING') {
     throw new SwitchAgentAccountError(`stop failed: ${stop.error ?? stop.code ?? 'unknown'}`, 'STOP_FAILED');
   }
@@ -531,11 +589,62 @@ async function restartAgent(
       throw new SwitchAgentAccountError('old process still running after stop wait', 'STOP_WAIT_FAILED');
     }
   }
-  const start = await ops.startAgent(agent);
+  const start = await callRestartIpc(() => ops.startAgent(agent), 'start');
+  if (!start.success && isDaemonNotRunning(start)) {
+    throw new SwitchAgentAccountError('start failed: daemon is not running', 'DAEMON_UNREACHABLE', false, 'daemon');
+  }
   const startCode = String(start.code ?? '');
   if (!start.success && startCode !== 'DEDUPED' && startCode !== 'QUEUED_BEHIND_STOP') {
     throw new SwitchAgentAccountError(`start failed: ${start.error ?? startCode ?? 'unknown'}`, 'START_FAILED');
   }
+}
+
+async function callRestartIpc(call: () => Promise<IPCResponse>, phase: 'stop' | 'start'): Promise<IPCResponse> {
+  try {
+    return await call();
+  } catch (err) {
+    if (isIpcTimeoutError(err)) {
+      throw new SwitchAgentAccountError(`${phase} IPC timed out: ${err instanceof Error ? err.message : String(err)}`, 'DAEMON_UNRESPONSIVE', false, 'daemon');
+    }
+    throw new SwitchAgentAccountError(`${phase} IPC failed: ${err instanceof Error ? err.message : String(err)}`, 'DAEMON_IPC_FAILED', false, 'daemon');
+  }
+}
+
+function isIpcTimeoutError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'IPC_TIMEOUT';
+}
+
+function isDaemonNotRunning(response: IPCResponse): boolean {
+  return !response.success && response.code === 'DAEMON_DOWN';
+}
+
+function isDaemonFailure(err: unknown): boolean {
+  return err instanceof SwitchAgentAccountError && err.failureClass === 'daemon';
+}
+
+function shouldAbortBatch(err: unknown): boolean {
+  return err instanceof SwitchAgentAccountError && err.failureClass === 'daemon';
+}
+
+function batchFailureEndState(err: unknown): SwitchBatchResult['results'][number]['endState'] {
+  if (err instanceof SwitchAgentAccountError) {
+    if (err.rolledBack && err.code !== 'ROLLBACK_VERIFY_FAILED' && err.code !== 'ROLLBACK_FAILED') {
+      return 'rolled-back-verified';
+    }
+  }
+  return 'INDETERMINATE-needs-attention';
+}
+
+function classifySwitchFailureCode(code: string): SwitchAgentAccountFailureClass {
+  return code === 'DAEMON_UNRESPONSIVE' || code === 'DAEMON_UNREACHABLE' || code === 'DAEMON_IPC_FAILED'
+    ? 'daemon'
+    : 'agent';
+}
+
+function writeRestartPlannedMarker(ctxRoot: string, agent: string): void {
+  const stateDir = join(ctxRoot, 'state', agent);
+  ensureDir(stateDir);
+  writeFileSync(join(stateDir, '.restart-planned'), 'account switch\n', 'utf-8');
 }
 
 async function verifySwitched(
