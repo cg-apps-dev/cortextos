@@ -69,6 +69,21 @@ paths = [
 # bare "sk-ant" prose in our docs do NOT false-positive.
 [[rules]]
 id = "anthropic-sk-ant-token"
-description = "Anthropic OAuth/API/session token (sk-ant-oat01/api03/sid01), spend-capable"
-regex = 'sk-ant-(?:oat01|api03|sid01|sk01)-[A-Za-z0-9_-]{40,}'
+# GENERALIZED 2026-09-26 (was the closed enum sk-ant-(?:oat01|api03|sid01|sk01)-): the enumeration
+# MISSED sk-ant-ort01 (OAuth refresh, spend-adjacent) + future subtypes. This is the THIRD closed-enum
+# drift site of the same class (redact.ts + the redact spec were the first two, fixed in the redact arc);
+# matches tools/gitleaks-fleet.toml's generalized form for detect-at-rest parity.
+description = "Anthropic sk-ant token, ANY subtype (oat01/ort01/api03/sid01/sk01/future), spend-capable"
+regex = 'sk-ant-[a-z0-9]{2,}-[A-Za-z0-9_-]{40,}'
 keywords = ["sk-ant-"]
+
+# OpenAI service-account / project / admin key (sk-svcacct-/sk-proj-/sk-admin-), spend-capable.
+# Added 2026-09-26 (codex-dev auth-death gap): gitleaks-default openai rule + our scanner BOTH missed
+# sk-svcacct. Mirrors tools/gitleaks-fleet.toml so the pre-push backup gate blocks a svcacct/proj key
+# before it can ride a code-branch push into the GitHub agent-state backup. 40+ body = no FP on bare
+# prose/truncated. ENUMERATED (RE2 has no neg-lookahead to exclude the sk-ant- family above).
+[[rules]]
+id = "openai-svcacct-proj-admin-token"
+description = "OpenAI service-account/project/admin key (sk-svcacct/sk-proj/sk-admin), spend-capable"
+regex = 'sk-(?:svcacct|proj|admin)-[A-Za-z0-9_-]{40,}'
+keywords = ["sk-svcacct-", "sk-proj-", "sk-admin-"]
