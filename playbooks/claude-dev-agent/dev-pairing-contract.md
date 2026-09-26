@@ -27,6 +27,7 @@ The working protocol between claude-dev-agent (plans + reviews) and codex-dev-ag
 - Every change is a PR Adam reviews and approves (route via the-orchestrator).
 - Build + typecheck (`npx tsc --noEmit`) + run tests before opening a PR; `npm run build` is the orchestrator's deploy step, not branch validation.
 - Machine code is always reviewed (Adam standing rule, non-negotiable).
+- **Reviewer owns the commit.** codex-dev hands work back UNMERGED; claude-dev commits it post-review. This is the commit-level enforcement of the machine-code-always-reviewed rule above - the review gate cannot be satisfied if the implementer has already committed or merged. (Ratified fleet-standing 2026-09-25; a dispatch that says "commit on feat/X" overrides this by instruction, so keep dispatch phrasing hand-back-only.)
 - Ask first before any significant action (low autonomy by Adam's preference).
 - Log the Codex/Claude token split per build.
 - Post-rebase integrity = `git range-diff <old-base>..<old-commit> <new-base>..<new-commit>` proving patch-identity (`=` lines), never tree-hash-unchanged; then re-validate on the NEW base - the base changed even though your files did not.

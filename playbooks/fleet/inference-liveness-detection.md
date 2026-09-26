@@ -111,6 +111,12 @@ that also describes the healthy case is not a detector.
   - root cause, confirmed facts, hypotheses (claude-dev-agent).
 - [heartbeat-staleness-watchdog.md](heartbeat-staleness-watchdog.md) - the watchdog whose
   process-alive/inference-dead LIMIT this detection set begins to close.
+- [FINDINGS-codex-auth-death-elimination-ladder-2026-09-25.md](FINDINGS-codex-auth-death-elimination-ladder-2026-09-25.md)
+  - a RELATED specimen from a different failure shape (credential-death, not a session-rollover wedge)
+  that also presented process-alive / inference-dead: the watchdog kept `last_heartbeat` fresh through
+  a ~90-min outage with zero successful inference. Reinforces that a fresh heartbeat is a coverage
+  artifact, not a liveness finding, and that a daemon "back online" notice is a template, not an
+  inference product - only an answered round-trip proves inference.
 - the-analyst's `inference-liveness-validation.md` (threshold evidence, shadow samples, arm decision) -
   lives in the analyst's workspace, not the tracked tree; named here rather than linked. Graduation to
   the tracked tree is the-analyst's call.
