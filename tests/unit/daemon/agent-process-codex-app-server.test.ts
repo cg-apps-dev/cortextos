@@ -196,6 +196,31 @@ describe('AgentProcess codex-app-server runtime', () => {
     expect(mockCodexAppServerPty.kill).toHaveBeenCalled();
   }, 10000);
 
+  it('awaits the async CodexAppServerPTY kill before completing stop', async () => {
+    let releaseKill: (() => void) | null = null;
+    mockCodexAppServerPty.kill.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      releaseKill = () => {
+        capturedOnExit!(0, 0);
+        resolve();
+      };
+    }));
+    const ap = new AgentProcess('codex-app-agent', mockEnv, { runtime: 'codex-app-server' });
+    await ap.start();
+
+    let stopCompleted = false;
+    const stopPromise = ap.stop().then(() => {
+      stopCompleted = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(mockCodexAppServerPty.kill).toHaveBeenCalledOnce();
+    expect(stopCompleted).toBe(false);
+
+    releaseKill!();
+    await stopPromise;
+    expect(stopCompleted).toBe(true);
+  });
+
   it('ignores stale Claude JSONL when picking continue vs fresh — uses codex thread state only', async () => {
     // Regression: testorg codex-agent (runtime codex-app-server) had a leftover
     // Claude JSONL from a prior Claude-runtime tenure. shouldContinue used to
@@ -228,4 +253,3 @@ describe('AgentProcess codex-app-server runtime', () => {
     expect(mockCodexAppServerPty.spawn).toHaveBeenLastCalledWith('continue', expect.any(String));
   });
 });
-

@@ -231,13 +231,10 @@ export class AgentProcess {
           pty.write('\x04'); // Ctrl+D
           await sleep(3000);
         } else if (this.config.runtime === 'codex-app-server') {
-          // Codex uses an exec-per-turn model — there is no persistent REPL
-          // between turns, so /exit + sleep below are no-ops on CodexAppServerPTY
-          // (write() just buffers). The only meaningful stop step is
-          // pty.kill(), which terminates the in-flight `codex exec` (if any)
-          // and flips _alive=false. Skipping the 6s Claude-REPL dance makes
-          // `bus hard-restart` feel responsive instead of appearing to do
-          // nothing for several seconds.
+          // Codex app-server is a persistent child with no /exit handshake.
+          // The shared kill step below awaits CodexAppServerPTY.kill(), which
+          // verifies and reaps both the node wrapper and confirmed vendored
+          // app-server descendants before the stop lifecycle completes.
         } else {
           // BUG-032 fix: use CRLF (not lone CR) so Claude Code's REPL actually
           // recognizes the /exit line as a complete command, AND wait long
@@ -262,7 +259,7 @@ export class AgentProcess {
       // middle of flushing. Polling first eliminates the remaining SIGHUP risk.
       if (pty.isAlive()) {
         try {
-          pty.kill();
+          await pty.kill();
         } catch {
           // PTY may have exited between the check and the kill — ignore
         }

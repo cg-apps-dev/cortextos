@@ -1,4 +1,5 @@
-import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { appendFileSync, existsSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomBytes } from 'crypto';
@@ -41,6 +42,14 @@ interface SocketPointer {
   updatedAt: string;
 }
 
+interface ProcessMarker {
+  pid: number;
+  cwd: string;
+  socketPath: string;
+  recordedAt: string;
+  descendantPids?: number[];
+}
+
 interface ThreadResponse {
   thread: {
     id: string;
@@ -78,8 +87,12 @@ const TURN_PERMISSION_OVERRIDES = {
 } as const;
 
 const SOCKET_BASENAME = 'codex.sock';
+const PROCESS_MARKER_BASENAME = 'codex-app-server-process.json';
 const SOCKET_PATH_WARN_BYTES = 100;
 const BOOTSTRAP_PATTERN = '[codex-app-server] ready';
+const REAP_POLL_INTERVAL_MS = 200;
+const REAP_SIGTERM_GRACE_MS = 2000;
+const REAP_SIGKILL_GRACE_MS = 2000;
 
 const SLASH_REWRITE_RE = /^\/([a-z][a-z0-9_-]*)(?:\s+([\s\S]*))?$/i;
 const LOCAL_SLASH_COMMANDS = new Set(['goal']);
@@ -117,6 +130,7 @@ export class CodexAppServerPTY {
   private _socketCwd: string;
   private _threadStatePath: string;
   private _socketPointerPath: string;
+  private _processMarkerPath: string;
   private _threadId: string | null = null;
   private _telegramApi: TelegramAPI | null = null;
   private _chatId: string | null = null;
@@ -129,6 +143,7 @@ export class CodexAppServerPTY {
     this._stateDir = join(env.ctxRoot, 'state', env.agentName);
     this._threadStatePath = join(this._stateDir, 'codex-app-server-thread.json');
     this._socketPointerPath = join(this._stateDir, 'codex-app-server-socket.json');
+    this._processMarkerPath = join(this._stateDir, PROCESS_MARKER_BASENAME);
     const socket = this.resolveSocketPath();
     this._socketPath = socket.path;
     this._socketListenArg = socket.listenArg;
@@ -145,7 +160,9 @@ export class CodexAppServerPTY {
     this._alive = true;
 
     try {
+      await this.reapPreviousAppServer();
       await this.startAppServerWithRetry();
+      this.writeProcessMarker();
       await this.connectRpc();
       await this.initializeRpc();
       await this.startOrResumeThread(mode);
@@ -156,7 +173,7 @@ export class CodexAppServerPTY {
     } catch (err) {
       this._alive = false;
       this._outputBuffer.push(`[codex-app-server] degraded: ${err}\n`);
-      this.kill();
+      await this.kill();
       throw err;
     }
   }
@@ -180,7 +197,7 @@ export class CodexAppServerPTY {
     }
   }
 
-  kill(): void {
+  async kill(): Promise<void> {
     this._alive = false;
     this._turnQueue = [];
     this.rejectTurnCompletion(new Error('Codex app-server stopped'));
@@ -188,13 +205,25 @@ export class CodexAppServerPTY {
       this._rpc.close();
       this._rpc = null;
     }
-    if (this._appServerPty) {
+    const appServerPty = this._appServerPty;
+    this._appServerPty = null;
+    let treeReaped = false;
+    if (appServerPty) {
+      treeReaped = await this.terminateProcessTree(appServerPty.pid, this._socketCwd, {
+        allowCurrentChild: true,
+        recordedDescendantPids: this.readRecordedDescendantPids(appServerPty.pid),
+        context: 'stop',
+      });
       try {
-        this._appServerPty.kill();
+        appServerPty.kill();
       } catch {
         // Ignore shutdown errors.
       }
-      this._appServerPty = null;
+    }
+    if (treeReaped) {
+      this.removeProcessMarker();
+    } else if (existsSync(this._processMarkerPath)) {
+      this._outputBuffer.push('[codex-app-server] stop reap incomplete: process marker retained\n');
     }
     this.removeSocket();
     this._onExitHandler?.(0, undefined);
@@ -926,6 +955,182 @@ export class CodexAppServerPTY {
     this.removeSocket();
   }
 
+  private writeProcessMarker(): void {
+    const pid = this.getPid();
+    if (!pid) return;
+
+    const descendantPids = readDescendantPids(pid);
+    const confirmedDescendantPids = (descendantPids ?? []).filter((descendantPid) => (
+      this.validateReapTarget(descendantPid, this._socketCwd, true) === null
+    ));
+    const marker: ProcessMarker = {
+      pid,
+      cwd: this._socketCwd,
+      socketPath: this._socketPath,
+      recordedAt: new Date().toISOString(),
+      descendantPids: confirmedDescendantPids,
+    };
+
+    try {
+      atomicWriteSync(this._processMarkerPath, JSON.stringify(marker, null, 2));
+    } catch {
+      // Non-fatal. The marker is only a recovery aid after daemon failure.
+    }
+  }
+
+  private removeProcessMarker(): void {
+    try {
+      unlinkSync(this._processMarkerPath);
+    } catch {
+      // Already gone or unavailable.
+    }
+  }
+
+  private readProcessMarker(): ProcessMarker | null {
+    try {
+      const parsed = JSON.parse(readFileSync(this._processMarkerPath, 'utf-8')) as Partial<ProcessMarker>;
+      if (
+        typeof parsed.pid !== 'number'
+        || typeof parsed.cwd !== 'string'
+        || typeof parsed.socketPath !== 'string'
+        || typeof parsed.recordedAt !== 'string'
+      ) {
+        return null;
+      }
+      return {
+        pid: parsed.pid,
+        cwd: parsed.cwd,
+        socketPath: parsed.socketPath,
+        recordedAt: parsed.recordedAt,
+        descendantPids: Array.isArray(parsed.descendantPids)
+          ? parsed.descendantPids.filter((pid): pid is number => Number.isInteger(pid) && pid > 0)
+          : [],
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private readRecordedDescendantPids(pid: number): number[] {
+    if (!existsSync(this._processMarkerPath)) return [];
+    const marker = this.readProcessMarker();
+    return marker?.pid === pid ? marker.descendantPids ?? [] : [];
+  }
+
+  private async reapPreviousAppServer(): Promise<boolean> {
+    if (!existsSync(this._processMarkerPath)) return false;
+
+    const marker = this.readProcessMarker();
+    if (!marker) {
+      this._outputBuffer.push('[codex-app-server] boot reap skipped: unreadable process marker\n');
+      this.removeProcessMarker();
+      return false;
+    }
+
+    const reaped = await this.terminateProcessTree(marker.pid, marker.cwd, {
+      allowCurrentChild: false,
+      recordedDescendantPids: marker.descendantPids ?? [],
+      context: 'boot',
+    });
+    this.removeProcessMarker();
+    if (reaped) {
+      this._outputBuffer.push(`[codex-app-server] reaped stale app-server tree pid=${marker.pid}\n`);
+    }
+    return reaped;
+  }
+
+  private validateReapTarget(pid: number, expectedCwd: string, allowCurrentChild: boolean): string | null {
+    if (!(pid > 0) || !isReapTargetAlive(pid)) return `pid ${pid} is not alive`;
+    if (pid === process.pid || (!allowCurrentChild && pid === this.getPid())) {
+      return `pid ${pid} is the current process`;
+    }
+
+    const actualCwd = readProcessCwd(pid);
+    if (!actualCwd || normalizeCwd(actualCwd) !== normalizeCwd(expectedCwd)) {
+      return `pid ${pid} cwd mismatch`;
+    }
+
+    const command = readProcessCommand(pid);
+    if (!command || !command.includes('codex') || !command.includes('app-server')) {
+      return `pid ${pid} is not a codex app-server`;
+    }
+    return null;
+  }
+
+  private async terminateProcessTree(
+    rootPid: number,
+    expectedCwd: string,
+    options: {
+      allowCurrentChild: boolean;
+      recordedDescendantPids: number[];
+      context: 'boot' | 'stop';
+    },
+  ): Promise<boolean> {
+    const discoveredDescendantPids = readDescendantPids(rootPid);
+    if (discoveredDescendantPids === null && options.recordedDescendantPids.length === 0) {
+      this._outputBuffer.push(
+        `[codex-app-server] ${options.context} reap skipped: process tree introspection failed\n`,
+      );
+      return false;
+    }
+
+    const candidatePids = Array.from(new Set([
+      rootPid,
+      ...options.recordedDescendantPids,
+      ...(discoveredDescendantPids ?? []),
+    ]));
+    const confirmedPids: number[] = [];
+    for (const pid of candidatePids) {
+      const reason = this.validateReapTarget(pid, expectedCwd, options.allowCurrentChild);
+      if (reason) {
+        this._outputBuffer.push(
+          `[codex-app-server] ${options.context} reap skipped candidate: ${reason}\n`,
+        );
+        continue;
+      }
+      confirmedPids.push(pid);
+    }
+
+    if (confirmedPids.length === 0) return false;
+
+    for (const pid of [...confirmedPids].reverse()) {
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        // The target may have exited between validation and signaling.
+      }
+    }
+    if (await this.waitForProcessesExit(confirmedPids, REAP_SIGTERM_GRACE_MS)) return true;
+
+    const killPids = confirmedPids.filter((pid) => (
+      this.validateReapTarget(pid, expectedCwd, options.allowCurrentChild) === null
+    ));
+    for (const pid of [...killPids].reverse()) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // The target may have exited between re-validation and signaling.
+      }
+    }
+    await this.waitForProcessesExit(killPids, REAP_SIGKILL_GRACE_MS);
+
+    const survivors = confirmedPids.filter((pid) => isReapTargetAlive(pid));
+    if (survivors.length === 0) return true;
+    this._outputBuffer.push(
+      `[codex-app-server] ${options.context} reap survivors after SIGKILL: ${survivors.join(',')}\n`,
+    );
+    return false;
+  }
+
+  private async waitForProcessesExit(pids: number[], graceMs: number): Promise<boolean> {
+    const deadline = Date.now() + graceMs;
+    while (Date.now() < deadline) {
+      if (pids.every((pid) => !isReapTargetAlive(pid))) return true;
+      await sleep(REAP_POLL_INTERVAL_MS);
+    }
+    return pids.every((pid) => !isReapTargetAlive(pid));
+  }
+
   private writeIdleFlag(): void {
     try {
       writeFileSync(join(this._stateDir, 'last_idle.flag'), Math.floor(Date.now() / 1000).toString(), 'utf-8');
@@ -995,6 +1200,86 @@ export class CodexAppServerPTY {
     } catch {
       return '0.0.0';
     }
+  }
+}
+
+function isReapTargetAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+function readProcessCommand(pid: number): string | null {
+  try {
+    const command = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return command || null;
+  } catch {
+    return null;
+  }
+}
+
+function readProcessCwd(pid: number): string | null {
+  try {
+    const output = execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], {
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    for (const line of output.split('\n')) {
+      if (line.startsWith('n')) return line.slice(1).trim() || null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function readDescendantPids(rootPid: number): number[] | null {
+  try {
+    const output = execFileSync('ps', ['-axo', 'pid=,ppid='], {
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const childrenByParent = new Map<number, number[]>();
+    for (const line of output.split('\n')) {
+      const match = line.trim().match(/^(\d+)\s+(\d+)$/);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      const parentPid = Number(match[2]);
+      const children = childrenByParent.get(parentPid) ?? [];
+      children.push(pid);
+      childrenByParent.set(parentPid, children);
+    }
+
+    const descendants: number[] = [];
+    const queue = [...(childrenByParent.get(rootPid) ?? [])];
+    const seen = new Set<number>();
+    while (queue.length > 0) {
+      const pid = queue.shift()!;
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      descendants.push(pid);
+      queue.push(...(childrenByParent.get(pid) ?? []));
+    }
+    return descendants;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeCwd(cwd: string): string {
+  try {
+    return realpathSync(cwd);
+  } catch {
+    return cwd;
   }
 }
 
