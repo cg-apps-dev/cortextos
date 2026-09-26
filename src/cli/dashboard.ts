@@ -6,6 +6,10 @@ import { randomBytes } from 'crypto';
 
 const IS_WINDOWS = platform() === 'win32';
 
+export function chooseDashboardInstallCommand(hasLock: boolean): 'npm ci' | 'npm install' {
+  return hasLock ? 'npm ci' : 'npm install';
+}
+
 function parseEnvFile(filePath: string): Record<string, string> {
   const result: Record<string, string> = {};
   try {
@@ -85,7 +89,12 @@ export const dashboardCommand = new Command('dashboard')
     if (options.install || !existsSync(join(dashboardDir, 'node_modules'))) {
       console.log('\nInstalling dashboard dependencies...');
       try {
-        execSync('npm install', { cwd: dashboardDir, stdio: 'inherit', timeout: 120000 });
+        const hasLock = existsSync(join(dashboardDir, 'package-lock.json'));
+        const installCommand = chooseDashboardInstallCommand(hasLock);
+        if (!hasLock) {
+          console.warn('WARNING: dashboard/package-lock.json is missing; falling back to npm install, which re-resolves dependency ranges.');
+        }
+        execSync(installCommand, { cwd: dashboardDir, stdio: 'inherit', timeout: 120000 });
       } catch (err) {
         console.error('Failed to install dashboard dependencies:', err);
         process.exit(1);
