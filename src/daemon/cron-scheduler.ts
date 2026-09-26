@@ -203,7 +203,7 @@ function readDaemonLastStopMs(stateDir: string): number | null {
   }
 }
 
-function advanceNextFireAtToFuture(cron: CronDefinition, nextFireAt: number, now: number): number {
+export function advanceNextFireAtToFuture(cron: CronDefinition, nextFireAt: number, now: number): number {
   if (nextFireAt > now) return nextFireAt;
 
   const durationMs = parseDurationMs(cron.schedule);

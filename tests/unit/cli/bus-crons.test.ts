@@ -132,7 +132,7 @@ afterEach(() => {
 // The CTX_ROOT is read at action-call time, not at import time, so the
 // per-test env setup above is sufficient.
 // ---------------------------------------------------------------------------
-import { busCommand } from '../../../src/cli/bus';
+import { busCommand, computeDisplayNextFireMs } from '../../../src/cli/bus';
 
 // Helper to mock process.exit so it throws instead of terminating the process.
 function mockExit(): ReturnType<typeof vi.spyOn> {
@@ -288,6 +288,43 @@ describe('bus remove-cron', () => {
 // ---------------------------------------------------------------------------
 // list-crons
 // ---------------------------------------------------------------------------
+
+describe('computeDisplayNextFireMs', () => {
+  it('advances a frozen-past interval to the next future slot', () => {
+    const now = Date.parse('2026-09-26T17:00:00.000Z');
+    const nextFireMs = computeDisplayNextFireMs(
+      makeCron('heartbeat', { schedule: '6h' }),
+      '2026-09-25T05:00:00.000Z',
+      now,
+    );
+
+    expect(nextFireMs).toBe(Date.parse('2026-09-26T23:00:00.000Z'));
+    expect(nextFireMs).toBeGreaterThan(now);
+  });
+
+  it('leaves an already-future interval unchanged', () => {
+    const now = Date.parse('2026-09-26T17:00:00.000Z');
+    const nextFireMs = computeDisplayNextFireMs(
+      makeCron('heartbeat', { schedule: '6h' }),
+      '2026-09-26T15:00:00.000Z',
+      now,
+    );
+
+    expect(nextFireMs).toBe(Date.parse('2026-09-26T21:00:00.000Z'));
+  });
+
+  it('computes a future time for a calendar cron', () => {
+    const now = Date.parse('2026-09-26T17:00:30.000Z');
+    const nextFireMs = computeDisplayNextFireMs(
+      makeCron('every-minute', { schedule: '* * * * *' }),
+      '2026-09-20T00:00:00.000Z',
+      now,
+    );
+
+    expect(nextFireMs).toBeGreaterThan(now);
+    expect(nextFireMs % 60_000).toBe(0);
+  });
+});
 
 describe('bus list-crons', () => {
   it('empty state: prints "No crons configured" message', async () => {
