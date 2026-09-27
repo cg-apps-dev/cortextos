@@ -26,7 +26,7 @@ Constants: spreadsheet `1tFAR0ecVBZlMwyV18hfaoC4AAyN5TtyZBVw4r2IMcME` ("Meta Ads
 
 ## Hard rules
 
-1. **FRESH-ONLY PER TARGET ACCOUNT** (Adam, standing): an ad already uploaded to account X (its per-account stamp column is non-empty, e.g. "Active - date" / "CAMPAIGN_PAUSED - date") is NEVER grouped for account X. Other accounts stay eligible. Stamp columns on both source tabs: E-0681=F, E-0842=N, E-0828=P (header-resolve for others).
+1. **FRESH-ONLY PER TARGET ACCOUNT** (Adam, standing): an ad already uploaded to account X (its per-account stamp column is non-empty, e.g. "Active - date" / "CAMPAIGN_PAUSED - date") is NEVER grouped for account X. Other accounts stay eligible. Stamp columns on both source tabs: header-resolve the per-account column by its account name every run - letters live in [../../agents/meta-ads-agent/meta-ad-copy-agent/references/column-maps.md](../../agents/meta-ads-agent/meta-ad-copy-agent/references/column-maps.md) (dated quick-reference), never cite them here.
 2. **VISUAL QA, never name-based**: every candidate's preview is eyeballed (vision subagents) before selection sticks. Names lie (a "generic-named" creative was July-themed). Any content filter (seasonal, offer, actor) runs on pixels, not text.
 3. **Demographic coherence**: each grouping skews YOUNGER or OLDER (intake vision cols; NO-ACTOR rows are wildcards) - never mixed. Segment-specific beats everyone-at-once for Meta purchase-sequencing.
 4. **Funnel spread** ~7 TOF / 4 MOF / 3 BOF per 14-image block; diversity across hooks, angles, actors, design families.
