@@ -61,6 +61,29 @@ paths = [
   '''(^|/)\.next(\.bak[^/]*)?/''',
 ]
 
+# generic-api-key FP on a SYNTHETIC self-test fixture in security-agent's own leak-safe scanner.
+# token-drift-scan.py L437 has an in-code self-test control field named token_fp holding a synthetic
+# fingerprint-shape string, NOT a credential. The default generic-api-key rule shape-matches the
+# token_fp keyword + the 15-char fixture value. It rode into the agent-state backup branch
+# DO NOT reproduce the literal fixture value in this comment: an allowlist config that quotes the
+# secret-shaped value it is allowlisting becomes a generic-api-key match itself, at THIS file's path,
+# which the token-drift-scan.py-scoped allowlist below does NOT cover (self-trip on the whole-tree
+# `gitleaks git .` scan; caught 2026-09-28 by the per-real-run content-recheck).
+# (commit 904a8e52, 2026-08-04) and the pre-push `gitleaks git .` whole-tree scan (this hook, L94)
+# surfaces it on EVERY backup push, false-blocking the framework code push (secret-guard-block
+# 2026-09-27T09:00Z). Same class as the 08-20 .next FP above. Leak-safe verified (no real cred).
+# SCOPED to generic-api-key ONLY (targetRules) and to token-drift-scan.py ONLY (path) - every
+# DEDICATED real-secret rule (anthropic-sk-ant-token, openai-svcacct-proj-admin-token, aws, gcp,
+# slack, shopify, jwt) stays ACTIVE on that file, so a real cred that ever lands in it still fires.
+# REMOVABLE once the class-fix lands (claude-dev task_1790500514074: scope the code-push whole-tree
+# scan to pushed refs only, excluding agent-state which is independently gated by backup-agent-state.sh).
+[[allowlists]]
+description = "generic-api-key FP on security-agent token-drift-scan.py self-test fixture (agent-state backup branch)"
+targetRules = ["generic-api-key"]
+paths = [
+  '''agents/security-agent/tools/token-drift-scan\.py$''',
+]
+
 # Anthropic sk-ant token (OAuth/API/session) — our runtime + usage creds, spend-capable.
 # NOT covered by the gitleaks default ruleset (which only matches sk-ant-api03 if at all,
 # not the sk-ant-oat01 OAuth/setup-token format the fleet runs on). Added 2026-06-18 after
