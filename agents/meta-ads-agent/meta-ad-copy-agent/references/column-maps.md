@@ -8,15 +8,19 @@ tags: [meta-ad-copy, column-maps, reference]
 
 # Column Maps - Four Product-Specific Tabs
 
-> **⚠ 2026-06-23 STALENESS NOTE - letters below are ADVISORY, name-resolution is the AUTHORITY.**
-> A live audit on 2026-06-23 found ALL FOUR copy tabs had shifted from the letters documented here (structural inserts since this doc was written). The pipeline was unaffected ONLY because the playbook §G rule is "header-map by NAME live every run" - do that, never trust a fixed letter. **The Step-0 audit MUST resolve each target column by its HEADER NAME and verify the name is present (anywhere), NOT assert a fixed letter position** - a fixed-letter audit false-halts every tab after an insert. Current live letters (2026-06-23, copy columns only):
+> **⚠ STALENESS NOTE - letters below are ADVISORY, name-resolution is the AUTHORITY.**
+> Live audits (2026-06-23, re-verified in full 2026-09-27) found the copy tabs shifted from the letters documented in the per-tab maps below (structural inserts since this doc was written). The pipeline was unaffected ONLY because the playbook §G rule is "header-map by NAME live every run" - do that, never trust a fixed letter. **The Step-0 audit MUST resolve each target column by its HEADER NAME and verify the name is present (anywhere), NOT assert a fixed letter position** - a fixed-letter audit false-halts every tab after an insert.
 >
-> | Tab | Avatar | Funnel | Headline…Var.4 | Primary…Var.4 | Ad Description |
-> |-----|--------|--------|----------------|---------------|----------------|
-> | `VIDEOS (Flower)` | W | X | AG–AK | AL–AP | AR |
-> | `IMAGES (Flower)` | S | T | AC–AG | AH–AL | AN |
-> | `VIDEOS (Sleep Gummies)` | Q | R | AA–AE | AF–AJ | AL |
-> | `IMAGES (Sleep Gummies)` | M | N | W–AA | AB–AF | AH |
+> **Per-tab key column quick-reference - current live letters (fresh header-resolve of all 4 tabs, 2026-09-27; delta first flagged by meta-media-buyer-agent same day, independently re-verified by meta-ads-agent before landing here).** Since the 2026-06-23 audit only the FLOWER tabs moved (+11 columns, per-account tracking-column growth F:X now 19 accounts incl JCG2/AliCG2); both gummies tabs are unchanged since 2026-06-23:
+>
+> | Tab | Code/Variant# | Writer | Designer | ClickUp Card ID | Avatar | Funnel | Ad Name | 1x1/4x5/9x16 | Headline…Var.4 | Primary…Var.4 | Promo Code | Ad Description |
+> |-----|--------------|--------|----------|-----------------|--------|--------|---------|--------------|----------------|---------------|------------|----------------|
+> | `IMAGES (Flower)` | Y | AA | AB | AC | AD | AE | AJ | AK/AL/AM | AN–AR | AS–AW | AX | AY |
+> | `VIDEOS (Flower)` | Y | AC | AD | AE | AH | AI | AN | AO/AP/AQ | AR–AV | AW–BA | BB | BC |
+> | `IMAGES (Sleep Gummies)` | H | J | K | L | M | N | S | T/U/V | W–AA | AB–AF | AG | AH |
+> | `VIDEOS (Sleep Gummies)` | H | L | M | N | Q | R | W | X/Y/Z | AA–AE | AF–AJ | AK | AL |
+>
+> Flower-tab extras (both): `AF/AJ=Ad Type`, `AG/AK=LP`, `AH/AL=Homepage` (**note: AH on IMAGES (Flower) is now Homepage - older docs/rules citing AH as Ad Description are wrong**), `AI/AM=Landing Page URL`; videos also carry `Z=Video Script, AA=Actor, AB=Hook #, AG=Hook Type` (flower) / `I=Video Script, J=Actor, K=Hook #, P=Hook Type` (gummies). Actor Age Bracket + Gender are the last two columns on every tab (BD/BE, BH/BI, AM/AN, AQ/AR respectively).
 
 
 
@@ -227,8 +231,8 @@ explicit human approval.
 | AC | Primary Var. 2 | Pain-led | Long form |
 | AD | Primary Var. 3 | Social proof / customer voice | Medium (5-8 lines) |
 | AE | Primary Var. 4 | Offer / urgency | Short (3-5 lines) |
-| AF | Promo Code | - | Read-only. Do not write. |
-| AG | Ad Description | - | Read-only. Do not write. |
+| AF | Promo Code | - | **Write target (copy).** TRY20, written by the copy pipeline as part of the standard block. Read-only for the tracker/media-buyer side (confirmed with meta-media-buyer-agent, 2026-08-05) - only copy authors it. |
+| AG | Ad Description | - | **Write target (copy).** Required on every ingested row per meta-intake SKILL.md; written by the copy pipeline. |
 | AH | Display Link | - | Read-only. Do not write. |
 | AI | UTM | - | Read-only. Do not write. |
 | AJ | CTA | - | Read-only. Do not write. |
@@ -285,8 +289,8 @@ explicit human approval.
 | AA | Primary Var. 2 | Pain-led | Long form |
 | AB | Primary Var. 3 | Social proof / customer voice | Medium (5-8 lines) |
 | AC | Primary Var. 4 | Offer / urgency | Short (3-5 lines) |
-| AD | Promo Code | - | Read-only. Do not write. |
-| AE | Ad Description | - | Read-only. Do not write. |
+| AD | Promo Code | - | **Write target (copy).** TRY20, written by the copy pipeline as part of the standard block. Read-only for the tracker/media-buyer side (confirmed with meta-media-buyer-agent, 2026-08-05) - only copy authors it. |
+| AE | Ad Description | - | **Write target (copy).** Required on every ingested row per meta-intake SKILL.md; written by the copy pipeline. |
 | AF | Display Link | - | Read-only. Do not write. |
 | AG | UTM | - | Read-only. Do not write. |
 | AH | CTA | - | Read-only. Do not write. |
@@ -349,8 +353,8 @@ explicit human approval.
 | AG | Primary Var. 2 | Pain-led | Long form |
 | AH | Primary Var. 3 | Social proof / customer voice | Medium (5-8 lines) |
 | AI | Primary Var. 4 | Offer / urgency | Short (3-5 lines) |
-| AJ | Promo Code | - | Read-only. Do not write. |
-| AK | Ad Description | - | Read-only. Do not write. |
+| AJ | Promo Code | - | **Write target (copy).** TRY20, written by the copy pipeline as part of the standard block. Read-only for the tracker/media-buyer side (confirmed with meta-media-buyer-agent, 2026-08-05) - only copy authors it. |
+| AK | Ad Description | - | **Write target (copy).** Required on every ingested row per meta-intake SKILL.md; written by the copy pipeline. |
 | AL | Display Link | - | Read-only. Do not write. |
 | AM | UTM Parameters | - | Read-only. Do not write. |
 | AN | CTA | - | Read-only. Do not write. |
@@ -412,8 +416,8 @@ explicit human approval.
 | AE | Primary Var. 2 | Pain-led | Long form |
 | AF | Primary Var. 3 | Social proof / customer voice | Medium (5-8 lines) |
 | AG | Primary Var. 4 | Offer / urgency | Short (3-5 lines) |
-| AH | Promo Code | - | Read-only. Do not write. |
-| AI | Ad Description | - | Read-only. Do not write. |
+| AH | Promo Code | - | **Write target (copy).** TRY20, written by the copy pipeline as part of the standard block. Read-only for the tracker/media-buyer side (confirmed with meta-media-buyer-agent, 2026-08-05) - only copy authors it. |
+| AI | Ad Description | - | **Write target (copy).** Required on every ingested row per meta-intake SKILL.md; written by the copy pipeline. |
 | AJ | Display Link | - | Read-only. Do not write. |
 | AK | UTM Parameters | - | Read-only. Do not write. |
 | AL | CTA | - | Read-only. Do not write. |
