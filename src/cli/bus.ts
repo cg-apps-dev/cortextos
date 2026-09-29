@@ -154,6 +154,7 @@ export function validateSendMessageReplyTo(
   replyTo: string | undefined,
   paths: { ctxRoot: string },
   agentName: string,
+  to: string,
 ): SendMessageReplyToValidation {
   if (!replyTo) return { ok: true };
 
@@ -161,6 +162,15 @@ export function validateSendMessageReplyTo(
     return {
       ok: false,
       error: `Invalid reply_to '${replyTo}'. Use the exact msg_id from the inbound message header, or omit reply_to.`,
+    };
+  }
+
+  const senderMatch = replyTo.match(/^[0-9]{13}-(.+)-[a-z0-9]{5}$/);
+  const sender = senderMatch?.[1];
+  if (sender && sender !== to) {
+    return {
+      ok: false,
+      error: `Invalid reply_to '${replyTo}'. It is a message from '${sender}', but you are sending to '${to}' - a reply_to must be a msg_id the addressee sent you (relay-as-reply misuse). Omit reply_to for this send, or reply to '${sender}' directly; to ACK '${sender}'s message use ack-inbox.`,
     };
   }
 
@@ -380,7 +390,7 @@ busCommand
 
     const env = resolveEnv();
     const paths = resolvePaths(env.agentName, env.instanceId, env.org);
-    const replyToValidation = validateSendMessageReplyTo(effectiveReplyTo, paths, env.agentName);
+    const replyToValidation = validateSendMessageReplyTo(effectiveReplyTo, paths, env.agentName, to);
     if (!replyToValidation.ok) {
       try {
         logSendMessageRejection(paths, env.agentName, env.org, {
