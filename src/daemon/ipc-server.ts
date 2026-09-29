@@ -873,19 +873,29 @@ export class IPCServer {
  */
 export class IPCClient {
   private socketPath: string;
+  private createConnection: (path: string, onConnect: () => void) => any;
 
-  constructor(instanceId: string = 'default') {
+  constructor(instanceId: string = 'default', createConnection?: (path: string, onConnect: () => void) => any) {
     this.socketPath = getIpcPath(instanceId);
+    this.createConnection = createConnection ?? require('net').createConnection;
   }
 
   /**
    * Send a command to the daemon and get the response.
    */
   async send(request: IPCRequest, timeoutMs = 5000): Promise<IPCResponse> {
-    const { createConnection } = require('net');
+    try {
+      return await this.sendOnce(request, timeoutMs);
+    } catch (err) {
+      if (!isIpcTimeoutError(err)) throw err;
+      const retryTimeoutMs = timeoutMs === 5000 ? 10_000 : timeoutMs;
+      return this.sendOnce(request, retryTimeoutMs);
+    }
+  }
 
+  private async sendOnce(request: IPCRequest, timeoutMs: number): Promise<IPCResponse> {
     return new Promise((resolve, reject) => {
-      const socket = createConnection(this.socketPath, () => {
+      const socket = this.createConnection(this.socketPath, () => {
         socket.write(JSON.stringify(request));
       });
 
@@ -906,6 +916,7 @@ export class IPCClient {
         if ((err as any).code === 'ECONNREFUSED' || (err as any).code === 'ENOENT') {
           resolve({
             success: false,
+            code: 'DAEMON_DOWN',
             error: 'Daemon is not running. Start it with: cortextos start',
           });
         } else {
@@ -915,7 +926,7 @@ export class IPCClient {
 
       socket.setTimeout(timeoutMs, () => {
         socket.destroy();
-        reject(new Error('IPC request timed out'));
+        reject(makeIpcTimeoutError(request.type));
       });
     });
   }
@@ -923,12 +934,22 @@ export class IPCClient {
   /**
    * Check if the daemon is running.
    */
-  async isDaemonRunning(): Promise<boolean> {
+  async isDaemonRunning(timeoutMs = 5000): Promise<boolean> {
     try {
-      const response = await this.send({ type: 'status' });
+      const response = await this.send({ type: 'status' }, timeoutMs);
       return response.success;
     } catch {
-      return false;
+      return true;
     }
   }
+}
+
+function makeIpcTimeoutError(type: string | undefined): Error & { code: 'IPC_TIMEOUT' } {
+  const err = new Error(`IPC request timed out: ${type ?? 'unknown'}`) as Error & { code: 'IPC_TIMEOUT' };
+  err.code = 'IPC_TIMEOUT';
+  return err;
+}
+
+function isIpcTimeoutError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'IPC_TIMEOUT';
 }
