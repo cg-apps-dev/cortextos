@@ -233,7 +233,15 @@ function ScopedLimitRow({ limit }: { limit: ResolvedScopedLimit }) {
   );
 }
 
-function ExtraUsage({ extra }: { extra: NonNullable<AccountUsagePanelEntry['extra_usage']> }) {
+function ExtraUsage({
+  extra,
+  stale,
+  staleAsOf,
+}: {
+  extra: NonNullable<AccountUsagePanelEntry['extra_usage']>;
+  stale?: boolean;
+  staleAsOf?: string;
+}) {
   const usd = extra.used_usd.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
   const capPct = extra.cap_usd ? Math.round((extra.used_usd / extra.cap_usd) * 100) : null;
   return (
@@ -242,7 +250,11 @@ function ExtraUsage({ extra }: { extra: NonNullable<AccountUsagePanelEntry['extr
         <span className="font-medium text-foreground">Metered extra usage</span>
         <span
           className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-            extra.is_enabled ? 'bg-sky-500/15 text-sky-600 dark:text-sky-400' : 'bg-muted text-muted-foreground'
+            stale
+              ? 'bg-muted text-muted-foreground'
+              : extra.is_enabled
+                ? 'bg-sky-500/15 text-sky-600 dark:text-sky-400'
+                : 'bg-muted text-muted-foreground'
           }`}
         >
           {extra.is_enabled ? 'ENABLED' : 'OFF'}
@@ -251,7 +263,7 @@ function ExtraUsage({ extra }: { extra: NonNullable<AccountUsagePanelEntry['extr
       {extra.is_enabled && (
         <div className="space-y-1">
           <div className="flex items-baseline justify-between">
-            <span className="tabular-nums font-semibold">{usd}</span>
+            <span className={`tabular-nums font-semibold ${stale ? 'text-muted-foreground' : ''}`}>{usd}</span>
             <span className="text-[10px] text-muted-foreground tabular-nums">
               {extra.used_credits.toLocaleString()} credits
             </span>
@@ -264,6 +276,11 @@ function ExtraUsage({ extra }: { extra: NonNullable<AccountUsagePanelEntry['extr
               </span>
             )}
           </div>
+          {stale && (
+            <span className="inline-flex rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              stale - as of {ptTime(staleAsOf)}
+            </span>
+          )}
         </div>
       )}
     </div>
@@ -388,7 +405,13 @@ function AccountCard({ entry, attribution }: { entry: AccountUsagePanelEntry; at
           {scopedLimits.map((limit) => (
             <ScopedLimitRow key={limit.model} limit={limit} />
           ))}
-          {entry.extra_usage && <ExtraUsage extra={entry.extra_usage} />}
+          {entry.extra_usage && (
+            <ExtraUsage
+              extra={entry.extra_usage}
+              stale={entry.status === 'stale'}
+              staleAsOf={entry.status === 'stale' ? entry.fetched_at : undefined}
+            />
+          )}
         </div>
       ) : showUnavailable ? (
         <p className="text-xs text-amber-600 dark:text-amber-400">
