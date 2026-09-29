@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const fsMocks = {
   existsSync: vi.fn().mockReturnValue(false),
@@ -19,6 +19,12 @@ vi.mock('fs', async () => {
     get appendFileSync() { return fsMocks.appendFileSync; },
   };
 });
+
+const execFileSyncMock = vi.fn();
+
+vi.mock('child_process', () => ({
+  execFileSync: execFileSyncMock,
+}));
 
 const atomicWriteSyncMock = vi.fn();
 
@@ -82,6 +88,7 @@ beforeEach(() => {
   fsMocks.writeFileSync.mockReset();
   fsMocks.unlinkSync.mockReset();
   fsMocks.appendFileSync.mockReset();
+  execFileSyncMock.mockReset();
   requestMock.mockReset();
   notifyMock.mockReset();
   closeMock.mockReset();
@@ -1248,6 +1255,320 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → codex-tokens.jsonl', (
       total: { cachedInputTokens: 0, inputTokens: 100, outputTokens: 50, reasoningOutputTokens: 0, totalTokens: 150 },
       modelContextWindow: 200000,
     })).not.toThrow();
+  });
+});
+
+describe('CodexAppServerPTY orphan process reaping', () => {
+  const STATE_DIR = '/tmp/ctx/state/codex-app-agent';
+  const MARKER_PATH = `${STATE_DIR}/codex-app-server-process.json`;
+  const SOCKET_PATH = `${STATE_DIR}/codex.sock`;
+  const ROOT_PID = 900001;
+  const CHILD_PID = 900002;
+  const OTHER_PID = 900003;
+
+  interface ReapInternals {
+    reapPreviousAppServer(): Promise<boolean>;
+    writeProcessMarker(): void;
+    _appServerPty: { pid: number; kill: ReturnType<typeof vi.fn> } | null;
+  }
+
+  let killSpy: ReturnType<typeof vi.spyOn>;
+  let alivePids: Set<number>;
+  let termKills = true;
+  let signals: Array<{ pid: number; signal: string | number }>;
+  let treeRows: Array<[number, number]>;
+  let commands: Map<number, string>;
+  let cwdByPid: Map<number, string>;
+  let onSignal: ((pid: number, signal: string | number) => void) | undefined;
+
+  function markerJson(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      pid: ROOT_PID,
+      cwd: STATE_DIR,
+      socketPath: SOCKET_PATH,
+      recordedAt: '2026-09-26T00:00:00.000Z',
+      descendantPids: [CHILD_PID],
+      ...overrides,
+    });
+  }
+
+  function installProcessMocks(): void {
+    alivePids = new Set([ROOT_PID, CHILD_PID]);
+    signals = [];
+    treeRows = [[ROOT_PID, 1], [CHILD_PID, ROOT_PID]];
+    commands = new Map([
+      [ROOT_PID, 'node /opt/homebrew/bin/codex app-server --listen unix://./codex.sock'],
+      [CHILD_PID, '/vendor/codex app-server --listen unix://./codex.sock'],
+    ]);
+    cwdByPid = new Map([[ROOT_PID, STATE_DIR], [CHILD_PID, STATE_DIR]]);
+
+    execFileSyncMock.mockImplementation((file: string, args: string[]) => {
+      if (file === 'ps' && args[0] === '-axo') {
+        return treeRows.map(([pid, ppid]) => `${pid} ${ppid}`).join('\n');
+      }
+      if (file === 'ps') {
+        const pid = Number(args[1]);
+        const command = commands.get(pid);
+        if (!command) throw new Error('command unavailable');
+        return `${command}\n`;
+      }
+      if (file === 'lsof') {
+        const pid = Number(args[2]);
+        const cwd = cwdByPid.get(pid);
+        if (!cwd) throw new Error('cwd unavailable');
+        return `p${pid}\nfcwd\nn${cwd}\n`;
+      }
+      throw new Error(`unexpected command ${file}`);
+    });
+
+    killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+      if (signal === 0 || signal === undefined) {
+        if (alivePids.has(pid)) return true;
+        const err = new Error('no such process') as NodeJS.ErrnoException;
+        err.code = 'ESRCH';
+        throw err;
+      }
+      signals.push({ pid, signal });
+      onSignal?.(pid, signal);
+      if (signal === 'SIGKILL' || (signal === 'SIGTERM' && termKills)) alivePids.delete(pid);
+      return true;
+    }) as typeof process.kill);
+  }
+
+  function makePty(): CodexAppServerPTY & ReapInternals {
+    return new CodexAppServerPTY(mockEnv, {}) as CodexAppServerPTY & ReapInternals;
+  }
+
+  async function runWithTimers<T>(promise: Promise<T>): Promise<T> {
+    await vi.runAllTimersAsync();
+    return promise;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    termKills = true;
+    onSignal = undefined;
+    fsMocks.existsSync.mockImplementation((path: string) => String(path) === MARKER_PATH);
+    fsMocks.readFileSync.mockReturnValue(markerJson());
+    installProcessMocks();
+  });
+
+  afterEach(() => {
+    killSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('runs boot reap before spawn startup and writes the new marker after startup', async () => {
+    fsMocks.existsSync.mockReturnValue(false);
+    alivePids.clear();
+    const pty = makePty();
+    const internals = pty as unknown as {
+      reapPreviousAppServer(): Promise<boolean>;
+      startAppServerWithRetry(): Promise<void>;
+      writeProcessMarker(): void;
+      connectRpc(): Promise<void>;
+      initializeRpc(): Promise<void>;
+      startOrResumeThread(mode: 'fresh' | 'continue'): Promise<void>;
+    };
+    const reap = vi.spyOn(internals, 'reapPreviousAppServer').mockResolvedValue(false);
+    const start = vi.spyOn(internals, 'startAppServerWithRetry').mockResolvedValue(undefined);
+    const writeMarker = vi.spyOn(internals, 'writeProcessMarker').mockImplementation(() => {});
+    vi.spyOn(internals, 'connectRpc').mockResolvedValue(undefined);
+    vi.spyOn(internals, 'initializeRpc').mockResolvedValue(undefined);
+    vi.spyOn(internals, 'startOrResumeThread').mockResolvedValue(undefined);
+
+    await pty.spawn('fresh', '');
+
+    expect(reap).toHaveBeenCalledOnce();
+    expect(start).toHaveBeenCalledOnce();
+    expect(writeMarker).toHaveBeenCalledOnce();
+    expect(reap.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[0]);
+    expect(start.mock.invocationCallOrder[0]).toBeLessThan(writeMarker.mock.invocationCallOrder[0]);
+    expect(signals).toEqual([]);
+  });
+
+  it('writes a marker with the wrapper and confirmed vendored child pids', () => {
+    const pty = makePty();
+    pty._appServerPty = { pid: ROOT_PID, kill: vi.fn() };
+
+    pty.writeProcessMarker();
+
+    expect(atomicWriteSyncMock).toHaveBeenCalledOnce();
+    const [path, payload] = atomicWriteSyncMock.mock.calls[0] as [string, string];
+    expect(path).toBe(MARKER_PATH);
+    expect(JSON.parse(payload)).toMatchObject({
+      pid: ROOT_PID,
+      cwd: STATE_DIR,
+      socketPath: SOCKET_PATH,
+      descendantPids: [CHILD_PID],
+    });
+  });
+
+  it('boot reaps the confirmed wrapper and vendored child with SIGTERM', async () => {
+    const pty = makePty();
+
+    const reaped = await pty.reapPreviousAppServer();
+
+    expect(reaped).toBe(true);
+    expect(signals).toEqual([
+      { pid: CHILD_PID, signal: 'SIGTERM' },
+      { pid: ROOT_PID, signal: 'SIGTERM' },
+    ]);
+    expect(signals.every(({ pid }) => pid > 0)).toBe(true);
+    expect(fsMocks.unlinkSync).toHaveBeenCalledWith(MARKER_PATH);
+  });
+
+  it('escalates each still-confirmed tree member to SIGKILL with no survivor', async () => {
+    termKills = false;
+    const pty = makePty();
+
+    const reapPromise = pty.reapPreviousAppServer();
+    const reaped = await runWithTimers(reapPromise);
+
+    expect(reaped).toBe(true);
+    expect(signals).toEqual([
+      { pid: CHILD_PID, signal: 'SIGTERM' },
+      { pid: ROOT_PID, signal: 'SIGTERM' },
+      { pid: CHILD_PID, signal: 'SIGKILL' },
+      { pid: ROOT_PID, signal: 'SIGKILL' },
+    ]);
+    expect(alivePids.has(ROOT_PID)).toBe(false);
+    expect(alivePids.has(CHILD_PID)).toBe(false);
+  });
+
+  it('does not signal an unconfirmed descendant', async () => {
+    alivePids.add(OTHER_PID);
+    treeRows.push([OTHER_PID, ROOT_PID]);
+    commands.set(OTHER_PID, '/usr/bin/unrelated-worker');
+    cwdByPid.set(OTHER_PID, STATE_DIR);
+    const pty = makePty();
+
+    await pty.reapPreviousAppServer();
+
+    expect(signals.some(({ pid }) => pid === OTHER_PID)).toBe(false);
+    expect(alivePids.has(OTHER_PID)).toBe(true);
+  });
+
+  it('re-validates each survivor before SIGKILL and skips a changed descendant', async () => {
+    termKills = false;
+    onSignal = (pid, signal) => {
+      if (pid === ROOT_PID && signal === 'SIGTERM') {
+        commands.set(CHILD_PID, '/usr/bin/reused-pid-worker');
+      }
+    };
+    const pty = makePty();
+
+    const reapPromise = pty.reapPreviousAppServer();
+    const reaped = await runWithTimers(reapPromise);
+
+    expect(reaped).toBe(false);
+    expect(signals).toContainEqual({ pid: ROOT_PID, signal: 'SIGKILL' });
+    expect(signals).not.toContainEqual({ pid: CHILD_PID, signal: 'SIGKILL' });
+    expect(alivePids.has(CHILD_PID)).toBe(true);
+  });
+
+  it('guard: a dead recorded pid is skipped and the marker is cleared', async () => {
+    alivePids.clear();
+    fsMocks.readFileSync.mockReturnValue(markerJson({ descendantPids: [] }));
+    treeRows = [];
+    const pty = makePty();
+
+    expect(await pty.reapPreviousAppServer()).toBe(false);
+    expect(signals).toEqual([]);
+    expect(fsMocks.unlinkSync).toHaveBeenCalledWith(MARKER_PATH);
+  });
+
+  it('guard: the daemon pid is never signaled', async () => {
+    alivePids = new Set([process.pid]);
+    treeRows = [[process.pid, 1]];
+    commands.set(process.pid, 'codex app-server');
+    cwdByPid.set(process.pid, STATE_DIR);
+    fsMocks.readFileSync.mockReturnValue(markerJson({ pid: process.pid, descendantPids: [] }));
+    const pty = makePty();
+
+    expect(await pty.reapPreviousAppServer()).toBe(false);
+    expect(signals).toEqual([]);
+  });
+
+  it('guard: the current owned child is not treated as a boot orphan', async () => {
+    fsMocks.readFileSync.mockReturnValue(markerJson({ descendantPids: [] }));
+    treeRows = [[ROOT_PID, 1]];
+    alivePids = new Set([ROOT_PID]);
+    const pty = makePty();
+    pty._appServerPty = { pid: ROOT_PID, kill: vi.fn() };
+
+    expect(await pty.reapPreviousAppServer()).toBe(false);
+    expect(signals).toEqual([]);
+  });
+
+  it('guard: cwd mismatch skips the candidate', async () => {
+    cwdByPid.set(ROOT_PID, '/tmp/other');
+    cwdByPid.set(CHILD_PID, '/tmp/other');
+    const pty = makePty();
+
+    expect(await pty.reapPreviousAppServer()).toBe(false);
+    expect(signals).toEqual([]);
+  });
+
+  it('guard: command mismatch skips the candidate', async () => {
+    commands.set(ROOT_PID, '/usr/bin/unrelated-worker');
+    commands.set(CHILD_PID, '/usr/bin/unrelated-worker');
+    const pty = makePty();
+
+    expect(await pty.reapPreviousAppServer()).toBe(false);
+    expect(signals).toEqual([]);
+  });
+
+  it('guard: introspection failure skips without signaling', async () => {
+    execFileSyncMock.mockImplementation(() => {
+      throw new Error('introspection unavailable');
+    });
+    fsMocks.readFileSync.mockReturnValue(markerJson({ descendantPids: [] }));
+    const pty = makePty();
+
+    expect(await pty.reapPreviousAppServer()).toBe(false);
+    expect(signals).toEqual([]);
+  });
+
+  it('healthy control: no prior marker causes no reap or signal', async () => {
+    fsMocks.existsSync.mockReturnValue(false);
+    const pty = makePty();
+
+    expect(await pty.reapPreviousAppServer()).toBe(false);
+    expect(killSpy).not.toHaveBeenCalled();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('clean stop awaits the confirmed tree reap, calls the PTY kill, and removes the marker', async () => {
+    const pty = makePty();
+    const ptyKill = vi.fn();
+    pty._appServerPty = { pid: ROOT_PID, kill: ptyKill };
+
+    await pty.kill();
+
+    expect(signals).toEqual([
+      { pid: CHILD_PID, signal: 'SIGTERM' },
+      { pid: ROOT_PID, signal: 'SIGTERM' },
+    ]);
+    expect(ptyKill).toHaveBeenCalledOnce();
+    expect(fsMocks.unlinkSync).toHaveBeenCalledWith(MARKER_PATH);
+    expect(alivePids.size).toBe(0);
+  });
+
+  it('retains the recovery marker when clean-stop tree introspection fails', async () => {
+    execFileSyncMock.mockImplementation(() => {
+      throw new Error('introspection unavailable');
+    });
+    fsMocks.readFileSync.mockReturnValue(markerJson({ descendantPids: [] }));
+    const pty = makePty();
+    const ptyKill = vi.fn();
+    pty._appServerPty = { pid: ROOT_PID, kill: ptyKill };
+
+    await pty.kill();
+
+    expect(signals).toEqual([]);
+    expect(ptyKill).toHaveBeenCalledOnce();
+    expect(fsMocks.unlinkSync).not.toHaveBeenCalledWith(MARKER_PATH);
   });
 });
 
