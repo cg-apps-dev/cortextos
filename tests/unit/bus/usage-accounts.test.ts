@@ -1119,6 +1119,42 @@ describe('usage-accounts', () => {
         .map((line) => JSON.parse(line) as Record<string, unknown>);
     }
 
+    async function runSevenDayRiseGuardCase({
+      priorSeven,
+      currentSeven,
+      minutesAfterPrior,
+    }: {
+      priorSeven: number;
+      currentSeven: number;
+      minutesAfterPrior: number;
+    }): Promise<AccountUsage> {
+      const priorFetchedAt = '2026-06-11T03:00:00.000Z';
+      const currentFetchedAt = new Date(Date.parse(priorFetchedAt) + minutesAfterPrior * 60_000).toISOString();
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(currentFetchedAt));
+      seedAccounts({
+        'me-com-max': { source: 'pkce-authorize', token: 'sk-ant-oat01-MECOMSECRETwTOK' },
+      });
+      atomicWriteSync(multiAccountUsagePath(), JSON.stringify({
+        generated_at: priorFetchedAt,
+        accounts: [{
+          account: 'me-com-max',
+          ok: true,
+          five_hour_pct: 8,
+          seven_day_pct: priorSeven,
+          five_hour_resets: '2026-06-11T05:00:00Z',
+          seven_day_resets: '2026-06-15T00:00:00Z',
+          fetched_at: priorFetchedAt,
+        }],
+      }, null, 2));
+      stubUsageResponses([{
+        five_hour: { utilization: 8, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: currentSeven, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      return (await checkAllUsage(ctxRoot)).accounts[0];
+    }
+
     it('fetchAccountUsage writes source attribution, fingerprint, and raw response without token material', async () => {
       seedAccounts({
         'cg-team-seat': { source: 'keychain-capture', token: 'sk-ant-oat01-STOREDSECRETwOLD' },
@@ -1443,6 +1479,66 @@ describe('usage-accounts', () => {
       expect(row.last_good?.seven_day_pct).toBe(2);
       expect(JSON.stringify(row)).not.toContain('MOONSECRET');
       expect(JSON.stringify(row)).not.toContain('sk-ant');
+    });
+
+    // Real launchd cadence is 5 min (StartInterval=300). These 15 min cases
+    // pin the tighter cadence that the prior 10 min window made dormant.
+    it('flags an implausible 7d rise across the 15 minute sampler cadence', async () => {
+      // Regression bite: this fails if DELTA_SANITY_MAX_CYCLE_MS is narrowed below 15 min.
+      const row = await runSevenDayRiseGuardCase({
+        priorSeven: 20,
+        currentSeven: 60,
+        minutesAfterPrior: 15,
+      });
+
+      expect(row.ok).toBe(false);
+      expect(row.status).toBe('suspect');
+      expect(row.suspect).toBe(true);
+      expect(row.error).toContain('7d rose 40 points within 30m');
+      expect(row.last_good?.seven_day_pct).toBe(20);
+      expect(row.last_good?.fetched_at).toBe('2026-06-11T03:00:00.000Z');
+    });
+
+    it('does not flag a 7d rise from a prior snapshot beyond the sanity window', async () => {
+      const row = await runSevenDayRiseGuardCase({
+        priorSeven: 20,
+        currentSeven: 60,
+        minutesAfterPrior: 31,
+      });
+
+      expect(row.ok).toBe(true);
+      expect(row.status).toBeUndefined();
+      expect(row.suspect).toBeUndefined();
+      expect(row.error).toBeUndefined();
+      expect(row.seven_day_pct).toBe(60);
+    });
+
+    it('does not flag a within-window 7d rise below the suspect threshold', async () => {
+      const row = await runSevenDayRiseGuardCase({
+        priorSeven: 20,
+        currentSeven: 45,
+        minutesAfterPrior: 15,
+      });
+
+      expect(row.ok).toBe(true);
+      expect(row.status).toBeUndefined();
+      expect(row.suspect).toBeUndefined();
+      expect(row.error).toBeUndefined();
+      expect(row.seven_day_pct).toBe(45);
+    });
+
+    it('does not flag a flat 7d reading within the sanity window', async () => {
+      const row = await runSevenDayRiseGuardCase({
+        priorSeven: 20,
+        currentSeven: 20,
+        minutesAfterPrior: 15,
+      });
+
+      expect(row.ok).toBe(true);
+      expect(row.status).toBeUndefined();
+      expect(row.suspect).toBeUndefined();
+      expect(row.error).toBeUndefined();
+      expect(row.seven_day_pct).toBe(20);
     });
 
     it('writes a suspect diagnostic entry for a 7d spike with a mislabel cause', async () => {
