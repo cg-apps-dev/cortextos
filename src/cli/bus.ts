@@ -17,7 +17,7 @@ import { createApproval, updateApproval, listApprovalsByStatus, APPROVAL_LIST_ST
 import { createReminder, listReminders, ackReminder, pruneReminders } from '../bus/reminders.js';
 import { updateCronFire, parseDurationMs, readCronState } from '../bus/cron-state.js';
 import { addCron, removeCron, readCrons, updateCron as updateCronDef, getCronByName, getExecutionLog } from '../bus/crons.js';
-import { nextFireFromCron } from '../daemon/cron-scheduler.js';
+import { advanceNextFireAtToFuture, nextFireFromCron } from '../daemon/cron-scheduler.js';
 import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/knowledge-base.js';
 import { refreshUsage, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D, type AccountsStore, type OAuthAccount } from '../bus/oauth.js';
 import { captureKeychainUsageCredential, beginUsageAuth, completeUsageAuth, checkAllUsage, setAccountBenched, fingerprint as ucFingerprint, loadMultiAccountUsage, type AccountUsage } from '../bus/usage-accounts.js';
@@ -2450,6 +2450,23 @@ busCommand
     console.log(`Removed cron '${name}' from ${agent}`);
   });
 
+export function computeDisplayNextFireMs(
+  cron: CronDefinition,
+  lastFireIso: string | undefined,
+  now: number,
+): number {
+  const durationMs = parseDurationMs(cron.schedule);
+  const referenceMs = lastFireIso ? new Date(lastFireIso).getTime() : now;
+  let nextFireMs = !isNaN(durationMs)
+    ? referenceMs + durationMs
+    : nextFireFromCron(cron.schedule, now);
+
+  if (!isNaN(nextFireMs)) {
+    nextFireMs = advanceNextFireAtToFuture(cron, nextFireMs, now);
+  }
+  return nextFireMs;
+}
+
 busCommand
   .command('list-crons')
   .description('List all persistent crons configured for an agent')
@@ -2496,14 +2513,8 @@ busCommand
     const rows = crons.map(c => {
       const lastFire = mostRecent(c.last_fired_at, fireByName.get(c.name));
       let nextFire = '-';
-      const dms = parseDurationMs(c.schedule);
-      if (!isNaN(dms)) {
-        const refMs = lastFire ? new Date(lastFire).getTime() : now;
-        nextFire = fmtTs(new Date(refMs + dms).toISOString());
-      } else {
-        const nf = nextFireFromCron(c.schedule, now);
-        if (!isNaN(nf)) nextFire = fmtTs(new Date(nf).toISOString());
-      }
+      const nextFireMs = computeDisplayNextFireMs(c, lastFire, now);
+      if (!isNaN(nextFireMs)) nextFire = fmtTs(new Date(nextFireMs).toISOString());
       const promptPreview = c.prompt.length > 60 ? c.prompt.slice(0, 57) + '...' : c.prompt;
       return {
         name: c.name,
