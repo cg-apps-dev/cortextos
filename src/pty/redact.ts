@@ -20,9 +20,10 @@
  * Known limitation: PTY data arrives in OS-buffered chunks (typically 4KB
  * on Linux). If a chunk boundary happens to fall inside a JWT, neither
  * chunk matches the regex and the token slips through unredacted across
- * two push() calls. JWTs are typically 300-500 bytes so they fit in one
- * chunk in the overwhelming majority of real cases — every observed leak
- * in the origin audit fit in a single chunk. Buffer-aware redaction
+ * two push() calls. JWTs are typically 300-500 bytes and sk-ant tokens
+ * ~50-108 bytes, so both fit in one chunk in the overwhelming majority of
+ * real cases — every observed leak in the origin audit fit in a single
+ * chunk. sk-ant coverage shares this exact limitation. Buffer-aware redaction
  * (carry a trailing partial-match buffer across chunks) is the follow-up
  * if this edge case ever surfaces in production. Test `chunk-boundary
  * regression guard` in output-buffer.test.ts locks this documented
@@ -40,13 +41,41 @@
 const JWT_PATTERN = /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g;
 
 /**
- * Redact JWT-shaped tokens from a PTY output chunk.
+ * Anthropic sk-ant token — ANY subtype (oat01/ort01/api03/sid01/sk01/future).
+ * Covers the fleet's runtime BEARER credential (oat01, spend-capable, ~1-year)
+ * AND the OAuth REFRESH token (ort01, spend-adjacent). Highest-value leak
+ * shape: an agent echoing its env, a `ps eww`, a `curl -v` against the
+ * Anthropic API, or an error dumping CLAUDE_CODE_OAUTH_TOKEN all put it on the
+ * terminal, and without this it persists to stdout.log in cleartext —
+ * violating the standing rule that tokens live ONLY in .env (0600) +
+ * out-of-tree backups, never in a transcript that can ride into git or the
+ * agent-state backup.
  *
- * Replaces each JWT with the literal string `[REDACTED_JWT]` in-place.
- * Non-token content (TUI ANSI escapes, regular stdout, shell prompts,
- * etc.) passes through unchanged. Safe to call on every PTY chunk — the
- * regex is stateless and scales linearly with input length.
+ * Shape is byte-identical to tools/gitleaks-fleet.toml's `anthropic-sk-ant-token`
+ * rule (detect-at-rest ⇔ redact-in-flight parity): the `[a-z0-9]{2,}` subtype
+ * segment matches ANY current or future subtype, NOT a closed enumeration — so
+ * a token gitleaks would flag at-rest (including ort01) is also scrubbed
+ * in-flight. If one is tightened or loosened, update BOTH. The FP guard is the
+ * 40+ contiguous-suffix qualifier (NOT the subtype): truncated placeholders
+ * ("sk-ant-oat01-u…hQAA"), suffixless "sk-ant-oat01", and bare "sk-ant" prose
+ * do NOT match. Like JWT_PATTERN it is linear — bounded char-class runs, no
+ * nested quantifiers — so it cannot catastrophically backtrack on adversarial
+ * PTY input.
+ */
+const SK_ANT_PATTERN = /sk-ant-[a-z0-9]{2,}-[A-Za-z0-9_-]{40,}/g;
+
+/**
+ * Redact JWT-shaped tokens and Anthropic sk-ant bearer/API/session tokens
+ * from a PTY output chunk.
+ *
+ * Replaces each JWT with `[REDACTED_JWT]` and each sk-ant token with
+ * `[REDACTED_SK_ANT]` in-place. Non-token content (TUI ANSI escapes, regular
+ * stdout, shell prompts, etc.) passes through unchanged. Safe to call on
+ * every PTY chunk — both regexes are stateless and scale linearly with input
+ * length. Both share the documented cross-chunk limitation above.
  */
 export function redactSecrets(data: string): string {
-  return data.replace(JWT_PATTERN, '[REDACTED_JWT]');
+  return data
+    .replace(JWT_PATTERN, '[REDACTED_JWT]')
+    .replace(SK_ANT_PATTERN, '[REDACTED_SK_ANT]');
 }
