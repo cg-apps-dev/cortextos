@@ -8,6 +8,7 @@ import { checkInbox, sendMessage } from '../../../src/bus/message';
 import { classifyFromMarkers, END_TYPE_MARKERS } from '../../../src/hooks/hook-crash-alert';
 import {
   cleanupSwitchProbeInbox,
+  defaultSwitchAgentAccountOps,
   isAcceptedProbeReply,
   isExactProbeReply,
   makeSwitchProbeBusPaths,
@@ -26,6 +27,12 @@ const OLD_TOKEN = `sk-ant-oat01-${'A'.repeat(95)}`;
 const TARGET_TOKEN = `sk-ant-oat01-${'B'.repeat(95)}`;
 const TRUNCATED_79_CHAR_TOKEN = `sk-ant-oat01-${'C'.repeat(66)}`;
 const DELIVERED_TOKEN = `sk-ant-oat01-${'D'.repeat(95)}`;
+
+function ipcTimeout(message = 'IPC request timed out: status'): Error & { code: string } {
+  const err = new Error(message) as Error & { code: string };
+  err.code = 'IPC_TIMEOUT';
+  return err;
+}
 
 describe('switch-agent-account', () => {
   let ctxRoot: string;
@@ -138,6 +145,42 @@ describe('switch-agent-account', () => {
 
   it('pins the bare fingerprint method; newline hashes differently', () => {
     expect(shortTokenHash(TARGET_TOKEN)).not.toBe(shortTokenHash(`${TARGET_TOKEN}\n`));
+  });
+
+  it('retries typed status IPC timeouts with injected backoff and then succeeds', async () => {
+    const statuses: AgentStatus[] = [{ name: 'worker-a', status: 'running', pid: 123, uptime: 10 }];
+    const send = vi.fn()
+      .mockRejectedValueOnce(ipcTimeout())
+      .mockRejectedValueOnce(ipcTimeout())
+      .mockResolvedValue({ success: true, data: statuses } satisfies IPCResponse);
+    const sleepMs = vi.fn(async (_ms: number) => {});
+    const ipcOps = defaultSwitchAgentAccountOps({ send }, 'clean-green-marketing', undefined, () => 0, sleepMs);
+
+    await expect(ipcOps.getStatuses()).resolves.toEqual(statuses);
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(sleepMs).toHaveBeenCalledTimes(2);
+    expect(sleepMs).toHaveBeenNthCalledWith(1, 1_000);
+    expect(sleepMs).toHaveBeenNthCalledWith(2, 1_000);
+  });
+
+  it('preserves daemon-down failure after four typed status IPC timeouts', async () => {
+    const send = vi.fn().mockRejectedValue(ipcTimeout());
+    const sleepMs = vi.fn(async (_ms: number) => {});
+    const ipcOps = defaultSwitchAgentAccountOps({ send }, 'clean-green-marketing', undefined, () => 0, sleepMs);
+
+    await expect(ipcOps.getStatuses()).rejects.toMatchObject({ code: 'IPC_TIMEOUT' });
+    expect(send).toHaveBeenCalledTimes(4);
+    expect(sleepMs).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not retry a non-timeout status IPC error', async () => {
+    const send = vi.fn().mockRejectedValue(new Error('socket closed'));
+    const sleepMs = vi.fn(async (_ms: number) => {});
+    const ipcOps = defaultSwitchAgentAccountOps({ send }, 'clean-green-marketing', undefined, () => 0, sleepMs);
+
+    await expect(ipcOps.getStatuses()).rejects.toThrow('socket closed');
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(sleepMs).not.toHaveBeenCalled();
   });
 
   it('adds random entropy to the switch probe nonce', () => {
@@ -260,6 +303,43 @@ describe('switch-agent-account', () => {
     expect(result.warnings.some((w) => w.toLowerCase().includes('probe'))).toBe(false);
   });
 
+  it('keeps a healthy IPC-backed switch on the matched path without timeout tolerance', async () => {
+    const statusSleepMs = vi.fn(async (_ms: number) => {});
+    const send = vi.fn(async (request: { type: string; agent?: string }): Promise<IPCResponse> => {
+      if (request.type === 'status') {
+        return {
+          success: true,
+          data: [{
+            name: 'worker-a',
+            status: running ? 'running' : 'stopped',
+            ...(running ? { pid } : {}),
+            uptime: 10,
+            lastHeartbeat: '2026-07-09T17:01:00.000Z',
+          }],
+        };
+      }
+      if (request.type === 'stop-agent') {
+        stopCalls.push(request.agent ?? '');
+        running = false;
+        return { success: true, data: 'Stopping' };
+      }
+      startCalls.push(request.agent ?? '');
+      running = true;
+      pid += 100;
+      return { success: true, data: 'Starting' };
+    });
+    installIpcBackedOps(send, statusSleepMs);
+
+    const result = await runSwitch();
+
+    expect(result.status).toBe('success');
+    expect(result.runtimeProof).toBe('matched');
+    expect(result.warnings.some((warning) => warning.includes('status IPC timed out'))).toBe(false);
+    expect(statusSleepMs).not.toHaveBeenCalled();
+    expect(stopCalls).toEqual(['worker-a']);
+    expect(startCalls).toEqual(['worker-a']);
+  });
+
   it('writes a planned-restart marker to the target agent before stopping', async () => {
     const originalStop = ops.stopAgent;
     ops.stopAgent = async (agent: string): Promise<IPCResponse> => {
@@ -332,6 +412,95 @@ describe('switch-agent-account', () => {
     expect(JSON.parse(readFileSync(configPath, 'utf-8')).usage_account).toBe('me-com-max');
     expect(stopCalls).toEqual(['worker-a', 'worker-a']);
     expect(startCalls).toEqual(['worker-a', 'worker-a']);
+  });
+
+  it('treats a main verify status timeout as success when both file gates affirm the target', async () => {
+    let statusCalls = 0;
+    const statusSleepMs = vi.fn(async (_ms: number) => {});
+    const send = vi.fn(async (request: { type: string; agent?: string }): Promise<IPCResponse> => {
+      if (request.type === 'status') {
+        statusCalls += 1;
+        if (statusCalls >= 3 && statusCalls <= 6) throw ipcTimeout();
+        return {
+          success: true,
+          data: [{
+            name: 'worker-a',
+            status: running ? 'running' : 'stopped',
+            ...(running ? { pid } : {}),
+            uptime: 10,
+            lastHeartbeat: '2026-07-09T17:01:00.000Z',
+          }],
+        };
+      }
+      if (request.type === 'stop-agent') {
+        stopCalls.push(request.agent ?? '');
+        running = false;
+        return { success: true, data: 'Stopping' };
+      }
+      startCalls.push(request.agent ?? '');
+      running = true;
+      pid += 100;
+      return { success: true, data: 'Starting' };
+    });
+    installIpcBackedOps(send, statusSleepMs);
+
+    const result = await runSwitch();
+
+    expect(result.status).toBe('success');
+    expect(result.runtimeProof).toBe('indeterminate');
+    expect(result.warnings).toContain(
+      'WARN: status IPC timed out after 4 tries during heavy-boot; auth flip verified by env-file + attribution (file reads); running-pid/live-token/process-start unconfirmed - liveness convenience, not a failure.',
+    );
+    expect(statusCalls).toBe(6);
+    expect(statusSleepMs).toHaveBeenCalledTimes(3);
+    expect(stopCalls).toEqual(['worker-a']);
+    expect(startCalls).toEqual(['worker-a']);
+    expect(readFileSync(envPath, 'utf-8')).toContain(TARGET_TOKEN);
+  });
+
+  it('still rolls back when status times out and the env-file gate mismatches the target', async () => {
+    let statusCalls = 0;
+    ops.hasProcessEnvVar = () => false;
+    const send = vi.fn(async (request: { type: string; agent?: string }): Promise<IPCResponse> => {
+      if (request.type === 'status') {
+        statusCalls += 1;
+        if (statusCalls >= 3 && statusCalls <= 6) {
+          writeFileSync(envPath, `CLAUDE_CODE_OAUTH_TOKEN=${OLD_TOKEN}\n`, { mode: 0o600 });
+          throw ipcTimeout();
+        }
+        return {
+          success: true,
+          data: [{
+            name: 'worker-a',
+            status: running ? 'running' : 'stopped',
+            ...(running ? { pid } : {}),
+            uptime: 10,
+            lastHeartbeat: '2026-07-09T17:01:00.000Z',
+          }],
+        };
+      }
+      if (request.type === 'stop-agent') {
+        stopCalls.push(request.agent ?? '');
+        running = false;
+        return { success: true, data: 'Stopping' };
+      }
+      startCalls.push(request.agent ?? '');
+      running = true;
+      pid += 100;
+      return { success: true, data: 'Starting' };
+    });
+    installIpcBackedOps(send);
+
+    await expect(runSwitch()).rejects.toMatchObject({
+      code: 'env-file',
+      rolledBack: true,
+      message: expect.stringContaining('.env token fingerprint mismatch after status IPC timeout'),
+    });
+    expect(statusCalls).toBe(7);
+    expect(stopCalls).toEqual(['worker-a', 'worker-a']);
+    expect(startCalls).toEqual(['worker-a', 'worker-a']);
+    expect(readFileSync(envPath, 'utf-8')).toContain(OLD_TOKEN);
+    expect(JSON.parse(readFileSync(configPath, 'utf-8')).usage_account).toBe('me-com-max');
   });
 
   // SYMMETRIC PAIR (half 1 - the auto-revert this fix kills): a HEALTHY switch
@@ -462,6 +631,92 @@ describe('switch-agent-account', () => {
     });
     expect(readFileSync(envPath, 'utf-8')).toContain(OLD_TOKEN);
     expect(JSON.parse(readFileSync(configPath, 'utf-8')).usage_account).toBe('me-com-max');
+    expect(stopCalls).toEqual(['worker-a', 'worker-a']);
+    expect(startCalls).toEqual(['worker-a', 'worker-a']);
+  });
+
+  it('reports a restored rollback honestly when only rollback liveness stays unconfirmed', async () => {
+    let statusCalls = 0;
+    ops.hashLiveProcessToken = () => shortTokenHash('sk-ant-oat01-WRONG');
+    const send = vi.fn(async (request: { type: string; agent?: string }): Promise<IPCResponse> => {
+      if (request.type === 'status') {
+        statusCalls += 1;
+        if (statusCalls >= 4 && statusCalls <= 7) throw ipcTimeout();
+        return {
+          success: true,
+          data: [{
+            name: 'worker-a',
+            status: running ? 'running' : 'stopped',
+            ...(running ? { pid } : {}),
+            uptime: 10,
+            lastHeartbeat: '2026-07-09T17:01:00.000Z',
+          }],
+        };
+      }
+      if (request.type === 'stop-agent') {
+        stopCalls.push(request.agent ?? '');
+        running = false;
+        return { success: true, data: 'Stopping' };
+      }
+      startCalls.push(request.agent ?? '');
+      running = true;
+      pid += 100;
+      return { success: true, data: 'Starting' };
+    });
+    installIpcBackedOps(send);
+
+    let caught: unknown;
+    try {
+      await runSwitch();
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(SwitchAgentAccountError);
+    expect(caught).toMatchObject({ code: 'runtime-token', rolledBack: true });
+    const message = (caught as Error).message;
+    expect(message).toContain('rolled back; rollback restored prior account (me-com-max), liveness unconfirmed because status IPC timed out');
+    expect(message).not.toContain('rollback failed');
+    expect(statusCalls).toBe(7);
+    expect(readFileSync(envPath, 'utf-8')).toContain(OLD_TOKEN);
+    expect(JSON.parse(readFileSync(configPath, 'utf-8')).usage_account).toBe('me-com-max');
+  });
+
+  it('keeps rollback failed wording when the rollback restart genuinely fails', async () => {
+    let startAttempts = 0;
+    ops.hashLiveProcessToken = () => shortTokenHash('sk-ant-oat01-WRONG');
+    const send = vi.fn(async (request: { type: string; agent?: string }): Promise<IPCResponse> => {
+      if (request.type === 'status') {
+        return {
+          success: true,
+          data: [{
+            name: 'worker-a',
+            status: running ? 'running' : 'stopped',
+            ...(running ? { pid } : {}),
+            uptime: 10,
+            lastHeartbeat: '2026-07-09T17:01:00.000Z',
+          }],
+        };
+      }
+      if (request.type === 'stop-agent') {
+        stopCalls.push(request.agent ?? '');
+        running = false;
+        return { success: true, data: 'Stopping' };
+      }
+      startAttempts += 1;
+      startCalls.push(request.agent ?? '');
+      if (startAttempts === 2) throw new Error('rollback start exploded');
+      running = true;
+      pid += 100;
+      return { success: true, data: 'Starting' };
+    });
+    installIpcBackedOps(send);
+
+    await expect(runSwitch()).rejects.toMatchObject({
+      code: 'ROLLBACK_FAILED',
+      rolledBack: true,
+      message: expect.stringContaining('switch failed and rollback failed: start IPC failed: rollback start exploded'),
+    });
     expect(stopCalls).toEqual(['worker-a', 'worker-a']);
     expect(startCalls).toEqual(['worker-a', 'worker-a']);
   });
@@ -634,10 +889,10 @@ describe('switch-agent-account', () => {
       agent: 'worker-b',
       status: 'failed',
       endState: 'INDETERMINATE-needs-attention',
-      error: expect.stringContaining('stop IPC timed out'),
+      error: expect.stringContaining('switch failed and rollback failed: stop IPC timed out'),
     });
     expect(result.results.some((entry) => entry.agent === 'worker-c')).toBe(false);
-    expect(result.warnings).toContain('ATTENTION: worker-b ended INDETERMINATE-needs-attention after failure: stop IPC timed out: IPC request timed out: stop-agent');
+    expect(result.warnings).toContain('ATTENTION: worker-b ended INDETERMINATE-needs-attention after failure: switch failed and rollback failed: stop IPC timed out: IPC request timed out: stop-agent');
     expect(result.warnings).toContain('ABORT: daemon/IPC failure while switching worker-b; 1 remaining agent(s) deferred.');
   });
 
@@ -686,10 +941,10 @@ describe('switch-agent-account', () => {
       agent: 'worker-b',
       status: 'failed',
       endState: 'INDETERMINATE-needs-attention',
-      error: 'stop failed: daemon is not running',
+      error: 'switch failed and rollback failed: stop failed: daemon is not running',
     });
     expect(result.results.some((entry) => entry.agent === 'worker-c')).toBe(false);
-    expect(result.warnings).toContain('ATTENTION: worker-b ended INDETERMINATE-needs-attention after failure: stop failed: daemon is not running');
+    expect(result.warnings).toContain('ATTENTION: worker-b ended INDETERMINATE-needs-attention after failure: switch failed and rollback failed: stop failed: daemon is not running');
     expect(result.warnings).toContain('ABORT: daemon/IPC failure while switching worker-b; 1 remaining agent(s) deferred.');
   });
 
@@ -765,6 +1020,25 @@ describe('switch-agent-account', () => {
       expect(JSON.stringify(err)).not.toContain(OLD_TOKEN);
     }
   });
+
+  function installIpcBackedOps(
+    send: (request: { type: string; agent?: string; source?: string }) => Promise<IPCResponse>,
+    statusSleepMs: (ms: number) => Promise<void> = async () => {},
+  ): void {
+    const ipcOps = defaultSwitchAgentAccountOps(
+      { send },
+      'clean-green-marketing',
+      undefined,
+      () => Date.parse('2026-07-09T17:00:00.000Z'),
+      statusSleepMs,
+    );
+    ops = {
+      ...ops,
+      getStatuses: ipcOps.getStatuses,
+      stopAgent: ipcOps.stopAgent,
+      startAgent: ipcOps.startAgent,
+    };
+  }
 
   function makeOps(): SwitchAgentAccountOps {
     return {

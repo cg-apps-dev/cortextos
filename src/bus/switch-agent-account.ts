@@ -28,6 +28,8 @@ const DEFAULT_HEARTBEAT_WINDOW_MS = 4 * 60_000;
 // false-failing verify and auto-reverting a good switch (the kill-trap class).
 const DEFAULT_HEARTBEAT_CORROBORATE_MS = 90_000;
 const DEFAULT_HEARTBEAT_POLL_MS = 5_000;
+const STATUS_IPC_MAX_TRIES = 4;
+const STATUS_IPC_RETRY_GAP_MS = 1_000;
 
 export interface SwitchAgentAccountOptions {
   ctxRoot: string;
@@ -83,6 +85,7 @@ interface VerifyResult {
   primary?: 'matched' | 'indeterminate';
   warnings?: string[];
   heartbeat?: 'fresh' | 'stale';
+  statusIpcTimedOut?: boolean;
 }
 
 export interface SwitchAgentAccountResult {
@@ -213,12 +216,21 @@ export function defaultSwitchAgentAccountOps(
   org: string,
   paths: BusPaths | undefined,
   nowMs: () => number,
+  sleepMs: (ms: number) => Promise<void> = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 ): SwitchAgentAccountOps {
   return {
     async getStatuses() {
-      const response = await ipc.send({ type: 'status', source: 'cortextos switch-agent-account' });
-      if (!response.success) throw new Error(response.error ?? 'status IPC failed');
-      return response.data as AgentStatus[];
+      for (let attempt = 1; attempt <= STATUS_IPC_MAX_TRIES; attempt += 1) {
+        try {
+          const response = await ipc.send({ type: 'status', source: 'cortextos switch-agent-account' });
+          if (!response.success) throw new Error(response.error ?? 'status IPC failed');
+          return response.data as AgentStatus[];
+        } catch (err) {
+          if (!isIpcTimeoutError(err) || attempt === STATUS_IPC_MAX_TRIES) throw err;
+          await sleepMs(STATUS_IPC_RETRY_GAP_MS);
+        }
+      }
+      throw new Error('status IPC retry loop exhausted');
     },
     stopAgent(agent) {
       return ipc.send({ type: 'stop-agent', agent, source: 'cortextos switch-agent-account' });
@@ -345,16 +357,27 @@ export async function switchAgentAccount(options: SwitchAgentAccountOptions): Pr
       };
     } catch (err) {
       if (flipped) {
+        const priorAccount = snapshot.accountLabel ?? snapshot.usageAccount ?? 'prior-account';
+        let rollbackStatusIpcTimedOut = false;
         try {
           restoreSnapshot(envPath, configPath, snapshot);
           await restartAgent(options.agent, options.ctxRoot, ops, sleepMs, DEFAULT_STOP_WAIT_MS);
+        } catch (rollbackErr) {
+          throw new SwitchAgentAccountError(
+            `switch failed and rollback failed: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
+            'ROLLBACK_FAILED',
+            true,
+            rollbackErr instanceof SwitchAgentAccountError ? rollbackErr.failureClass : 'agent',
+          );
+        }
+        try {
           const rollbackEnvMtimeMs = statSync(envPath).mtimeMs;
           const rollbackAtMs = nowMs();
           await sleepMs(DEFAULT_BOOT_VERIFY_WAIT_MS);
           const priorFingerprint = shortTokenHash(snapshot.envToken);
           const rollbackVerify = await verifySwitched({
             agent: options.agent,
-            targetAccount: snapshot.accountLabel ?? snapshot.usageAccount ?? 'prior-account',
+            targetAccount: priorAccount,
             tokenFingerprint: priorFingerprint,
             restartAtMs: rollbackAtMs,
             envFlipMtimeMs: rollbackEnvMtimeMs,
@@ -367,12 +390,25 @@ export async function switchAgentAccount(options: SwitchAgentAccountOptions): Pr
               true,
             );
           }
-        } catch (rollbackErr) {
-          if (rollbackErr instanceof SwitchAgentAccountError) throw rollbackErr;
+          rollbackStatusIpcTimedOut = rollbackVerify.statusIpcTimedOut === true;
+        } catch (rollbackVerifyErr) {
+          if (rollbackVerifyErr instanceof SwitchAgentAccountError && rollbackVerifyErr.code === 'ROLLBACK_VERIFY_FAILED') {
+            throw rollbackVerifyErr;
+          }
           throw new SwitchAgentAccountError(
-            `switch failed and rollback failed: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
-            'ROLLBACK_FAILED',
+            `switch failed and rollback verification failed: ${rollbackVerifyErr instanceof Error ? rollbackVerifyErr.message : String(rollbackVerifyErr)}`,
+            'ROLLBACK_VERIFY_FAILED',
             true,
+            rollbackVerifyErr instanceof SwitchAgentAccountError ? rollbackVerifyErr.failureClass : 'agent',
+          );
+        }
+        if (rollbackStatusIpcTimedOut) {
+          const reason = err instanceof Error ? err.message : String(err);
+          throw new SwitchAgentAccountError(
+            `${reason}; rolled back; rollback restored prior account (${priorAccount}), liveness unconfirmed because status IPC timed out.`,
+            err instanceof SwitchAgentAccountError ? err.code : 'SWITCH_FAILED',
+            true,
+            err instanceof SwitchAgentAccountError ? err.failureClass : 'agent',
           );
         }
       }
@@ -655,6 +691,22 @@ async function verifySwitched(
   nowMs: () => number,
   sleepMs: (ms: number) => Promise<void>,
 ): Promise<VerifyResult> {
+  try {
+    return await verifySwitchedWithStatus(input, agentDir, ctxRoot, ops, nowMs, sleepMs);
+  } catch (err) {
+    if (!isIpcTimeoutError(err)) throw err;
+    return verifySwitchedAfterStatusTimeout(input, agentDir, ctxRoot, ops);
+  }
+}
+
+async function verifySwitchedWithStatus(
+  input: VerifyInput,
+  agentDir: string,
+  ctxRoot: string,
+  ops: SwitchAgentAccountOps,
+  nowMs: () => number,
+  sleepMs: (ms: number) => Promise<void>,
+): Promise<VerifyResult> {
   const statuses = await ops.getStatuses();
   const status = statuses.find((s) => s.name === input.agent);
   if (!status || status.status !== 'running' || !status.pid) {
@@ -716,6 +768,36 @@ async function verifySwitched(
     primary,
     warnings,
     heartbeat: heartbeatFresh ? 'fresh' : 'stale',
+  };
+}
+
+function verifySwitchedAfterStatusTimeout(
+  input: VerifyInput,
+  agentDir: string,
+  ctxRoot: string,
+  ops: SwitchAgentAccountOps,
+): VerifyResult {
+  const fileToken = parseEnvFile(input.envPath).CLAUDE_CODE_OAUTH_TOKEN ?? '';
+  if (shortTokenHash(fileToken) !== input.tokenFingerprint) {
+    return { ok: false, gate: 'env-file', reason: '.env token fingerprint mismatch after status IPC timeout' };
+  }
+
+  const attribution = ops.resolveAgentAccount(agentDir, ctxRoot);
+  if (attribution.label !== input.targetAccount) {
+    return {
+      ok: false,
+      gate: 'attribution',
+      reason: `expected ${input.targetAccount}, got ${attribution.label ?? 'unresolved'} after status IPC timeout`,
+    };
+  }
+
+  return {
+    ok: true,
+    primary: 'indeterminate',
+    statusIpcTimedOut: true,
+    warnings: [
+      `WARN: status IPC timed out after ${STATUS_IPC_MAX_TRIES} tries during heavy-boot; auth flip verified by env-file + attribution (file reads); running-pid/live-token/process-start unconfirmed - liveness convenience, not a failure.`,
+    ],
   };
 }
 
