@@ -95,6 +95,7 @@ export function classifySilentDeath(stdoutTail: string): SilentDeathClassificati
 export function redactSecrets(text: string): string {
   return text
     .replace(/sk-ant-[A-Za-z0-9_-]+/g, '[REDACTED_TOKEN]')
+    .replace(/sk-(?:svcacct|proj|admin)-[A-Za-z0-9_-]+/g, '[REDACTED_TOKEN]')
     .replace(/CLAUDE_CODE_OAUTH_TOKEN=[^\s]+/g, 'CLAUDE_CODE_OAUTH_TOKEN=[REDACTED]');
 }
 
