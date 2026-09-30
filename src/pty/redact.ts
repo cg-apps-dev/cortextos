@@ -65,17 +65,26 @@ const JWT_PATTERN = /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10
 const SK_ANT_PATTERN = /sk-ant-[a-z0-9]{2,}-[A-Za-z0-9_-]{40,}/g;
 
 /**
- * Redact JWT-shaped tokens and Anthropic sk-ant bearer/API/session tokens
- * from a PTY output chunk.
+ * OpenAI service-account, project, and admin tokens. The 40+ character body
+ * matches the at-rest gitleaks rule and avoids false positives on bare or
+ * truncated sk-svcacct, sk-proj, and sk-admin prose.
+ */
+const OPENAI_PATTERN = /sk-(?:svcacct|proj|admin)-[A-Za-z0-9_-]{40,}/g;
+
+/**
+ * Redact JWT-shaped tokens, Anthropic sk-ant bearer/API/session tokens, and
+ * OpenAI service-account/project/admin tokens from a PTY output chunk.
  *
- * Replaces each JWT with `[REDACTED_JWT]` and each sk-ant token with
- * `[REDACTED_SK_ANT]` in-place. Non-token content (TUI ANSI escapes, regular
- * stdout, shell prompts, etc.) passes through unchanged. Safe to call on
- * every PTY chunk — both regexes are stateless and scale linearly with input
- * length. Both share the documented cross-chunk limitation above.
+ * Replaces each JWT with `[REDACTED_JWT]`, each sk-ant token with
+ * `[REDACTED_SK_ANT]`, and each OpenAI token with `[REDACTED_OPENAI]` in-place.
+ * Non-token content (TUI ANSI escapes, regular stdout, shell prompts, etc.)
+ * passes through unchanged. Safe to call on every PTY chunk. All regexes are
+ * stateless, scale linearly with input length, and share the documented
+ * cross-chunk limitation above.
  */
 export function redactSecrets(data: string): string {
   return data
     .replace(JWT_PATTERN, '[REDACTED_JWT]')
-    .replace(SK_ANT_PATTERN, '[REDACTED_SK_ANT]');
+    .replace(SK_ANT_PATTERN, '[REDACTED_SK_ANT]')
+    .replace(OPENAI_PATTERN, '[REDACTED_OPENAI]');
 }
