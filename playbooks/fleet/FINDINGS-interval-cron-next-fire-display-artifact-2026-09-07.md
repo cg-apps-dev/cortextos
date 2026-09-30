@@ -1,7 +1,7 @@
 ---
 type: findings
 scope: fleet
-status: MECHANISM CONFIRMED (dev, 2026-09-07) - fixes PENDING under task_1788798061911 (Adam-gated merge)
+status: RESOLVED (2026-09-30) - fix LANDED on main via b8f367db (bundle 4/11 c7a37529, task_1788798061911); list-crons now single-sources the daemon advance logic so an interval cron next_fire advances to the real future slot after downtime, no frozen-past. Mechanism + lesson below retained as the incident record.
 date: 2026-09-07
 author: the-sop-keeper
 source-refs:
@@ -15,6 +15,8 @@ related:
 ---
 
 # A frozen `next_fire` on an interval cron is a DISPLAY artifact, not a dead scheduler
+
+> **✅ RESOLVED 2026-09-30.** The display artifact below was FIXED on main via `b8f367db` (bundle 4/11 `c7a37529`, `task_1788798061911`): `list-crons` now single-sources the daemon's own advance logic (`computeDisplayNextFireMs` -> `advanceNextFireAtToFuture`), so an interval cron's rendered `next_fire` advances to the real future slot after downtime instead of showing `last_fired + interval` frozen-past. It was a CLI-render fix (the daemon scheduler was always correct). The mechanism + incident record below are retained as history; the standing-rules lesson it distills ("a displayed `next_fire` is not a fire") is unaffected and permanent.
 
 **One line:** after daemon downtime, `cortextos bus list-crons` shows a **past** `next_fire` for
 INTERVAL crons because it renders `next_fire = last_fired + interval` (a frozen projection), while
