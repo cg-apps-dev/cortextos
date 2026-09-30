@@ -707,19 +707,30 @@ describe('Scenario 4: Agent removal mid-simulation', () => {
     const gammaSched = schedulers.get(stoppedFixture.name)!;
     gammaSched.stop();
 
-    // ---- Phase 2: advance another 12h — only 4 running ----
-    await advanceSim(SIM_12H);
+    // ---- Phase 2: advance through every survivor's next phased slot ----
+    // A fixed 12h window is insufficient for a 24h cron whose deterministic
+    // phase already fired in Phase 1. Use the live schedule so every survivor
+    // has a due slot while gamma remains stopped.
+    const phase2StartMs = Date.now();
+    const survivorNextFireTimes = [...schedulers.entries()]
+      .filter(([name]) => name !== stoppedFixture.name)
+      .flatMap(([, scheduler]) => scheduler.getNextFireTimes().map(fire => fire.nextFireAt));
+    const phase2DurationMs = Math.max(
+      SIM_12H,
+      Math.max(...survivorNextFireTimes) - phase2StartMs + TICK_MS,
+    );
+    await advanceSim(phase2DurationMs);
 
-    const countsAt24h = new Map<string, number>(fireCounts);
+    const countsAfterStop = new Map<string, number>(fireCounts);
 
     // ---- Assert: gamma had zero additional fires after stop ----
     for (const c of stoppedFixture.crons) {
       const key     = `${stoppedFixture.name}/${c.name}`;
       const at12h   = countsAt12h.get(key) ?? 0;
-      const at24h   = countsAt24h.get(key) ?? 0;
+      const afterStop = countsAfterStop.get(key) ?? 0;
       expect(
-        at24h,
-        `${key}: no additional fires after gamma stopped (was ${at12h}, still ${at24h})`,
+        afterStop,
+        `${key}: no additional fires after gamma stopped (was ${at12h}, still ${afterStop})`,
       ).toBe(at12h);
     }
 
@@ -738,10 +749,10 @@ describe('Scenario 4: Agent removal mid-simulation', () => {
       for (const c of f.crons) {
         const key   = `${f.name}/${c.name}`;
         const at12h = countsAt12h.get(key) ?? 0;
-        const at24h = countsAt24h.get(key) ?? 0;
+        const afterStop = countsAfterStop.get(key) ?? 0;
         expect(
-          at24h,
-          `${key}: continued firing after gamma stopped (${at12h} → ${at24h})`,
+          afterStop,
+          `${key}: continued firing after gamma stopped (${at12h} -> ${afterStop})`,
         ).toBeGreaterThan(at12h);
       }
     }
@@ -752,34 +763,34 @@ describe('Scenario 4: Agent removal mid-simulation', () => {
     gammaRestarted.start();
     schedulers.set(stoppedFixture.name, gammaRestarted);
 
-    // ---- Advance another 12h (total 36h) ----
+    // ---- Advance another 12h after restart ----
     await advanceSim(SIM_12H);
 
     // Stop all
     for (const s of schedulers.values()) s.stop();
 
-    const countsAt36h = new Map<string, number>(fireCounts);
+    const countsAfterRestart = new Map<string, number>(fireCounts);
 
     // ---- Assert: gamma resumed firing after restart ----
     for (const c of stoppedFixture.crons) {
       const key   = `${stoppedFixture.name}/${c.name}`;
-      const at24h = countsAt24h.get(key) ?? 0;
-      const at36h = countsAt36h.get(key) ?? 0;
+      const beforeRestart = countsAfterStop.get(key) ?? 0;
+      const afterRestart = countsAfterRestart.get(key) ?? 0;
       expect(
-        at36h,
-        `${key}: gamma resumed firing after restart (${at24h} → ${at36h})`,
-      ).toBeGreaterThan(at24h);
+        afterRestart,
+        `${key}: gamma resumed firing after restart (${beforeRestart} -> ${afterRestart})`,
+      ).toBeGreaterThan(beforeRestart);
     }
 
     // ---- Assert catch-up semantics: NOT 12 missed fires per 1h cron ----
-    // gamma's monitor cron (1h interval) was stopped for 12h.
+    // gamma's monitor cron (1h interval) was stopped for the phase-aware window.
     // Restart should trigger AT MOST 1 catch-up fire, then continue at normal rate.
     // Over 12h normal operation: 12 fires.
     // Over 12h normal + 1 catch-up-on-restart: 13 fires max.
-    // Total from t=24h to t=36h should be ≤ 13 (NOT 12 catch-ups + 12 regular = 24).
-    const gammaMonitorAt24h = countsAt24h.get(`${stoppedFixture.name}/monitor`) ?? 0;
-    const gammaMonitorAt36h = countsAt36h.get(`${stoppedFixture.name}/monitor`) ?? 0;
-    const gammaMonitorGrowth = gammaMonitorAt36h - gammaMonitorAt24h;
+    // The 12h restart window should be <= 13 (not one catch-up per missed hour).
+    const gammaMonitorBeforeRestart = countsAfterStop.get(`${stoppedFixture.name}/monitor`) ?? 0;
+    const gammaMonitorAfterRestart = countsAfterRestart.get(`${stoppedFixture.name}/monitor`) ?? 0;
+    const gammaMonitorGrowth = gammaMonitorAfterRestart - gammaMonitorBeforeRestart;
 
     // Growth should be 12-13 (normal 12h rate + at most 1 catch-up), NOT 24
     expect(

@@ -41,7 +41,12 @@ vi.mock('../../../src/daemon/cron-execution-log.js', () => ({
 // ---------------------------------------------------------------------------
 
 import { GATE_RECHECK_MS } from '../../../src/daemon/cron-capacity-gate';
-import { CronScheduler, nextFireFromCron } from '../../../src/daemon/cron-scheduler';
+import {
+  CronScheduler,
+  agentPhaseOffsetMs,
+  nextFireFromCron,
+  nextIntervalFireAt,
+} from '../../../src/daemon/cron-scheduler';
 import { updateHeartbeat } from '../../../src/bus/heartbeat';
 import type { BusPaths, CronDefinition } from '../../../src/types/index';
 
@@ -79,6 +84,27 @@ function writeDaemonStopMarker(agentName: string, stopMs: number): void {
   writeFileSync(markerPath, 'daemon shutdown (SIGTERM)', 'utf-8');
   const markerDate = new Date(stopMs);
   utimesSync(markerPath, markerDate, markerDate);
+}
+
+function missedIntervalWindow(
+  agentName: string,
+  cronName: string,
+  intervalMs: number,
+  now = Date.now(),
+): { lastFiredAt: number; missedFireAt: number; daemonStopMs: number } {
+  const phaseMs = agentPhaseOffsetMs(`${agentName}:${cronName}`, intervalMs);
+  const missedFireAt = nextIntervalFireAt(intervalMs, phaseMs, now - intervalMs);
+  return {
+    lastFiredAt: missedFireAt - intervalMs,
+    missedFireAt,
+    daemonStopMs: missedFireAt - 1_000,
+  };
+}
+
+async function advanceToNextFire(scheduler: CronScheduler, name: string): Promise<void> {
+  const entry = scheduler.getNextFireTimes().find((item) => item.name === name);
+  if (entry === undefined) throw new Error(`Missing scheduled cron ${name}`);
+  await vi.advanceTimersByTimeAsync(entry.nextFireAt - Date.now() + TICK);
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +281,79 @@ describe('nextFireFromCron', () => {
   });
 });
 
+describe('interval phase helpers', () => {
+  it('computes deterministic offsets within the interval range', () => {
+    const intervals = [30 * 60_000, 4 * 60 * 60_000, 24 * 60 * 60_000];
+    const keys = [
+      'claude-dev-agent:heartbeat',
+      'codex-dev-agent:heartbeat',
+      'the-orchestrator:check-approvals',
+      'the-analyst:catalog-browse',
+      'atwood-analyst:auto-commit',
+      'atwood-orchestrator:check-approvals',
+    ];
+
+    for (const intervalMs of intervals) {
+      for (const key of keys) {
+        const first = agentPhaseOffsetMs(key, intervalMs);
+        const second = agentPhaseOffsetMs(key, intervalMs);
+
+        expect(second).toBe(first);
+        expect(first).toBeGreaterThanOrEqual(0);
+        expect(first).toBeLessThan(intervalMs);
+      }
+    }
+  });
+
+  it('spreads real fleet heartbeat keys instead of assigning one shared phase', () => {
+    const intervalMs = 4 * 60 * 60_000;
+    const offsets = [
+      'claude-dev-agent:heartbeat',
+      'codex-dev-agent:heartbeat',
+      'the-orchestrator:heartbeat',
+      'the-analyst:heartbeat',
+      'atwood-analyst:heartbeat',
+      'atwood-orchestrator:heartbeat',
+      'meta-ads-agent:heartbeat',
+      'security-agent:heartbeat',
+    ].map((key) => agentPhaseOffsetMs(key, intervalMs));
+
+    expect(new Set(offsets).size).toBeGreaterThan(1);
+    expect(Math.max(...offsets) - Math.min(...offsets)).toBeGreaterThan(60_000);
+  });
+
+  it('returns strictly future lattice times and preserves the phase modulo interval', () => {
+    const intervalMs = 4 * 60 * 60_000;
+    const phaseMs = agentPhaseOffsetMs('codex-dev-agent:heartbeat', intervalMs);
+    const referenceMs = Date.parse('2026-09-21T08:36:53.000Z');
+
+    const next = nextIntervalFireAt(intervalMs, phaseMs, referenceMs);
+
+    expect(next).toBeGreaterThan(referenceMs);
+    expect(next % intervalMs).toBe(phaseMs);
+  });
+
+  it('returns NaN for non-positive intervals', () => {
+    expect(nextIntervalFireAt(0, 0, Date.now())).toBeNaN();
+    expect(nextIntervalFireAt(-1, 0, Date.now())).toBeNaN();
+  });
+
+  it('keeps min-gap schedules on-lattice without perturbing steady-state fires', () => {
+    const intervalMs = 60 * 60_000;
+    const phaseMs = 12_345;
+    const onLatticeFire = phaseMs + 10 * intervalMs;
+    const offLatticeFire = onLatticeFire + 30_000;
+
+    expect(nextIntervalFireAt(intervalMs, phaseMs, onLatticeFire, intervalMs)).toBe(
+      onLatticeFire + intervalMs
+    );
+
+    const afterOffLattice = nextIntervalFireAt(intervalMs, phaseMs, offLatticeFire, intervalMs);
+    expect(afterOffLattice - offLatticeFire).toBeGreaterThanOrEqual(intervalMs);
+    expect(afterOffLattice % intervalMs).toBe(phaseMs);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // CronScheduler behaviour tests (fake timers)
 // ---------------------------------------------------------------------------
@@ -313,24 +412,24 @@ describe('CronScheduler', () => {
     mockReadCrons.mockReturnValue([makeCron({ schedule: '1m' })]);
     scheduler.start();
 
-    // Advance time so nextFireAt (now + 60s) is reached, plus one tick
-    await vi.advanceTimersByTimeAsync(60_000 + TICK);
+    await advanceToNextFire(scheduler, 'test-cron');
 
     expect(fired).toHaveLength(1);
     expect(fired[0].name).toBe('test-cron');
   });
 
-  it('does NOT fire before the interval has elapsed', async () => {
-    mockReadCrons.mockReturnValue([makeCron({ schedule: '1m' })]);
+  it('does NOT fire before the scheduled interval phase', async () => {
+    vi.setSystemTime(0);
+    mockReadCrons.mockReturnValue([makeCron({ schedule: '1h' })]);
     scheduler.start();
 
-    // Advance only 30s (less than 1m)
+    // Advance only 30s, before this cron's deterministic 1h phase.
     await vi.advanceTimersByTimeAsync(30_000);
 
     expect(fired).toHaveLength(0);
   });
 
-  it('keeps interval cron next fire at reference plus interval regardless of host timezone', () => {
+  it('keeps interval cron scheduling independent of host timezone', () => {
     const reference = new Date('2026-07-14T13:30:00.000Z');
 
     withHostTz('America/New_York', () => {
@@ -340,7 +439,9 @@ describe('CronScheduler', () => {
       scheduler.start();
 
       const entry = scheduler.getNextFireTimes().find((item) => item.name === 'interval-2h');
-      expect(entry?.nextFireAt).toBe(reference.getTime() + 2 * 60 * 60_000);
+      const intervalMs = 2 * 60 * 60_000;
+      const phaseMs = agentPhaseOffsetMs('test-agent:interval-2h', intervalMs);
+      expect(entry?.nextFireAt).toBe(nextIntervalFireAt(intervalMs, phaseMs, reference.getTime()));
     });
   });
 
@@ -357,8 +458,9 @@ describe('CronScheduler', () => {
     mockReadCrons.mockReturnValue([makeCron({ schedule: '1m' })]);
     scheduler.start();
 
-    // 3 minutes worth — should fire 3 times (at 60s, 120s, 180s)
-    await vi.advanceTimersByTimeAsync(3 * 60_000 + TICK);
+    await advanceToNextFire(scheduler, 'test-cron');
+    await advanceToNextFire(scheduler, 'test-cron');
+    await advanceToNextFire(scheduler, 'test-cron');
 
     expect(fired.length).toBeGreaterThanOrEqual(3);
   });
@@ -369,7 +471,7 @@ describe('CronScheduler', () => {
     mockReadCrons.mockReturnValue([makeCron({ schedule: '1m' })]);
     scheduler.start();
 
-    await vi.advanceTimersByTimeAsync(60_000 + TICK);
+    await advanceToNextFire(scheduler, 'test-cron');
 
     expect(mockUpdateCron).toHaveBeenCalledWith(
       'test-agent',
@@ -379,6 +481,169 @@ describe('CronScheduler', () => {
         fire_count: 1,
       })
     );
+  });
+
+  it('HERD-AT-BOOT: distinct agents do not share the same interval nextFireAt at boot', () => {
+    const now = Date.parse('2026-09-21T08:36:53.000Z');
+    vi.setSystemTime(now);
+    mockReadCrons.mockReturnValue([makeCron({ name: 'heartbeat', schedule: '4h' })]);
+
+    const schedulerA = new CronScheduler({
+      agentName: 'claude-dev-agent',
+      onFire: () => {},
+      logger: (msg) => { logs.push(msg); },
+    });
+    const schedulerB = new CronScheduler({
+      agentName: 'codex-dev-agent',
+      onFire: () => {},
+      logger: (msg) => { logs.push(msg); },
+    });
+
+    schedulerA.start();
+    schedulerB.start();
+
+    const nextA = schedulerA.getNextFireTimes()[0]!.nextFireAt;
+    const nextB = schedulerB.getNextFireTimes()[0]!.nextFireAt;
+
+    expect(nextA).not.toBe(nextB);
+    expect(nextA % (4 * 60 * 60_000)).toBe(agentPhaseOffsetMs('claude-dev-agent:heartbeat', 4 * 60 * 60_000));
+    expect(nextB % (4 * 60 * 60_000)).toBe(agentPhaseOffsetMs('codex-dev-agent:heartbeat', 4 * 60 * 60_000));
+
+    schedulerA.stop();
+    schedulerB.stop();
+  });
+
+  it.each([
+    { label: 'success', onFire: vi.fn().mockResolvedValue(undefined), advanceMs: 0 },
+    { label: 'dispatch failure', onFire: vi.fn().mockRejectedValue(new Error('agent unavailable')), advanceMs: 22_000 },
+  ])('STALL-REALIGN: synchronized delayed fire re-snaps phases after $label', async ({ onFire, advanceMs }) => {
+    const intervalMs = 4 * 60 * 60_000;
+    const delayedFireAt = Date.parse('2026-09-21T08:36:53.000Z');
+    vi.setSystemTime(delayedFireAt);
+    mockReadCrons.mockReturnValue([makeCron({ name: 'heartbeat', schedule: '4h' })]);
+
+    const schedulerA = new CronScheduler({
+      agentName: 'claude-dev-agent',
+      onFire,
+      logger: (msg) => { logs.push(msg); },
+    });
+    const schedulerB = new CronScheduler({
+      agentName: 'codex-dev-agent',
+      onFire,
+      logger: (msg) => { logs.push(msg); },
+    });
+    schedulerA.start();
+    schedulerB.start();
+
+    const privateA = schedulerA as unknown as {
+      scheduled: Map<string, { nextFireAt: number }>;
+      tick(): Promise<void>;
+    };
+    const privateB = schedulerB as unknown as {
+      scheduled: Map<string, { nextFireAt: number }>;
+      tick(): Promise<void>;
+    };
+    privateA.scheduled.get('heartbeat')!.nextFireAt = delayedFireAt;
+    privateB.scheduled.get('heartbeat')!.nextFireAt = delayedFireAt;
+
+    const tickA = privateA.tick();
+    const tickB = privateB.tick();
+    if (advanceMs > 0) await vi.advanceTimersByTimeAsync(advanceMs);
+    await Promise.all([tickA, tickB]);
+
+    const nextA = schedulerA.getNextFireTimes()[0]!.nextFireAt;
+    const nextB = schedulerB.getNextFireTimes()[0]!.nextFireAt;
+
+    expect(nextA).not.toBe(delayedFireAt + intervalMs);
+    expect(nextB).not.toBe(delayedFireAt + intervalMs);
+    expect(nextA).not.toBe(nextB);
+    expect(nextA).toBeGreaterThan(delayedFireAt);
+    expect(nextB).toBeGreaterThan(delayedFireAt);
+    expect(nextA % intervalMs).toBe(agentPhaseOffsetMs('claude-dev-agent:heartbeat', intervalMs));
+    expect(nextB % intervalMs).toBe(agentPhaseOffsetMs('codex-dev-agent:heartbeat', intervalMs));
+
+    schedulerA.stop();
+    schedulerB.stop();
+  });
+
+  it('PHASE-STABILITY: restart keeps the same interval phase for an unchanged agent and cron', () => {
+    const now = Date.parse('2026-09-21T08:36:53.000Z');
+    vi.setSystemTime(now);
+    mockReadCrons.mockReturnValue([makeCron({ name: 'heartbeat', schedule: '4h' })]);
+
+    const first = new CronScheduler({
+      agentName: 'codex-dev-agent',
+      onFire: () => {},
+      logger: (msg) => { logs.push(msg); },
+    });
+    first.start();
+    const firstFireAt = first.getNextFireTimes()[0]!.nextFireAt;
+    first.stop();
+
+    const second = new CronScheduler({
+      agentName: 'codex-dev-agent',
+      onFire: () => {},
+      logger: (msg) => { logs.push(msg); },
+    });
+    second.start();
+    const secondFireAt = second.getNextFireTimes()[0]!.nextFireAt;
+
+    expect(secondFireAt).toBe(firstFireAt);
+    second.stop();
+  });
+
+  it('CALENDAR-UNAFFECTED: calendar crons use nextFireFromCron without interval phase offset', () => {
+    const now = Date.parse('2026-07-14T12:00:00.000Z');
+    vi.setSystemTime(now);
+    mockReadCrons.mockReturnValue([makeCron({ name: 'daily-digest', schedule: '0 7 * * *' })]);
+
+    scheduler.start();
+
+    expect(scheduler.getNextFireTimes()).toEqual([
+      { name: 'daily-digest', nextFireAt: nextFireFromCron('0 7 * * *', now) },
+    ]);
+  });
+
+  it('HEALTHY CONTROL: on-lattice last_fired advances by exactly one interval', () => {
+    const intervalMs = 4 * 60 * 60_000;
+    const phaseMs = agentPhaseOffsetMs('codex-dev-agent:heartbeat', intervalMs);
+    const lastFiredAt = phaseMs + 10 * intervalMs;
+    vi.setSystemTime(lastFiredAt + 1);
+    mockReadCrons.mockReturnValue([
+      makeCron({
+        name: 'heartbeat',
+        schedule: '4h',
+        last_fired_at: new Date(lastFiredAt).toISOString(),
+      }),
+    ]);
+
+    const stableScheduler = new CronScheduler({
+      agentName: 'codex-dev-agent',
+      onFire: () => {},
+      logger: (msg) => { logs.push(msg); },
+    });
+    stableScheduler.start();
+
+    expect(stableScheduler.getNextFireTimes()).toEqual([
+      { name: 'heartbeat', nextFireAt: lastFiredAt + intervalMs },
+    ]);
+    stableScheduler.stop();
+  });
+
+  it('SAME-AGENT NESTED-INTERVAL: cron name prevents permanent 4h/2h phase welding', () => {
+    vi.setSystemTime(0);
+    mockReadCrons.mockReturnValue([
+      makeCron({ name: 'heartbeat', schedule: '4h' }),
+      makeCron({ name: 'check-approvals', schedule: '2h' }),
+    ]);
+
+    scheduler.start();
+
+    const fourHour = scheduler.getNextFireTimes().find((entry) => entry.name === 'heartbeat')!;
+    const twoHour = scheduler.getNextFireTimes().find((entry) => entry.name === 'check-approvals')!;
+    const twoHourIntervalMs = 2 * 60 * 60_000;
+
+    expect(fourHour.nextFireAt % twoHourIntervalMs).not.toBe(twoHour.nextFireAt % twoHourIntervalMs);
   });
 
   describe('capacity gate', () => {
@@ -478,14 +743,15 @@ describe('CronScheduler', () => {
       logger: (msg) => retryLogs.push(msg),
     });
 
-    // Seed a last_fired_at that is 25h ago so it catch-up fires immediately.
+    const retryWindow = missedIntervalWindow('test-agent', 'test-cron', 24 * 3_600_000);
+    // Seed a real missed lattice slot so it catch-up fires immediately.
     mockReadCrons.mockReturnValue([
       makeCron({
         schedule:      '24h',
-        last_fired_at: new Date(Date.now() - 25 * 3_600_000).toISOString(),
+        last_fired_at: new Date(retryWindow.lastFiredAt).toISOString(),
       }),
     ]);
-    writeDaemonStopMarker('test-agent', Date.now() - 2 * 3_600_000);
+    writeDaemonStopMarker('test-agent', retryWindow.daemonStopMs);
 
     retryScheduler.start();
 
@@ -535,7 +801,8 @@ describe('CronScheduler', () => {
 
     retryScheduler.start();
 
-    await vi.advanceTimersByTimeAsync(60_000 + TICK + 1_000 + 500);
+    await advanceToNextFire(retryScheduler, 'test-cron');
+    await vi.advanceTimersByTimeAsync(1_000 + 500);
 
     expect(flakyFire).toHaveBeenCalledTimes(2);
     // 2 updateCron calls: 1 pre-fire attempted_at (iter 11) + 1 post-success
@@ -573,7 +840,8 @@ describe('CronScheduler', () => {
 
     expect(scheduler.getNextFireTimes().map(e => e.name)).toContain('new-cron');
 
-    await vi.advanceTimersByTimeAsync(60_000 + TICK);
+    const maxNextFireAt = Math.max(...scheduler.getNextFireTimes().map((entry) => entry.nextFireAt));
+    await vi.advanceTimersByTimeAsync(maxNextFireAt - Date.now() + TICK);
 
     const firedNames = fired.map(c => c.name);
     expect(firedNames).toContain('existing');
@@ -659,12 +927,12 @@ describe('CronScheduler', () => {
 
     // Two crons so the post-removal state is legitimately non-empty (avoiding
     // the empty-result fallback bug in this assertion).
-    const tenMinAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    const doomedWindow = missedIntervalWindow('test-agent', 'doomed', 10 * 60_000);
     mockReadCrons.mockReturnValue([
-      makeCron({ name: 'doomed', schedule: '10m', last_fired_at: tenMinAgo, fire_count: 1 }),
+      makeCron({ name: 'doomed', schedule: '10m', last_fired_at: new Date(doomedWindow.lastFiredAt).toISOString(), fire_count: 1 }),
       makeCron({ name: 'survivor', schedule: '24h', last_fired_at: new Date(Date.now() - 1_000).toISOString() }),
     ]);
-    writeDaemonStopMarker('test-agent', Date.now() - 5 * 60_000);
+    writeDaemonStopMarker('test-agent', doomedWindow.daemonStopMs);
 
     auditScheduler.start();
 
@@ -712,7 +980,7 @@ describe('CronScheduler', () => {
     scheduler.start();
 
     // Fire once to confirm the schedule is live.
-    await vi.advanceTimersByTimeAsync(60_000 + TICK);
+    await advanceToNextFire(scheduler, 'last-cron');
     expect(fired.length).toBeGreaterThanOrEqual(1);
     expect(scheduler.getNextFireTimes().length).toBe(1);
 
@@ -763,11 +1031,12 @@ describe('CronScheduler', () => {
     });
 
     // Start with a cron that fires immediately (catch-up)
-    const tenMinAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    const racyWindow = missedIntervalWindow('test-agent', 'racy', 10 * 60_000);
+    const racyLastFiredAt = new Date(racyWindow.lastFiredAt).toISOString();
     mockReadCrons.mockReturnValue([
-      makeCron({ name: 'racy', schedule: '10m', last_fired_at: tenMinAgo, fire_count: 1 }),
+      makeCron({ name: 'racy', schedule: '10m', last_fired_at: racyLastFiredAt, fire_count: 1 }),
     ]);
-    writeDaemonStopMarker('test-agent', Date.now() - 5 * 60_000);
+    writeDaemonStopMarker('test-agent', racyWindow.daemonStopMs);
 
     raceScheduler.start();
 
@@ -779,7 +1048,7 @@ describe('CronScheduler', () => {
     // crons.json's last_fired_at is still the stale 10-min-ago value
     // because the in-flight fire's persist hasn't run yet.
     mockReadCrons.mockReturnValue([
-      makeCron({ name: 'racy', schedule: '1m', last_fired_at: tenMinAgo, fire_count: 1 }),
+      makeCron({ name: 'racy', schedule: '1m', last_fired_at: racyLastFiredAt, fire_count: 1 }),
     ]);
     raceScheduler.reload();
 
@@ -818,7 +1087,8 @@ describe('CronScheduler', () => {
   // -------------------------------------------------------------------------
 
   it('iter 11: daemon crash mid-fire does NOT double-fire on restart (last_fire_attempted_at persisted before onFire)', async () => {
-    const oneHourAgo = new Date(Date.now() - 60 * 60_000).toISOString();
+    const crashWindow = missedIntervalWindow('test-agent', 'daily-job', 60 * 60_000);
+    const oneHourAgo = new Date(crashWindow.lastFiredAt).toISOString();
 
     // Mutable disk-state mock: the cron starts with last_fired_at=1h ago
     // and no attempted_at.  When the scheduler calls updateCron, we apply
@@ -834,7 +1104,7 @@ describe('CronScheduler', () => {
     mockUpdateCron.mockImplementation((_agent: string, _name: string, patch: Partial<CronDefinition>) => {
       diskCron = { ...diskCron, ...patch };
     });
-    writeDaemonStopMarker('test-agent', Date.now() - 90 * 60_000);
+    writeDaemonStopMarker('test-agent', crashWindow.daemonStopMs);
 
     // Slow onFire we never resolve — simulates "fire began, agent received
     // the prompt, daemon crashed before completion."
@@ -888,18 +1158,31 @@ describe('CronScheduler', () => {
   // Catch-up on start
   // -------------------------------------------------------------------------
 
-  it('fires once on start when last_fired_at is older than the interval (catch-up)', async () => {
-    // last_fired_at is 2 hours ago, schedule is "1h" — should catch-up fire immediately
-    const twoHoursAgo = new Date(Date.now() - 2 * 3_600_000).toISOString();
+  it.each([
+    Date.parse('2026-09-21T10:28:00.000Z'),
+    Date.parse('2026-09-21T10:59:00.000Z'),
+  ])('fires once when a later interval slot was missed during daemon downtime at %s', async (now) => {
+    vi.setSystemTime(now);
+    const intervalMs = 60 * 60_000;
+    const phaseMs = agentPhaseOffsetMs('test-agent:overdue', intervalMs);
+    const latestMissedFireAt = nextIntervalFireAt(intervalMs, phaseMs, now - intervalMs);
+    const firstMissedFireAt = latestMissedFireAt - intervalMs;
+    const lastFiredAt = firstMissedFireAt - intervalMs;
+    const daemonStopMs = latestMissedFireAt - 30 * 60_000;
+
+    expect(firstMissedFireAt).toBeLessThan(daemonStopMs);
+    expect(latestMissedFireAt).toBeGreaterThanOrEqual(daemonStopMs);
+    expect(latestMissedFireAt).toBeLessThanOrEqual(now);
+
     mockReadCrons.mockReturnValue([
       makeCron({
         name:          'overdue',
         schedule:      '1h',
-        last_fired_at: twoHoursAgo,
+        last_fired_at: new Date(lastFiredAt).toISOString(),
         fire_count:    5,
       }),
     ]);
-    writeDaemonStopMarker('test-agent', Date.now() - 90 * 60_000);
+    writeDaemonStopMarker('test-agent', daemonStopMs);
 
     scheduler.start();
 
@@ -907,6 +1190,7 @@ describe('CronScheduler', () => {
     await vi.advanceTimersByTimeAsync(TICK);
 
     expect(fired.some(c => c.name === 'overdue')).toBe(true);
+    expect(logs.some((line) => line.includes(new Date(latestMissedFireAt).toISOString()))).toBe(true);
   });
 
   it.each([
@@ -1002,7 +1286,7 @@ describe('CronScheduler', () => {
     scheduler.start();
 
     // Let it fire once
-    await vi.advanceTimersByTimeAsync(60_000 + TICK);
+    await advanceToNextFire(scheduler, 'test-cron');
     expect(fired).toHaveLength(1);
 
     scheduler.stop();
@@ -1720,7 +2004,7 @@ describe('CronScheduler', () => {
       const s = watchdogScheduler({ writes });
 
       s.start();
-      await vi.advanceTimersByTimeAsync(TICK);
+      await advanceToNextFire(s, 'heartbeat');
 
       expect(fired.map(c => c.name)).toContain('heartbeat');
       expect(writes).toEqual([]);

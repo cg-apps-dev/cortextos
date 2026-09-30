@@ -158,6 +158,43 @@ export function nextFireFromCron(expr: string, fromMs: number): number {
   return NaN; // should never reach here for valid expressions
 }
 
+export function agentPhaseOffsetMs(key: string, intervalMs: number): number {
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) return NaN;
+
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+
+  return hash % intervalMs;
+}
+
+export function nextIntervalFireAt(
+  intervalMs: number,
+  phaseMs: number,
+  referenceMs: number,
+  minGapMs = 0,
+): number {
+  if (
+    !Number.isFinite(intervalMs) ||
+    intervalMs <= 0 ||
+    !Number.isFinite(phaseMs) ||
+    !Number.isFinite(referenceMs) ||
+    !Number.isFinite(minGapMs) ||
+    minGapMs < 0
+  ) {
+    return NaN;
+  }
+
+  const phase = ((phaseMs % intervalMs) + intervalMs) % intervalMs;
+  let next = (Math.floor((referenceMs - phase) / intervalMs) + 1) * intervalMs + phase;
+  while (next - referenceMs < minGapMs) {
+    next += intervalMs;
+  }
+  return next;
+}
+
 // ---------------------------------------------------------------------------
 // Internal scheduler state for a single cron
 // ---------------------------------------------------------------------------
@@ -201,20 +238,31 @@ function changeKeyFor(c: CronDefinition): string {
 /**
  * Compute the next fire time for a cron definition.
  *
- * For interval shorthands ("6h", "30m") we count forward from the
- * reference time.  For cron expressions we call nextFireFromCron().
+ * For interval shorthands ("6h", "30m") we snap to a deterministic
+ * per-agent/per-cron phase lattice. For cron expressions we call
+ * nextFireFromCron().
  *
  * @param cron        - The cron definition.
  * @param referenceMs - Epoch ms to count forward from (usually now or lastFiredAt).
+ * @param agentName   - Agent name used with cron.name for interval phase spread.
  */
-function computeNextFireAt(cron: CronDefinition, referenceMs: number): number {
+function computeNextFireAt(cron: CronDefinition, referenceMs: number, agentName: string): number {
   const durationMs = parseDurationMs(cron.schedule);
   if (!isNaN(durationMs)) {
-    return referenceMs + durationMs;
+    const phaseMs = agentPhaseOffsetMs(`${agentName}:${cron.name}`, durationMs);
+    return nextIntervalFireAt(durationMs, phaseMs, referenceMs);
   }
   // Try as a cron expression
   const next = nextFireFromCron(cron.schedule, referenceMs);
   return next;
+}
+
+function latestIntervalFireAtOrBefore(cron: CronDefinition, now: number, agentName: string): number {
+  const durationMs = parseDurationMs(cron.schedule);
+  if (isNaN(durationMs) || durationMs <= 0) return NaN;
+
+  const phaseMs = agentPhaseOffsetMs(`${agentName}:${cron.name}`, durationMs);
+  return nextIntervalFireAt(durationMs, phaseMs, now - durationMs);
 }
 
 function readDaemonLastStopMs(stateDir: string): number | null {
@@ -228,16 +276,21 @@ function readDaemonLastStopMs(stateDir: string): number | null {
   }
 }
 
-export function advanceNextFireAtToFuture(cron: CronDefinition, nextFireAt: number, now: number): number {
+export function advanceNextFireAtToFuture(
+  cron: CronDefinition,
+  nextFireAt: number,
+  now: number,
+  agentName: string,
+): number {
   if (nextFireAt > now) return nextFireAt;
 
   const durationMs = parseDurationMs(cron.schedule);
   if (!isNaN(durationMs) && durationMs > 0) {
-    const missedIntervals = Math.floor((now - nextFireAt) / durationMs) + 1;
-    return nextFireAt + missedIntervals * durationMs;
+    const phaseMs = agentPhaseOffsetMs(`${agentName}:${cron.name}`, durationMs);
+    return nextIntervalFireAt(durationMs, phaseMs, now);
   }
 
-  return computeNextFireAt(cron, now);
+  return computeNextFireAt(cron, now, agentName);
 }
 
 // ---------------------------------------------------------------------------
@@ -500,7 +553,7 @@ export class CronScheduler {
       if (stateFire) candidates.push(new Date(stateFire).getTime());
       const referenceMs = candidates.length > 0 ? Math.max(...candidates) : now;
 
-      let nextFireAt = computeNextFireAt(def, referenceMs);
+      let nextFireAt = computeNextFireAt(def, referenceMs, this.agentName);
 
       if (isNaN(nextFireAt)) {
         this.logger(
@@ -514,18 +567,25 @@ export class CronScheduler {
       // Otherwise it is a stale last-fire stamp from before the last daemon
       // stop, so skip forward to the next future slot without firing.
       if (nextFireAt <= now) {
+        const latestIntervalFireAt = latestIntervalFireAtOrBefore(def, now, this.agentName);
+        const missedWindowFireAt =
+          !isNaN(latestIntervalFireAt) &&
+          latestIntervalFireAt > referenceMs &&
+          latestIntervalFireAt <= now
+            ? latestIntervalFireAt
+            : nextFireAt;
         const missedDuringDowntime =
           daemonLastStopMs !== null &&
-          nextFireAt >= daemonLastStopMs &&
-          nextFireAt <= now;
+          missedWindowFireAt >= daemonLastStopMs &&
+          missedWindowFireAt <= now;
 
         if (missedDuringDowntime) {
           this.logger(
-            `[cron-scheduler] catch-up: cron "${def.name}" missed fire at ${new Date(nextFireAt).toISOString()} during daemon downtime - scheduling immediate fire`
+            `[cron-scheduler] catch-up: cron "${def.name}" missed fire at ${new Date(missedWindowFireAt).toISOString()} during daemon downtime - scheduling immediate fire`
           );
           nextFireAt = now; // fire on the very next tick
         } else {
-          const futureFireAt = advanceNextFireAtToFuture(def, nextFireAt, now);
+          const futureFireAt = advanceNextFireAtToFuture(def, nextFireAt, now, this.agentName);
           if (isNaN(futureFireAt)) {
             this.logger(
               `[cron-scheduler] WARNING: cannot advance schedule "${def.schedule}" for cron "${def.name}" - skipping`
@@ -616,6 +676,7 @@ export class CronScheduler {
       sc.firing = true;
       dispatchedCronNames.add(name);
       const cron = sc.definition;
+      const dueFireAt = sc.nextFireAt;
       this.logger(`[cron-scheduler] firing cron "${name}" (was due ${new Date(sc.nextFireAt).toISOString()})`);
 
       // Persist last_fire_attempted_at to disk BEFORE awaiting the dispatch.
@@ -658,7 +719,10 @@ export class CronScheduler {
         }
 
         // Advance in-memory nextFireAt
-        const next = computeNextFireAt(cron, now);
+        let next = computeNextFireAt(cron, dueFireAt, this.agentName);
+        if (!isNaN(next) && next <= now) {
+          next = advanceNextFireAtToFuture(cron, next, now, this.agentName);
+        }
         if (!isNaN(next)) {
           sc.nextFireAt = next;
           sc.definition = { ...cron, last_fired_at: nowIso, fire_count: newFireCount };
@@ -673,7 +737,10 @@ export class CronScheduler {
         // we don't re-fire the same scheduled slot on every subsequent tick —
         // that produced a busy-loop when an agent was unreachable. Treat the
         // failed window as a missed slot and schedule the next normal fire.
-        const next = computeNextFireAt(cron, now);
+        let next = computeNextFireAt(cron, dueFireAt, this.agentName);
+        if (!isNaN(next) && next <= now) {
+          next = advanceNextFireAtToFuture(cron, next, now, this.agentName);
+        }
         if (!isNaN(next)) {
           sc.nextFireAt = next;
           this.logger(

@@ -77,6 +77,7 @@ let writeCrons: typeof import('../../src/bus/crons.js').writeCrons;
 let getCronByName: typeof import('../../src/bus/crons.js').getCronByName;
 let getExecutionLog: typeof import('../../src/bus/crons.js').getExecutionLog;
 let CronScheduler: typeof import('../../src/daemon/cron-scheduler.js').CronScheduler;
+let agentPhaseOffsetMs: typeof import('../../src/daemon/cron-scheduler.js').agentPhaseOffsetMs;
 let atomicWriteSync: typeof import('../../src/utils/atomic.js').atomicWriteSync;
 
 async function reloadModules(): Promise<void> {
@@ -89,6 +90,7 @@ async function reloadModules(): Promise<void> {
   getExecutionLog = cronsModule.getExecutionLog;
   const schedulerModule = await import('../../src/daemon/cron-scheduler.js');
   CronScheduler = schedulerModule.CronScheduler;
+  agentPhaseOffsetMs = schedulerModule.agentPhaseOffsetMs;
   const atomicModule = await import('../../src/utils/atomic.js');
   atomicWriteSync = atomicModule.atomicWriteSync;
 }
@@ -1032,13 +1034,18 @@ describe('FM-9: IPC reload during active catch-up — schedule change mid-flight
     // 1 fire happened
     expect(fired.filter(f => f.name === 'changeable').length).toBe(1);
 
-    // After reload with new 2h schedule, next fire should be > 1h from now
+    // After reload with new 2h schedule, next fire snaps to the new interval
+    // lattice. With no scheduler min-gap, that future lattice slot can be
+    // sooner than one full interval from now.
     const nextFireTimes = scheduler.getNextFireTimes();
     const nextFire = nextFireTimes.find(nf => nf.name === 'changeable');
     expect(nextFire).toBeDefined();
     if (nextFire) {
       const fromNow = nextFire.nextFireAt - Date.now();
-      expect(fromNow).toBeGreaterThan(ONE_HOUR);
+      const twoHours = 2 * ONE_HOUR;
+      expect(fromNow).toBeGreaterThan(0);
+      expect(fromNow).toBeLessThanOrEqual(twoHours);
+      expect(nextFire.nextFireAt % twoHours).toBe(agentPhaseOffsetMs(`${agent}:changeable`, twoHours));
     }
 
     scheduler.stop();

@@ -133,6 +133,10 @@ afterEach(() => {
 // per-test env setup above is sufficient.
 // ---------------------------------------------------------------------------
 import { busCommand, computeDisplayNextFireMs } from '../../../src/cli/bus';
+import {
+  agentPhaseOffsetMs,
+  nextIntervalFireAt,
+} from '../../../src/daemon/cron-scheduler.js';
 
 // Helper to mock process.exit so it throws instead of terminating the process.
 function mockExit(): ReturnType<typeof vi.spyOn> {
@@ -292,25 +296,37 @@ describe('bus remove-cron', () => {
 describe('computeDisplayNextFireMs', () => {
   it('advances a frozen-past interval to the next future slot', () => {
     const now = Date.parse('2026-09-26T17:00:00.000Z');
+    const intervalMs = 6 * 60 * 60 * 1000;
+    const phaseMs = agentPhaseOffsetMs(`${TEST_AGENT}:heartbeat`, intervalMs);
+    const staleReferenceMs = Date.parse('2026-09-25T05:00:00.000Z');
+    const staleNextFireMs = nextIntervalFireAt(intervalMs, phaseMs, staleReferenceMs);
     const nextFireMs = computeDisplayNextFireMs(
       makeCron('heartbeat', { schedule: '6h' }),
       '2026-09-25T05:00:00.000Z',
       now,
+      TEST_AGENT,
     );
 
-    expect(nextFireMs).toBe(Date.parse('2026-09-26T23:00:00.000Z'));
+    expect(staleNextFireMs).toBeLessThan(now);
+    expect(nextFireMs).toBe(nextIntervalFireAt(intervalMs, phaseMs, now));
     expect(nextFireMs).toBeGreaterThan(now);
   });
 
-  it('leaves an already-future interval unchanged', () => {
+  it('leaves an already-future phased interval slot unchanged', () => {
     const now = Date.parse('2026-09-26T17:00:00.000Z');
+    const intervalMs = 6 * 60 * 60 * 1000;
+    const phaseMs = agentPhaseOffsetMs(`${TEST_AGENT}:heartbeat`, intervalMs);
+    const referenceMs = Date.parse('2026-09-26T16:00:00.000Z');
+    const expectedNextFireMs = nextIntervalFireAt(intervalMs, phaseMs, referenceMs);
     const nextFireMs = computeDisplayNextFireMs(
       makeCron('heartbeat', { schedule: '6h' }),
-      '2026-09-26T15:00:00.000Z',
+      '2026-09-26T16:00:00.000Z',
       now,
+      TEST_AGENT,
     );
 
-    expect(nextFireMs).toBe(Date.parse('2026-09-26T21:00:00.000Z'));
+    expect(expectedNextFireMs).toBeGreaterThan(now);
+    expect(nextFireMs).toBe(expectedNextFireMs);
   });
 
   it('computes a future time for a calendar cron', () => {
@@ -319,6 +335,7 @@ describe('computeDisplayNextFireMs', () => {
       makeCron('every-minute', { schedule: '* * * * *' }),
       '2026-09-20T00:00:00.000Z',
       now,
+      TEST_AGENT,
     );
 
     expect(nextFireMs).toBeGreaterThan(now);
