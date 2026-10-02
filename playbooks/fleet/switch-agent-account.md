@@ -81,6 +81,15 @@ Trigger: any step-4 point failing (or a step-2/3 failure). The vault retains the
 - Re-read the pool sampler after each agent: account rebalances can churn global gating and wedge UNMOVED agents - per-agent `usage_account` overrides are the fix.
 - The vacated account's 7d burn sheds at its weekly reset, not immediately - expected, not a leak.
 - Multiple agents CAN share one account's setup-token (they then share that account's 5h/7d caps) - deliberate concentration is a capacity decision, take it knowingly.
+- **Track the wave with a sweep-tracker (per-wave checklist artifact).** A one-at-a-time wave is "done" only when EVERY agent is both flipped AND functional-swept. The auto-queued `[FUNCTIONAL SWEEP] <agent>` tasks (project `functional-sweeps`) are the per-agent mechanism; the sweep-tracker is the wave-level rollup that sees the whole wave to closure and catches a silently-dropped agent (the migration-drops-a-side-path class). Keep one row per agent in the wave, three columns:
+
+  | agent | sweep-status | owner |
+  |---|---|---|
+  | `<agent>` | `pending` -> `flipped-sweep-pending` -> `PASS` (or `FAIL-rolled-back`) | who drives + confirms this agent's sweep |
+
+  - `sweep-status` mirrors the tool's own success state: a verified flip is "auth flip verified; functional sweep pending" (NEVER "migration complete"), so an agent holds at `flipped-sweep-pending` until its step-5 functional sweep returns PASS. The wave closes only when every row is `PASS` (or an explicit, recorded hold) - never on flip-count alone.
+  - `owner` = who drives and confirms that agent's sweep: the agent itself for the lane-depth half (flags anomalies on each lane's next natural cycle), the wave coordinator for the immediate half (boot/inbox/crons/inference). A row with no owner is an untracked agent.
+  - **Cross-org waves run one tracker per org.** The tool is `$CTX_ORG`-scoped (see the `--all-from` note below), so an other-org agent is invisible to a single-org batch - a separate per-org tracker is how such an agent is never silently absent from the wave it belongs to (the 2026-08-25 atwood-skip is this failure without a tracker).
 
 ## The one command (primary path - SHIPPED 2026-07-09, main merge `4576c07`)
 
