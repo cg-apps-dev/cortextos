@@ -400,6 +400,27 @@ cortextos enable "$AGENT" --org "$ORG" --restart
 
 ---
 
+## 11. Switching an Agent's Account (incl. cross-org)
+
+Move an agent to a different Claude account with the gated tool - never hand-edit `.env` for an account change:
+
+```bash
+cortextos switch-agent-account <agent> <target-account>          # one agent, this org
+cortextos switch-agent-account --all-from <src-account> <target> # batch, this org only
+```
+
+**Cross-org (CTX_ORG prefix).** The tool - single or `--all-from` - is scoped to `$CTX_ORG` and does NOT reach other orgs; an agent in another org returns "not found". To switch an agent that lives in a DIFFERENT org, set `CTX_ORG` on the command:
+
+```bash
+CTX_ORG=<its-org> cortextos switch-agent-account <agent> <target-account>
+```
+
+Run one batch per org; org-qualified names (e.g. `otherorg/agent`) are not accepted. There is no multi-org `--all-from` - a single-org batch silently skips other-org agents (proven 2026-08-25: an atwood pair was skipped until re-run under `CTX_ORG=atwood`).
+
+Full gated procedure (two-party control, functional sweep, bridge audit, rollback) is in the runbook `playbooks/fleet/switch-agent-account.md` (cortextos repo).
+
+---
+
 ## Quick Reference
 
 | I need to... | Command |
