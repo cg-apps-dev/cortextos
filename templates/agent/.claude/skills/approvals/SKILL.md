@@ -53,6 +53,8 @@ cortextos bus send-telegram "$CTX_TELEGRAM_CHAT_ID" \
   "Approval needed: <title> — check dashboard or reply to approve/reject"
 ```
 
+**Consolidation-day exception:** on a consolidation day a non-urgent approval may route via dashboard + the orchestrator's next brief instead of a direct ping. Conditions and authority: playbooks/the-orchestrator/approvals-and-human-tasks.md (New-approval notification cadence). Doubt -> ping.
+
 ### 4. Wait for inbox notification
 
 When the user decides, you receive an inbox message:
