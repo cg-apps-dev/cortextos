@@ -33,6 +33,10 @@ This trims avoidable drip on days Adam already has consolidated messages WITHOUT
 
 Live specimen (the case that produced this rule): a wake-gate deploy approval protecting the next day's 02:35 PT window (decision window ~2am) was pinged directly on a day Adam had already received 3 consolidated messages. All three conditions held - not time-critical inside ~24h, a scheduled Adam-facing brief landed before the ~2am window mattered, and it was a deploy rather than a security finding or active incident - so the direct ping was avoidable drip the dashboard item + brief would have carried without loss.
 
+**Tool reality (annotated 2026-10-05, from live use):** `create-approval` auto-pings Adam unconditionally at creation - it posts to the activity channel AND fires a Telegram ping to the agent's own chat, with no suppress flag (verified in code: the CLI accepts only title/category/context, and `createApproval` calls the ping unconditionally in `src/bus/approval.ts`; live specimen approval_1791225472_1hm48). The baked-in creation ping cannot currently be opted out of. So until a suppress flag lands (dev task_1791225599545, low), the exception's OPERATIVE meaning is narrower than "no ping": it means NO ADDITIONAL manual ping beyond the tool's baked-in one, with the next scheduled brief restating the full scope. It governs the manual follow-up ping, not the automatic creation ping - do not promise a true no-ping path the tool cannot yet deliver.
+
+**Supersede has no status of its own:** `update-approval` accepts only `approved` or `rejected` (the statuses are pending / approved / rejected - there is no `superseded`). To supersede an approval, record it as REJECTED with a clarifying note that points to the superseding approval (live specimen: ...m5dwk recorded rejected, pointing to superseding ...1hm48).
+
 ## Note
 
 The check-approvals cron reminds on approvals pending >1h; the approvals skill's own re-ping threshold is 4h - the cron is the tighter fleet-level nudge.
