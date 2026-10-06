@@ -300,7 +300,7 @@ PY
   elif [[ ${#notstarted[@]} -gt 0 ]]; then
     local names; names="$(printf '%s, ' "${notstarted[@]}")"; names="${names%, }"
     # Deliberately NOT a FAIL: nothing is broken. This is the fleet-not-started signature.
-    echo -e "DEGRADED\tFLEET NOT STARTED (not a revocation): ${names} - stdout.log is frozen, so the revocation signature in the log TAIL is stale evidence, not a live 401. Most likely PM2 is unloaded awaiting a GUI login (LimitLoadToSessionType=Aqua). Confirm with: cortextos status. A genuinely revoked-but-RUNNING agent logs a 401 every turn and keeps its log mtime FRESH, so it is still caught as CODE RED."
+    echo -e "DEGRADED\tFROZEN LOG, STALE SIGNATURE (not a revocation): ${names} - stdout.log is frozen, so the revocation signature in the log TAIL is stale evidence, not a live 401. For a SINGLE agent the likely states are idle-quiet (healthy) vs process-dead; discriminate with: cortextos status (+ ps -p <pid>). PM2-unloaded-awaiting-GUI-login (LimitLoadToSessionType=Aqua) is only plausible when the WHOLE fleet's logs are frozen at once, not for one agent - the rest of the fleet running under the same PM2 refutes it. A genuinely revoked-but-RUNNING agent logs a 401 every turn and keeps its log mtime FRESH, so it is still caught as CODE RED."
   elif [[ ${#transient[@]} -gt 0 ]]; then
     local names; names="$(printf '%s, ' "${transient[@]}")"; names="${names%, }"
     echo -e "OK\ttransient Codex 401 seen on ${names} but heartbeat FRESH - not auth-dead (pairing gate held; no alert)."
