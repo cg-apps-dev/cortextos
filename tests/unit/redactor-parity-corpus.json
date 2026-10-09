@@ -1,0 +1,80 @@
+{
+  "_README": "SYNTHETIC redactor-parity corpus. ALL token-shaped values are SYNTHETIC (random suffixes), NOT real credentials. Authored by security-agent as the SINGLE source of truth for the fast-checker<->redact.ts redaction-parity test (task_1790373329218 / feeds task_1790380532352). Both codex-impl test and security-agent cert MUST consume THIS exact file. Shape-valid synthetic secrets WILL trip gitleaks + injection-scan + transcript-sink -> a PATH-SCOPED allowlist/baseline for this file is required and owned by security-agent (lands WITH this fixture).",
+  "_assertion_model": {
+    "positives": "SYMMETRIC: every positive MUST be scrubbed (no token survives) by BOTH redactSecrets impls. This is the safety floor.",
+    "negatives_shared": "BOTH redactors: output == input (identical JWT pattern, no sk-ant/openai shape).",
+    "negatives_symmetric_prose": "BOTH redactors: output == input (bare sk-ant, no -body).",
+    "negatives_asymmetric": "redact.ts: output == input (strict {40,} body absent). fast-checker: assert NO-LEAK ONLY = no [A-Za-z0-9_-]{40,} secret-body survives in output; over-redaction of the bodyless prefix to a placeholder is ACCEPTED-EXPECTED, NOT a failure. Do NOT assert output==input on fast-checker here."
+  },
+  "positives": [
+    {
+      "family": "jwt",
+      "value": "eyJkpP1_A2SneOzkZx0xY.am4wnbZ9amwDLRXvLUQ5y4WMZB_Q.FUNhGywuiW78PKrynA3036Q9oBk183ZPZRzgxZuL"
+    },
+    {
+      "family": "sk-ant-oat01",
+      "value": "sk-ant-oat01-KxXDJKNXfgW43q2C8iC_nsjQ1KBtnTaBEiQOGG3Dg-zTjh3"
+    },
+    {
+      "family": "sk-ant-ort01",
+      "value": "sk-ant-ort01-ENinMYWr63IF3WXWZghaND39GGkx9vey_ihLjqjkoJcUn3B"
+    },
+    {
+      "family": "sk-ant-admin01",
+      "value": "sk-ant-admin01-PlAD9e1F1QzB57HBHuxOqLh6g3RDEfzeDibxgXi-0ERA5nF"
+    },
+    {
+      "family": "openai-svcacct",
+      "value": "sk-svcacct-MzTLnvybWs99iq_HZvxn4nsGu3vCgCwZIS5DdLvOSSP7"
+    },
+    {
+      "family": "openai-proj",
+      "value": "sk-proj-w9sK3O3EE1mmSlXM55RUlqh6PUh5gKm3m4OGpwbRpn-p"
+    },
+    {
+      "family": "openai-admin",
+      "value": "sk-admin-UvB0A8hbPOHmlBxFsz7rhJvJfgetQ67YgMurfbb2LwHa"
+    }
+  ],
+  "negatives_shared": [
+    {
+      "value": "a.b.c",
+      "why": "too-short segments, no eyJ"
+    },
+    {
+      "value": "v1.2.3",
+      "why": "version string, no eyJ"
+    },
+    {
+      "value": "eyJmissingdots",
+      "why": "eyJ header but no 3-segment dot structure"
+    }
+  ],
+  "negatives_symmetric_prose": [
+    {
+      "value": "the sk-ant token",
+      "why": "no trailing -subtype"
+    },
+    {
+      "value": "sk-ant",
+      "why": "bare, no trailing hyphen+char"
+    }
+  ],
+  "negatives_asymmetric": [
+    {
+      "value": "sk-ant-oat01",
+      "redactts": "passthrough",
+      "fastchecker": "over-redact-OK (bodyless prefix, no secret to leak)"
+    },
+    {
+      "value": "sk-ant-based",
+      "redactts": "passthrough",
+      "fastchecker": "over-redact-OK"
+    },
+    {
+      "value": "sk-proj-abc",
+      "redactts": "passthrough",
+      "fastchecker": "over-redact-OK"
+    }
+  ]
+}
