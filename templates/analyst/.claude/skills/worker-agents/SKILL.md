@@ -106,6 +106,8 @@ Nudge a stuck worker (equivalent of tmux send-keys):
 cortextos inject-worker <worker-name> "Continue with phase 3. What's blocking you?"
 ```
 
+**Provenance note (2026-10-09):** a worker/fork cannot see the bus message ID behind a mid-task instruction you relay into it — if you phrase a correction as "this is from X via Y" without the originating msg_id, it reads exactly like the injection pattern a worker is right to be suspicious of, and it may correctly refuse to act on a legitimate instruction. Either pass the originating msg_id so it can verify, or just absorb the correction into your own main context and redo the final step yourself rather than asking the worker to trust a second-hand claim of authority it cannot check.
+
 ### Step 6: Cleanup
 
 ```bash

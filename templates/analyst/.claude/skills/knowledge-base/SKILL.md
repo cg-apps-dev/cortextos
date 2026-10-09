@@ -25,6 +25,8 @@ Use this:
 
 **Do NOT use this to resume by a specific identifier** (a task ID, a message ID, a filename, a nonce). Retrieval here is embedding-only — there is no lexical/exact-match path — so an identifier carries no semantic signal and a query for one does not fail, it returns a confident, non-empty list of the *wrong* results (measured: querying a real task ID returned an unrelated day's memory file, ranked as if it were a real match). **For "what was task_X / message_Y about," `grep` over `memory/` directly — exact, local, free.** Reserve `kb-query` for genuine semantic recall, where paraphrase is the point (meta-compliance-agent, 2026-07-29, reproduced 4/4 across distinct identifier types before generalizing).
 
+**An empty result during concurrent ingest activity is a known transient-contention class, not a broken index.** A fleet ingest can run past its own yield window while another agent's ingest is also in flight, and a `kb-query` landing in that exact gap can come back with zero results even for a real, well-indexed positive control — then succeed cleanly seconds later with no changes on either end (atwood-analyst, 2026-10-08, reproduced: a known-good query returned empty once, succeeded immediately on retry). Retry the identical query once before concluding anything about the index. Only treat a repeated empty result on a genuinely quiet index (no concurrent ingest running anywhere) as a real finding worth escalating.
+
 ---
 
 ## Ingest (after completing research)
