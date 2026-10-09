@@ -23,3 +23,15 @@ keywords = ["sk-svcacct-", "sk-proj-", "sk-admin-"]
 description = "pre-push-gitleaks-range test synthetic sk-ant positive-control fixture"
 targetRules = ["anthropic-sk-ant-token"]
 paths = ['''tests/pre-push-gitleaks-range\.test\.sh''']
+
+# redactor-parity test fixture (Part B, 2026-10-09): synthetic (non-live) sk-ant + openai token shapes
+# consumed by tests/unit/redactor-parity.test.ts. SCOPED to the two dedicated rules ONLY (targetRules)
+# + the ONE fixture path ONLY. Real secrets elsewhere, and these rules on any other path, still fire
+# (positive-controlled). No JWT entry: gitleaks has no eyJ rule (fixture JWT is redactor-only). Do NOT
+# quote the fixture's literal values here (would self-trip at this file's path).
+[[allowlists]]
+description = "redactor-parity test fixture: synthetic sk-ant + openai shapes (not real secrets), security-agent owned"
+targetRules = ["anthropic-sk-ant-token", "openai-svcacct-proj-admin-token"]
+paths = [
+  '''tests/unit/redactor-parity-corpus\.json$''',
+]

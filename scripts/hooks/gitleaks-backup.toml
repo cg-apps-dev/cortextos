@@ -84,6 +84,20 @@ paths = [
   '''agents/security-agent/tools/token-drift-scan\.py$''',
 ]
 
+# redactor-parity test fixture (Part B, 2026-10-09): synthetic (non-live) sk-ant + openai token
+# shapes consumed by tests/unit/redactor-parity.test.ts to prove fast-checker <-> redact.ts redaction
+# parity. SCOPED to (a) the two dedicated real-secret rules ONLY (targetRules) and (b) the ONE fixture
+# path ONLY. A real sk-ant/openai secret ANYWHERE ELSE still fires; these rules on any OTHER path still
+# fire (positive-controlled). No JWT entry needed: gitleaks has no eyJ rule, so the fixture's JWT family
+# is redactor-only. Do NOT quote the fixture's literal values here (an allowlist that quotes a
+# secret-shaped value self-trips at this file's path).
+[[allowlists]]
+description = "redactor-parity test fixture: synthetic sk-ant + openai shapes (not real secrets), security-agent owned"
+targetRules = ["anthropic-sk-ant-token", "openai-svcacct-proj-admin-token"]
+paths = [
+  '''tests/unit/redactor-parity-corpus\.json$''',
+]
+
 # Anthropic sk-ant token (OAuth/API/session) — our runtime + usage creds, spend-capable.
 # NOT covered by the gitleaks default ruleset (which only matches sk-ant-api03 if at all,
 # not the sk-ant-oat01 OAuth/setup-token format the fleet runs on). Added 2026-06-18 after
