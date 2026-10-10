@@ -14,3 +14,12 @@ id = "openai-svcacct-proj-admin-token"
 description = "OpenAI service-account/project/admin key (sk-svcacct/sk-proj/sk-admin), spend-capable"
 regex = 'sk-(?:svcacct|proj|admin)-[A-Za-z0-9_-]{40,}'
 keywords = ["sk-svcacct-", "sk-proj-", "sk-admin-"]
+
+# pre-push-gitleaks-range regression test synthetic sk-ant fixture (synthetic_secret var,
+# sk-ant-test- namespace = NOT a real Anthropic subtype; a planted positive-control for the
+# test's detectable-secret cases). Path+rule scoped: a real sk-ant token elsewhere, or any
+# other rule on this file, still fires. Rides the feat/pre-push-gitleaks-range branch.
+[[allowlists]]
+description = "pre-push-gitleaks-range test synthetic sk-ant positive-control fixture"
+targetRules = ["anthropic-sk-ant-token"]
+paths = ['''tests/pre-push-gitleaks-range\.test\.sh''']
