@@ -49,11 +49,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   [ -z "${local_sha:-}" ] && continue
   saw_push_ref=1
   case "$local_sha" in
-    0000000000000000000000000000000000000000) continue ;;
-    *)
+    *[!0]*)
       if [ "${remote_ref:-}" != "refs/heads/agent-state" ]; then
         refs_to_scan+=("$local_sha")
       fi ;;
+    *) continue ;;
   esac
 done < "$stdin_file"
 if [ "${#refs_to_scan[@]}" -eq 0 ] && [ "$saw_push_ref" -eq 0 ]; then
@@ -72,35 +72,170 @@ if [ "${#refs_to_scan[@]}" -eq 0 ] && [ "$saw_push_ref" -eq 0 ]; then
   echo "pre-push: no refs on stdin (nothing to push / all up to date); skipping shape scan, gitleaks tree scan still runs." >&2
 fi
 
-if ! command -v gitleaks >/dev/null 2>&1; then
-  echo "pre-push: gitleaks not found - refusing to push to backup without a secret scan." >&2
-  exit 1
+# Build the secret-scan plan independently from refs_to_scan above. The shape scanner
+# intentionally excludes agent-state, while gitleaks must scan every ref being published.
+gitleaks_ranges=()
+gitleaks_fallback=0
+gitleaks_fallback_reason=""
+saw_gitleaks_ref=0
+push_line_number=0
+
+mark_gitleaks_fallback() {
+  if [ "$gitleaks_fallback" -eq 0 ]; then
+    gitleaks_fallback_reason="$1"
+  fi
+  gitleaks_fallback=1
+}
+
+# Derive the object ID width from this repository. hash-object does not write unless -w
+# is supplied, so this works for both SHA-1 and SHA-256 repositories without mutation.
+oid_probe_rc=0
+oid_probe="$(git hash-object --stdin </dev/null 2>/dev/null)" || oid_probe_rc=$?
+oid_width="${#oid_probe}"
+case "$oid_probe" in
+  ""|*[!0-9a-fA-F]*) mark_gitleaks_fallback "could not determine repository object ID format" ;;
+esac
+if [ "$oid_probe_rc" -ne 0 ]; then
+  mark_gitleaks_fallback "could not determine repository object ID format"
 fi
 
-echo "pre-push: scanning for secrets before backup push..." >&2
-if [ ! -f "$cfg" ]; then
-  echo "pre-push: BLOCKED - gitleaks config not found at $cfg (scanner could not run; this is NOT a secret finding)." >&2
-  exit 1
-fi
-# GUARD THE ASSIGNMENT, fixed 2026-07-28 (found by claude-dev-agent in a scratch repo).
-# This was `gl_out="$(gitleaks ...)"; gl_rc=$?` and line 8 sets -e. A command substitution
-# assignment RETURNS THE COMMAND'S STATUS, so when gitleaks exited non-zero set -e killed the
-# script AT THIS LINE: `gl_rc=$?` never ran and the entire diagnostic block below - including
-# the FAILED-TO-RUN versus FOUND-A-SECRET distinction added this morning - WAS UNREACHABLE.
-# The hook still failed CLOSED, but printed NO REASON AT ALL. A silent block is a stronger
-# invitation to --no-verify than a wrong message, which is the very failure the block exists
-# to prevent. `|| gl_rc=$?` makes the command tested, which suppresses set -e.
-gl_rc=0
-gl_out="$(gitleaks git . -c "$cfg" --redact --no-banner 2>&1)" || gl_rc=$?
-if [ "$gl_rc" -ne 0 ]; then
-  # A scanner that cannot distinguish "I failed" from "I found something" turns every
-  # outage into a false secret alarm, and a false secret alarm invites --no-verify.
-  if printf '%s' "$gl_out" | grep -qiE 'unable to load|failed to (open|load)|no such file'; then
-    echo "pre-push: BLOCKED - gitleaks FAILED TO RUN (not a secret finding): $(printf '%s' "$gl_out" | tail -1)" >&2
-  else
-    echo "pre-push: BLOCKED - gitleaks found a potential secret. Run: gitleaks git . -c $cfg --redact" >&2
+is_valid_oid() {
+  local oid="$1"
+  [ "$oid_width" -gt 0 ] || return 1
+  [ "${#oid}" -eq "$oid_width" ] || return 1
+  case "$oid" in
+    *[!0-9a-fA-F]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+is_zero_oid() {
+  case "$1" in
+    *[!0]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+while IFS= read -r push_line || [ -n "$push_line" ]; do
+  if [[ "$push_line" =~ ^[[:space:]]*$ ]]; then
+    continue
   fi
-  exit 1
+  push_line_number=$((push_line_number + 1))
+  saw_gitleaks_ref=1
+
+  local_ref=""
+  local_sha=""
+  remote_ref=""
+  remote_sha=""
+  extra_field=""
+  IFS=$' \t' read -r local_ref local_sha remote_ref remote_sha extra_field <<< "$push_line"
+  if [ -z "$local_ref" ] || [ -z "$local_sha" ] || [ -z "$remote_ref" ] \
+    || [ -z "$remote_sha" ] || [ -n "$extra_field" ]; then
+    mark_gitleaks_fallback "malformed pre-push input at line $push_line_number"
+    continue
+  fi
+  if ! is_valid_oid "$local_sha" || ! is_valid_oid "$remote_sha"; then
+    mark_gitleaks_fallback "invalid object ID at line $push_line_number"
+    continue
+  fi
+  case "$remote_ref" in
+    refs/heads/?*) : ;;
+    *)
+      mark_gitleaks_fallback "unsupported target ref at line $push_line_number"
+      continue ;;
+  esac
+
+  # A validated deletion publishes no object. It is the only input that may produce
+  # an intentionally empty scan plan.
+  if is_zero_oid "$local_sha"; then
+    continue
+  fi
+
+  local_commit=""
+  if ! local_commit="$(git rev-parse --verify "$local_sha^{commit}" 2>/dev/null)"; then
+    mark_gitleaks_fallback "unresolved local commit at line $push_line_number"
+    continue
+  fi
+
+  if is_zero_oid "$remote_sha"; then
+    # A new branch must scan the full local ancestry. Subtracting --remotes can omit
+    # commits that exist on another remote but are new to this destination.
+    gitleaks_range="$local_commit"
+  else
+    remote_commit=""
+    if ! remote_commit="$(git rev-parse --verify "$remote_sha^{commit}" 2>/dev/null)"; then
+      mark_gitleaks_fallback "unresolved remote commit at line $push_line_number"
+      continue
+    fi
+    gitleaks_range="$remote_commit..$local_commit"
+  fi
+
+  if ! git rev-list --count "$gitleaks_range" >/dev/null 2>&1; then
+    mark_gitleaks_fallback "unresolvable revision range at line $push_line_number"
+    continue
+  fi
+  gitleaks_ranges+=("$gitleaks_range")
+done < "$stdin_file"
+
+if [ "$saw_gitleaks_ref" -eq 0 ]; then
+  mark_gitleaks_fallback "empty pre-push input"
+fi
+
+run_gitleaks_scan() {
+  local log_opts="${1:-}"
+  local gl_rc=0
+  local gl_out=""
+
+  # GUARD THE ASSIGNMENT. Under set -e an unguarded command substitution exits
+  # before diagnostics run. Keep `|| gl_rc=$?` on every gitleaks invocation.
+  if [ -n "$log_opts" ]; then
+    gl_out="$(gitleaks git . --log-opts="$log_opts" -c "$cfg" --redact --no-banner --no-color --log-level error 2>&1)" || gl_rc=$?
+  else
+    gl_out="$(gitleaks git . -c "$cfg" --redact --no-banner --no-color --log-level error 2>&1)" || gl_rc=$?
+  fi
+
+  # gitleaks 8.30.1 can return 0 after its internal git command fails. At error
+  # log level a clean run is silent, so any captured output with rc=0 is an
+  # execution failure, not a clean verdict.
+  if [ "$gl_rc" -eq 0 ] && [ -n "$gl_out" ]; then
+    echo "pre-push: BLOCKED - gitleaks FAILED TO RUN (not a secret finding): $(printf '%s' "$gl_out" | tail -1)" >&2
+    exit 1
+  fi
+  if [ "$gl_rc" -ne 0 ]; then
+    # A scanner that cannot distinguish "I failed" from "I found something" turns every
+    # outage into a false secret alarm, and a false secret alarm invites --no-verify.
+    if printf '%s' "$gl_out" | grep -qiE 'unable to load|failed to (open|load)|no such file'; then
+      echo "pre-push: BLOCKED - gitleaks FAILED TO RUN (not a secret finding): $(printf '%s' "$gl_out" | tail -1)" >&2
+    else
+      echo "pre-push: BLOCKED - gitleaks found a potential secret. Run: gitleaks git . -c $cfg --redact" >&2
+    fi
+    exit 1
+  fi
+}
+
+if [ "$gitleaks_fallback" -eq 1 ] || [ "${#gitleaks_ranges[@]}" -gt 0 ]; then
+  if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "pre-push: gitleaks not found - refusing to push to backup without a secret scan." >&2
+    exit 1
+  fi
+  if [ ! -f "$cfg" ]; then
+    echo "pre-push: BLOCKED - gitleaks config not found at $cfg (scanner could not run; this is NOT a secret finding)." >&2
+    exit 1
+  fi
+  echo "pre-push: scanning for secrets before backup push..." >&2
+
+  if [ "$gitleaks_fallback" -eq 1 ]; then
+    echo "pre-push: range scan unavailable ($gitleaks_fallback_reason); using full graph fallback." >&2
+    run_gitleaks_scan
+  else
+    # Scan each range separately. Combining A..B and C..D lets one negative
+    # boundary erase commits required by the other range.
+    for gitleaks_range in "${gitleaks_ranges[@]}"; do
+      run_gitleaks_scan "$gitleaks_range"
+    done
+  fi
+else
+  echo "pre-push: validated delete-only push; no commits to scan for secrets." >&2
 fi
 
 # CAPABILITY ASSERTION, added 2026-07-27. The scanner this hook invokes lives in the
