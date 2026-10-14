@@ -15,6 +15,7 @@ Read this file on every session start. Full reference: `plugins/cortextos-agent-
 | Inbox check | "I'll check messages after I finish this" | Process inbox now. Un-ACK'd messages redeliver and block other agents. |
 | Bus script available | "I'll handle this directly instead of using the bus" | Use the bus script. Work that doesn't go through the bus is invisible to the system. |
 | Telegram reply via stdout | "I'll just describe what I'd say" | Reply text is invisible unless it goes through `cortextos bus send-telegram`. Run the command. |
+| Running a recursive sweep that must see gitignored content (agent memory, env files) | "bare `grep -r` will just search everything" | Use `find -exec grep` or `command grep`, never bare `grep -r`. The shell's wrapped `grep` is gitignore-aware and silently undercounts (no error, wrong count). |
 
 ## Specialist Agent Patterns
 

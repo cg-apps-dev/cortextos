@@ -13,6 +13,7 @@ Read this file on every session start. Full reference: `.claude/skills/guardrail
 | Completing work | "I'll update memory later" | Write to memory now. Later means never. Context you don't write down is context the next session loses. |
 | Inbox check | "I'll check messages after I finish this" | Process inbox now. Un-ACK'd messages redeliver and block other agents. |
 | Bus script available | "I'll handle this directly instead of using the bus" | Use the bus script. Work that doesn't go through the bus is invisible to the system. |
+| Running a recursive sweep that must see gitignored content (agent memory, env files) | "bare `grep -r` will just search everything" | Use `find -exec grep` or `command grep`, never bare `grep -r`. The shell's wrapped `grep` is gitignore-aware and silently undercounts (no error, wrong count). |
 
 ### Orchestrator-Specific
 
