@@ -14,6 +14,7 @@ Read this file on every session start. Full reference: `.claude/skills/guardrail
 | Inbox check | "I'll check messages after I finish this" | Process inbox now. Un-ACK'd messages redeliver and block other agents. |
 | Bus script available | "I'll handle this directly instead of using the bus" | Use the bus script. Work that doesn't go through the bus is invisible to the system. |
 | Running a recursive sweep that must see gitignored content (agent memory, env files) | "bare `grep -r` will just search everything" | Use `find -exec grep` or `command grep`, never bare `grep -r`. The shell's wrapped `grep` is gitignore-aware and silently undercounts (no error, wrong count). |
+| Checking `$?` after piping a producer through grep/tail/awk | "the pipe ran clean, so the read worked" | An empty match and a failed read are different facts. Capture the producer command exit status before any pipe (grep/tail/awk turn a clean no-match into rc 1 under pipefail), branch on it, and print which one you saw. |
 
 ## Specialist Agent Patterns
 
