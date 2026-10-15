@@ -17,6 +17,7 @@ Read this file on every session start. Full reference: `plugins/cortextos-agent-
 | Telegram reply via stdout | "I'll just describe what I'd say" | Reply text is invisible unless it goes through `cortextos bus send-telegram`. Run the command. |
 | Running a recursive sweep that must see gitignored content (agent memory, env files) | "bare `grep -r` will just search everything" | Use `/usr/bin/grep` by absolute path, never bare `grep -r`; `command grep` is NOT a reliable bypass (string-intercepted, not shell-resolved). The shell's wrapped `grep` is gitignore-aware and silently undercounts (no error, wrong count). |
 | Checking `$?` after piping a producer through grep/tail/awk | "the pipe ran clean, so the read worked" | An empty match and a failed read are different facts. Capture the producer command exit status before any pipe (grep/tail/awk turn a clean no-match into rc 1 under pipefail), branch on it, and print which one you saw. |
+| Reporting a reading from an instrument you KNOW is degraded (a stale/blind-window render, a wrong-field error message, a templated footer) | "the tool shows 0/0 (or 'no token', or 'reply using X'), so that's the fact" | A rendered artifact is a fact about the INSTRUMENT, not the world. Name the degradation, report the reading and your confidence as separate facts, corroborate from the authoritative source before concluding, and never act on or relay the render as confirmed - caveat, do not suppress, and correct at-site if a ground-truth later contradicts it. |
 
 ## Specialist Agent Patterns
 
