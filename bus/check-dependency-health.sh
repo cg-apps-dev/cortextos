@@ -257,17 +257,26 @@ probe_codex_runtime_auth() {
     # also self-reinforcing: the staleness that fires it is the same condition that freezes
     # the evidence it fires on.
     #
-    # THE DISCRIMINATOR IS MTIME, and it works because the two states genuinely differ in it:
-    #   RUNNING but auth-dead -> 401s every turn -> log mtime keeps advancing (FRESH)
-    #   NEVER STARTED         -> nothing writes   -> log mtime frozen (STALE)
-    # A stale heartbeat already means the agent is not heartbeating, so it is not running
-    # normally; mtime separates "running and failing" from "not running at all".
-    log_mtime="$(stat -f %m "$logf" 2>/dev/null || stat -c %Y "$logf" 2>/dev/null || echo 0)"
-    if [[ "$log_mtime" -gt 0 ]] && (( now - log_mtime > CODEX_AUTH_STALE_THRESHOLD )); then
-      notstarted+=("${agent} (log frozen ~$(( (now - log_mtime) / 3600 ))h)")
-      continue   # frozen log => NOT a revocation; must not escalate to CODE RED
-    fi
-    # signature present: pair with heartbeat staleness (daemon clock)
+    # (HISTORICAL 2026-07-29 rationale, SUPERSEDED 2026-10-24 — see the liveness-keyed gate below.)
+    # mtime alone separated RUNNING-but-auth-dead (mtime FRESH, 401 every turn) from NEVER-STARTED
+    # (mtime frozen). It did NOT separate never-started from running-but-IDLE (both freeze the log),
+    # so an idle-alive agent tripped the frozen-log DEGRADED and the probe FLAPPED. The gate below
+    # now keys the frozen-log case off the AGENT-ACTIVITY beat (can the agent complete a turn),
+    # with mtime as context — which distinguishes idle-ALIVE (fresh beat, silent) from not-started
+    # (stale beat). NB: "activity beat", NOT a daemon process-liveness/pid signal — see below.
+    # Heartbeat age = AGENT-ACTIVITY LIVENESS (NOT daemon process-liveness — there is no
+    # independent periodic daemon writer of last_heartbeat). last_heartbeat is refreshed by
+    # agent activity (update-heartbeat + log-event, src/bus/heartbeat.ts + event.ts), which FOR
+    # THE AGENT ITSELF requires successful inference — so a revoked/dead-for-inference agent
+    # CANNOT refresh it. The ONLY non-agent writers are two narrow, conditional, self-alerting
+    # daemon fast-checker log-events (fast-checker.ts:1920 fleet_health_silent_death, :1269
+    # ctx_handoff_suppressed); neither is periodic, so neither can ROUTINELY refresh a dead/idle
+    # agent's beat (and anything they bump is already surfaced by its own alert). This is WHY a
+    # fresh beat is the right liveness signal for an AUTH detector, and why it is STRICTLY
+    # STRONGER than a pid check here: a pid check attests "process exists," which a revoked-but-
+    # RUNNING agent satisfies — it would MASK a revoked-idle agent. Do NOT harden this toward a
+    # pid/process check. Computed BEFORE the log-freshness gate so that gate keys off activity,
+    # not mtime alone.
     age="$(HBF="$hbf" NOW="$now" python3 - <<'PY' 2>/dev/null || echo -1
 import os, json, datetime
 try:
@@ -278,6 +287,28 @@ except Exception:
     print(-1)
 PY
 )"
+    # ── LOG-FRESHNESS GATE — now PROCESS-LIVENESS-KEYED (revised 2026-10-24) ─────────────
+    # A frozen stdout.log tail no longer DECIDES on its own. The old gate fired DEGRADED
+    # ("frozen log / not started") on ANY frozen log, which made this probe FLAP on an idle
+    # agent: idle -> log frozen -> DEGRADED, agent ticks -> log fresh -> OK, quiet again ->
+    # DEGRADED ... each OK<->DEGRADED transition alerted (bypassing cooldown), costing a triage
+    # per cycle (orch flagged 2 identical healthy-idle oranges / 2h on atwood-codex 2026-10-24).
+    # FIX: key off the AGENT-ACTIVITY beat (can-the-agent-complete-a-turn); demote log-mtime to CONTEXT.
+    #   frozen log + FRESH beat  -> agent completed a turn recently = alive & idle  -> SILENT (healthy)
+    #   frozen log + STALE beat  -> no recent successful turn = not-confirmed-alive  -> DEGRADED "frozen/not started"
+    #   fresh  log + sig + stale -> running & 401-ing every turn                     -> CODE RED (unchanged, below)
+    # A revoked-but-RUNNING agent keeps its log mtime FRESH (401 every turn), so it never reaches
+    # this frozen branch and is still caught as CODE RED. The never-started/dead case (frozen log
+    # AND no fresh beat) still fires DEGRADED. Only the idle-but-alive false positive is silenced.
+    log_mtime="$(stat -f %m "$logf" 2>/dev/null || stat -c %Y "$logf" 2>/dev/null || echo 0)"
+    if [[ "$log_mtime" -gt 0 ]] && (( now - log_mtime > CODEX_AUTH_STALE_THRESHOLD )); then
+      if [[ "$age" -ge 0 ]] && (( age <= CODEX_AUTH_STALE_THRESHOLD )); then
+        continue   # frozen log BUT watchdog beat FRESH => alive & idle => healthy, SILENT (kills the flap)
+      fi
+      notstarted+=("${agent} (log frozen ~$(( (now - log_mtime) / 3600 ))h, beat stale/unreadable)")
+      continue   # frozen log AND beat not fresh => not-confirmed-alive; DEGRADED, not CODE RED
+    fi
+    # fresh log + signature present: pair with heartbeat staleness (daemon clock)
     if [[ "$age" -lt 0 ]]; then
       unknown+=("$agent")                                  # signature but heartbeat unreadable => uncertain
     elif [[ "$age" -gt "$CODEX_AUTH_STALE_THRESHOLD" ]]; then
