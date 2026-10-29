@@ -532,7 +532,7 @@ Authored by security-agent 2026-10-29 (routed via the-orchestrator); shepherded 
 
 **The fact.** When an exposure/security status is DERIVED from one external instrument (another org's Slack reader, a vendor API, a relayed scan), the instrument's field-coverage must be confirmed before the status is banked as fact - especially an exposure-RAISING status. A reader that silently drops a field (e.g. Slack's `edited`) turns edited-to-clean content into a false "still present / still exposed."
 
-**Origin 2026-10-29.** The atwood Slack reader dropped the `edited` field; two Carlo portal-password posts edited to zero-credential content read as "still present unedited" across multiple agents' state before a raw `conversations.replies` read corrected it - wrong for ~5.5 days (edited clean 2026-10-23 16:50Z; corrected 2026-10-29 07:05Z). A false-POSITIVE exposure, not a missed real one.
+**Origin 2026-10-29.** The atwood Slack reader dropped the `edited` field; two Carlo portal-password posts edited to zero-credential content read as "still present unedited" across multiple agents' state before a raw `conversations.replies` read corrected it - wrong for ~5.6 days (edited clean 2026-10-23 16:50:16Z; corrected 2026-10-29 07:05:14Z). A false-POSITIVE exposure, not a missed real one.
 
 **The asymmetry (load-bearing, keep explicit).** The degraded-instrument parent and the reassurance/higher-bar discipline guard a status that LOWERS urgency (reassurance needs a higher bar because it stops you looking); this corollary guards a status that RAISES urgency off a thin instrument. Both fail-directions trace to one root - trusting the instrument's render over the world - with opposite costs.
 
