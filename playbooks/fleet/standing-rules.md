@@ -534,13 +534,29 @@ Authored by security-agent 2026-10-29 (routed via the-orchestrator); shepherded 
 
 **Origin 2026-10-29.** The atwood Slack reader dropped the `edited` field; two Carlo portal-password posts edited to zero-credential content read as "still present unedited" across multiple agents' state before a raw `conversations.replies` read corrected it - wrong for ~5.6 days (edited clean 2026-10-23 16:50:16Z; corrected 2026-10-29 07:05:14Z). A false-POSITIVE exposure, not a missed real one.
 
-**The asymmetry (load-bearing, keep explicit).** The degraded-instrument parent and the reassurance/higher-bar discipline guard a status that LOWERS urgency (reassurance needs a higher bar because it stops you looking); this corollary guards a status that RAISES urgency off a thin instrument. Both fail-directions trace to one root - trusting the instrument's render over the world - with opposite costs.
+**The asymmetry (load-bearing, keep explicit).** The degraded-instrument parent and [the reassurance/higher-bar rule](#standing-rule-a-reassurance-that-lowers-urgency-carries-a-higher-verification-bar-than-a-warning-that-raises-it) guard a status that LOWERS urgency (reassurance needs a higher bar because it stops you looking); this corollary guards a status that RAISES urgency off a thin instrument. Both fail-directions trace to one root - trusting the instrument's render over the world - with opposite costs.
 
 **LIMIT:** verified once, 2026-10-29, on the atwood dropped-`edited`-field case.
 
 **Enforcement label:** JUDGMENT-LEVEL (a verification/reporting habit, not a mechanisable check).
 
 **PROMOTION TRIGGER:** a second chained-reader incident promotes a one-line capture to knowledge.md (second-occurrence-files convention).
+
+## Standing rule: a reassurance that lowers urgency carries a higher verification bar than a warning that raises it
+
+Authored by security-agent (origin 2026-10-08, ad-strategist-caught); promoted agent-local -> fleet 2026-10-29 by orch GO, shepherded by the-sop-keeper. The LOWERS-urgency mirror of the chained-external-reader corollary above: that one guards a status that RAISES urgency off a thin instrument; this one guards a status that LOWERS it.
+
+**The fact.** A claim whose effect is to RELAX urgency or permit inaction - "lower-risk", "no rush", "not critical", "already covered", "safe to defer" - carries a HIGHER verification bar than a warning, because of an asymmetry: a warning that raises urgency fails SAFE (worst case = wasted caution); a reassurance that lowers it fails UNSAFE (worst case = the thing you waved off happens with nobody watching). Before shipping a relaxing claim, name its BASIS out loud - CONFIRMED (doc / observed prior cycle / measured) vs BELIEF / expected-behaviour. If the basis is belief, do NOT relax the urgency; the conservative framing governs until confirmed. This is not "never reassure" - it is "a reassurance must carry a named CONFIRMED basis or yield to the conservative framing."
+
+**Origin 2026-10-08.** security-agent claimed the Foreplay web-UI activity log "survives the 16:31Z pool reset" as fact and softened an Adam-facing pull-deadline to "not reset-critical." It was an inference from general audit-log norms, not a confirmed Foreplay behaviour (no doc, no observed cycle). the-ad-strategist caught it (they had flagged retention-across-reset UNCONFIRMED on 09-25) and refused to relax urgency on an unverified reassurance. Retracted; kept pull-before-reset.
+
+**The asymmetry (load-bearing, keep explicit).** Same root as the degraded-instrument family - trusting a render or inference over the world - but the cost direction is opposite to the chained-reader corollary: there a false POSITIVE (wrongly "still exposed") wastes caution; here a false NEGATIVE (wrongly "safe to defer") removes the watch. The reassurance needs the STRONGER evidence precisely because it is the one that stops you looking.
+
+**LIMIT:** verified once, 2026-10-08, on the Foreplay reset-retention reassurance (the-ad-strategist catch). Reasoning-discipline rule; governs claims that PERMIT inaction, not ordinary status reports. No broad-proof claim beyond that instance.
+
+**Enforcement label:** JUDGMENT-LEVEL (a verification/reporting habit, not a mechanisable check - there is no field to assert that a relaxing claim named its basis).
+
+**PROMOTION TRIGGER:** a second INDEPENDENT instance of a reassurance surviving on a thin instrument promotes a one-line capture to knowledge.md (second-occurrence-files convention).
 
 ## Standing rule: correction-propagation - carry the test, not the verdict
 
