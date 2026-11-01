@@ -50,3 +50,9 @@ All 6 tracked copies hash-verified == `d805fe6c`, em-dash=0.
 - Land branch on main (guarded-FF + destination-verify + gitleaks + backup push + ls-remote).
 - Complete task_1793551371674. Both wave-3 canonical flags closed by this wave.
 - This is the 3rd+ pass of the propagation discipline (stage -> FINDINGS -> two-party -> hash-verify -> destination-verify); drafting an auto-skill candidate for it after this lands (per orch suggestion).
+
+---
+
+## Rider (deferred, orch-ruled) - codex explicit NEVER-raw-5-field line
+
+`templates/agent-codex/plugins/cortextos-agent-skills/skills/cron-management/SKILL.md` (landed wave 3, main 872d25ed) documents `update-cron-fire --interval <interval>` as "the expected GAP between fires for a 5-field expression". That is the CORRECT CONCEPT (a gap duration, not the raw cron expression), so there is NO active defect to chase - codex is not telling agents to pass an unparseable value. Orch ruling: no codex touch now. **RIDER:** when codex's cron-management variant is next touched for any other reason, fold in the explicit "NEVER the raw 5-field expression / stores NaN" wording to mirror the canonical section (blob `d805fe6c`). Recorded here so it is findable, not a floating intention.
