@@ -31,6 +31,24 @@ cortextos bus list-crons $CTX_AGENT_NAME --json
 
 ---
 
+## Handling a cron fire
+
+When a cron fires, the daemon injects its prompt into your session as:
+
+```
+[CRON FIRED <iso-timestamp>] <cron-name>: <prompt>
+```
+
+Treat it as if the user sent you `<prompt>`: run it to completion. Then close the loop so the daemon's gap-detection knows you actually handled it (not just that the prompt was injected):
+
+```bash
+cortextos bus update-cron-fire <cron-name> --interval <interval-or-cron-expr>
+```
+
+`<interval>` is the cron's own schedule (shorthand like `6h`, or the 5-field expression). If you skip this, the daemon may eventually flag the cron as stuck even though the work completed. One-shot crons that self-remove in their handler are the exception: their last-fire never matters again.
+
+---
+
 ## Adding a recurring cron
 
 ```bash
@@ -152,16 +170,14 @@ Each log entry contains:
 
 ---
 
-## One-shot reminders (gap - not yet supported)
+## One-shot reminders
 
-The persistent cron system does not currently support one-shot (fire-once) entries. `CronDefinition` has no `fire_at` field.
-
-For one-time reminders, fall back to the Claude Code built-in CronCreate with `recurring: false`:
-```
-CronCreate - name: "remind-user-3pm", prompt: "Remind the user about the 3pm call.", schedule: "0 15 * * *", recurring: false
+For a one-time fire at a specific time, use `create-reminder` - a persistent reminder that survives restarts and fires exactly once (no self-removing handler needed):
+```bash
+cortextos bus create-reminder "<fire-at ISO>" "<prompt>"
 ```
 
-**Important**: this cron is session-only. It will NOT survive an agent restart. Until persistent one-shot support is added to `crons.json`, one-shot reminders must be recreated manually if the agent restarts before they fire.
+Related: `list-reminders` (pending or all), `ack-reminder <id>` (mark handled), `prune-reminders` (delete acked older than N days). You can also use a future-dated 5-field cron expression with a self-removing handler, but `create-reminder` is the cleaner path. Never use CronCreate or `/loop` for one-shots - they are session-only and die on restart.
 
 ---
 
