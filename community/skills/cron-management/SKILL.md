@@ -1,13 +1,13 @@
 ---
 name: cron-management
-description: "Manage persistent recurring scheduled tasks via the cortextos bus. Crons are stored in crons.json, loaded and dispatched by the daemon, and survive agent restarts. Use this skill for all cron CRUD: create, update, remove, list, test-fire, and inspect execution history. Never use CronCreate or /loop for persistent recurring work — those are session-only and die on restart."
+description: "Manage persistent recurring scheduled tasks via the cortextos bus. Crons are stored in crons.json, loaded and dispatched by the daemon, and survive agent restarts. Use this skill for all cron CRUD: create, update, remove, list, test-fire, and inspect execution history. Never use CronCreate or /loop for persistent recurring work - those are session-only and die on restart."
 triggers: ["remind me", "every day", "every hour", "every week", "schedule", "recurring", "daily", "weekly", "cron", "loop", "check regularly", "monitor", "keep an eye on", "set up a reminder", "repeat every", "run every", "automate", "schedule task", "list crons", "show crons", "fire cron now", "test cron", "cron log", "cron history", "scheduled task", "cron not firing", "persist cron"]
 external_calls: []
 ---
 
 # Cron Management
 
-Crons are stored in `crons.json` (per-agent) and dispatched by the cortextOS daemon. They survive agent restarts and session boundaries. `crons.json` is the source of truth — use these bus commands for all CRUD operations. Never write to `crons.json` directly; never use CronCreate or `/loop` for persistent recurring work.
+Crons are stored in `crons.json` (per-agent) and dispatched by the cortextOS daemon. They survive agent restarts and session boundaries. `crons.json` is the source of truth - use these bus commands for all CRUD operations. Never write to `crons.json` directly; never use CronCreate or `/loop` for persistent recurring work.
 
 ---
 
@@ -37,25 +37,25 @@ cortextos bus list-crons $CTX_AGENT_NAME --json
 cortextos bus add-cron <agent> <name> <interval> <prompt...>
 ```
 
-**Interval form** — use for simple repeated intervals:
+**Interval form** - use for simple repeated intervals:
 ```bash
 cortextos bus add-cron $CTX_AGENT_NAME heartbeat 6h Read HEARTBEAT.md and follow its instructions.
 cortextos bus add-cron $CTX_AGENT_NAME health-check 30m Check system health and report anomalies.
 cortextos bus add-cron $CTX_AGENT_NAME daily-sweep 1d Run the full daily workflow.
 ```
 
-**Cron expression form** — use for calendar-anchored schedules (specific time of day, weekdays only, etc.):
+**Cron expression form** - use for calendar-anchored schedules (specific time of day, weekdays only, etc.):
 ```bash
 cortextos bus add-cron $CTX_AGENT_NAME morning-report "0 9 * * 1-5" Generate and send the daily analytics report.
 cortextos bus add-cron $CTX_AGENT_NAME weekly-summary "0 17 * * 5" Compile and deliver the weekly summary.
 ```
 
-The prompt argument is variadic — all remaining words are joined. Quoting is optional but recommended for clarity. Optionally add a human-readable description:
+The prompt argument is variadic - all remaining words are joined. Quoting is optional but recommended for clarity. Optionally add a human-readable description:
 ```bash
 cortextos bus add-cron $CTX_AGENT_NAME heartbeat 6h --desc "Agent liveness heartbeat" Read HEARTBEAT.md and follow its instructions.
 ```
 
-The daemon scheduler reloads automatically after `add-cron` — no agent restart needed. Confirm with `list-crons`.
+The daemon scheduler reloads automatically after `add-cron` - no agent restart needed. Confirm with `list-crons`.
 
 ---
 
@@ -143,22 +143,22 @@ cortextos bus get-cron-log $CTX_AGENT_NAME heartbeat --json
 ```
 
 Each log entry contains:
-- `ts` — ISO timestamp of the execution attempt
-- `cron` — cron name
-- `status` — `fired` | `retried` | `failed`
-- `attempt` — attempt number (1 = first try)
-- `duration_ms` — execution duration in milliseconds
-- `error` — error message if status is `failed`
+- `ts` - ISO timestamp of the execution attempt
+- `cron` - cron name
+- `status` - `fired` | `retried` | `failed`
+- `attempt` - attempt number (1 = first try)
+- `duration_ms` - execution duration in milliseconds
+- `error` - error message if status is `failed`
 
 ---
 
-## One-shot reminders (gap — not yet supported)
+## One-shot reminders (gap - not yet supported)
 
 The persistent cron system does not currently support one-shot (fire-once) entries. `CronDefinition` has no `fire_at` field.
 
 For one-time reminders, fall back to the Claude Code built-in CronCreate with `recurring: false`:
 ```
-CronCreate — name: "remind-user-3pm", prompt: "Remind the user about the 3pm call.", schedule: "0 15 * * *", recurring: false
+CronCreate - name: "remind-user-3pm", prompt: "Remind the user about the 3pm call.", schedule: "0 15 * * *", recurring: false
 ```
 
 **Important**: this cron is session-only. It will NOT survive an agent restart. Until persistent one-shot support is added to `crons.json`, one-shot reminders must be recreated manually if the agent restarts before they fire.
@@ -168,12 +168,12 @@ CronCreate — name: "remind-user-3pm", prompt: "Remind the user about the 3pm c
 ## Troubleshooting
 
 **Cron not firing on schedule**
-1. Check `list-crons` — confirm `next_fire_at` is in the future and the cron is not disabled.
-2. Check `get-cron-log` for recent entries — `status: failed` entries show the error field.
+1. Check `list-crons` - confirm `next_fire_at` is in the future and the cron is not disabled.
+2. Check `get-cron-log` for recent entries - `status: failed` entries show the error field.
 3. If `next_fire_at` is stale, the daemon may not have reloaded. Restart the agent or run `cortextos bus migrate-crons $CTX_AGENT_NAME --force`.
 
 **Cron failing repeatedly**
-- `get-cron-log $CTX_AGENT_NAME <name>` — look for `status: failed` and read the `error` field.
+- `get-cron-log $CTX_AGENT_NAME <name>` - look for `status: failed` and read the `error` field.
 - Common causes: prompt syntax error, permission issue, or dependency unavailable.
 
 **Just-added cron not registered**
@@ -186,7 +186,7 @@ CronCreate — name: "remind-user-3pm", prompt: "Remind the user about the 3pm c
 - Use `update-cron --enabled false` to pause a cron. It remains in `crons.json` and can be re-enabled later with `--enabled true`.
 
 **`crons.json` corrupted or emptied**
-- Every `writeCrons` call preserves the previous file as `crons.json.bak`. If the primary file is unreadable, `readCrons` automatically falls back to `.bak` — no operator intervention needed for a single corruption event.
+- Every `writeCrons` call preserves the previous file as `crons.json.bak`. If the primary file is unreadable, `readCrons` automatically falls back to `.bak` - no operator intervention needed for a single corruption event.
 - If both files are bad, restore via `add-cron` or re-migrate: `cortextos bus migrate-crons $CTX_AGENT_NAME --force`.
 
 **Scheduler retained stale schedule after reload (lastGoodSchedule)**
@@ -217,7 +217,7 @@ cortextos bus list-crons $CTX_AGENT_NAME
 
 ```bash
 cortextos bus test-cron-fire $CTX_AGENT_NAME morning-report
-# Watch agent PTY — the prompt should inject immediately
+# Watch agent PTY - the prompt should inject immediately
 cortextos bus get-cron-log $CTX_AGENT_NAME morning-report --limit 1
 ```
 
