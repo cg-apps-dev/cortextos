@@ -42,10 +42,10 @@ When a cron fires, the daemon injects its prompt into your session as:
 Treat it as if the user sent you `<prompt>`: run it to completion. Then close the loop so the daemon's gap-detection knows you actually handled it (not just that the prompt was injected):
 
 ```bash
-cortextos bus update-cron-fire <cron-name> --interval <interval-or-cron-expr>
+cortextos bus update-cron-fire <cron-name> --interval <duration>
 ```
 
-`<interval>` is the cron's own schedule (shorthand like `6h`, or the 5-field expression). If you skip this, the daemon may eventually flag the cron as stuck even though the work completed. One-shot crons that self-remove in their handler are the exception: their last-fire never matters again.
+`<duration>` must be a PARSEABLE duration shorthand (`6h`, `24h`, `30m`) - it is stored as gap-loop metadata. For a calendar-expression cron, pass the closest duration (a daily `0 18 * * *` cron = `24h`), NEVER the raw 5-field expression: the gap-detector cannot parse a cron expression and stores NaN. If you skip this step, the daemon may eventually flag the cron as stuck even though the work completed. One-shot crons that self-remove in their handler are the exception: their last-fire never matters again.
 
 ---
 
