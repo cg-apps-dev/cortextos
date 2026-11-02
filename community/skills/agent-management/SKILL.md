@@ -9,6 +9,8 @@ external_calls: ["api.telegram.org"]
 
 > The definitive guide for managing cortextOS agent lifecycle. Every operation, every script, every protocol. Follow these EXACTLY - do not improvise.
 
+> **PROPAGATION WARNING (maintainers):** the served per-agent copies of this skill DIVERGE from this canonical (~7 distinct blobs = drift plus genuine role-content, e.g. the orchestrator migration-check and tax-planning cross-org account-switching). Before propagating any change here fleet-wide, run the unify wave per `playbooks/fleet/FINDINGS-agent-management-variant-landscape-2026-11-02.md`: build the per-copy redundancy table and MIGRATE the role-sections FIRST. A blanket replace would clobber them (the wave-3 trap, 2nd occurrence).
+
 ---
 
 ## CRITICAL RULES
