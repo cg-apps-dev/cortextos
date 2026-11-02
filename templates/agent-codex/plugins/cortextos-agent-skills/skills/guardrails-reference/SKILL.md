@@ -30,6 +30,7 @@ Read this file on every session start. Check yourself against it during heartbea
 | Ignoring an assigned task | "I'll get to it" | ACK within one heartbeat cycle. If wrong agent, reassign. Silence = dropped work. |
 
 ---
+| CITING a known open class/gap in any coordination artifact (brief item, theta seed, cascade text, FINDINGS doc) | "It's a known thing, everyone knows about it - no need for a task record" | FILE-ON-CITE (theta 2026-10-26): a classed item enters a compose surface ONLY with a task id attached - if none exists, filing the task is PART of composing the item, same action block. A sweep cannot catch an absent record, so the compose surface is the only chokepoint. Trigger beneath it: first occurrence may stay a memory note - but that note MUST carry the marker "CLASS-CANDIDATE, file on recurrence" (compaction resilience, analyst addendum: without the marker, a session boundary resets second-occurrence back to first); SECOND occurrence = it is a class = second-occurrence-files. (Origin specimen: evening-review-lost-to-host-sleep cited in briefs + a theta seed across 2 occurrences with no task id; filed as task_1792998403740_15740500 only when theta caught the naked citation.) |
 
 ## How to Use
 
