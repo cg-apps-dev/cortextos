@@ -58,6 +58,14 @@ Tasks with `needs_approval: true` create an approval item that must be reviewed 
 
 **Priorities:** urgent, high, normal, low
 
+## Where tasks are stored
+
+Tasks live in the bus STORE, NOT in the repo: `${CTX_ROOT}/orgs/<org>/tasks/task_<id>_*.json` (one JSON per task), with per-task audit logs at `${CTX_ROOT}/orgs/<org>/tasks/audit/task_<id>_*.jsonl` (same data as `cortextos bus task-history <id>`). The store also holds `dod/` (definition-of-done) and `.claims/` (claim locks).
+
+**The store is GITIGNORED - it is NOT in the git tree.** Do NOT search the repo or the per-agent `.claude/skills/` dirs for a task spec: a repo/tree search concludes "spec inaccessible" while the original is readable in the store all along (this cost 7 tasks a wrong triage bucket, 2026-11-03).
+
+**Read a task by id:** prefer the bus commands - `cortextos bus list-tasks` (filter by `--agent`/`--status`) and `cortextos bus task-history <id>` (the audit log). For a full spec or a field the bus does not expose, read the store JSON directly: `cat "${CTX_ROOT}/orgs/<org>/tasks/task_<id>_*.json"`.
+
 ## Best Practices
 
 - **Always create before starting** - ensures tracking and coordination
