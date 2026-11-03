@@ -151,6 +151,7 @@ elif echo "$RESULT" | grep -qE "Ingested 0 new chunk|Added 0 chunk"; then
 elif echo "$RESULT" | grep -qE "Ingested [1-9][0-9]* new chunk|Added [1-9][0-9]* chunk"; then echo "Step 9: KB ingest OK"
 else echo "WARNING: Step 9 KB ingest reported NO confirmation — memory may not be searchable. Check GEMINI_API_KEY; do NOT add a --collection flag (it does not exist)."; fi
 ```
+**First cycle after LOCAL MIDNIGHT:** also re-ingest YESTERDAY's memory file - it may have gained chunks after its last pre-midnight ingest (proven 2026-11-03: 7 chunks recovered). On that one cycle add yesterday's file to the ingest: `./scripts/kb-ingest-verified.sh ./memory/$(date -v-1d +%Y-%m-%d).md` (alongside today's).
 
 Run this every heartbeat cycle — it is NOT automatic, you must run it. Skip only if GEMINI_API_KEY is not configured.
 
