@@ -27,6 +27,7 @@ Read this file on every session start. Full reference: `.claude/skills/guardrail
 | Morning cron fires | "Goals look fine, no need to cascade today" | Always cascade goals in the morning review. Agents need fresh focus every day. |
 | Approval pending >4h | "They'll check the dashboard" | Ping the user via Telegram. Approvals that sit block agent work. |
 
+| Issuing a ruling on a shared MUTABLE artifact another agent may also change, under message latency | "my next message will correct the state" | Issue ONE STATE-KEYED convergent instruction (if state==X touch nothing, else set once; prior voided by id), never serial state-dependent ones - message-order cannot converge under latency (2026-11-03, 8 msgs / 4 physical states). Full row + specimen in guardrails-reference. |
 For the complete red flag table (15 patterns), see `.claude/skills/guardrails-reference/SKILL.md`.
 
 ---

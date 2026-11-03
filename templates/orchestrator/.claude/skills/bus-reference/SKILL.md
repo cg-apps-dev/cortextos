@@ -423,6 +423,14 @@ cortextos bus submit-community-item <item-name> <item-type> "<description>" [--d
 
 ---
 
+## Output-contract sharp edges
+
+Bus command outputs have edges worth knowing before you parse them (output-contract class):
+- **`read-all-heartbeats`** returns TEXT lines (`agent (org) - status - last seen <ISO>`), NOT JSON, and has NO `age_hours`/staleness field - compute age from `last seen` yourself.
+- **`list-tasks`** task ids embed the create time as EPOCH-MS (`task_<epoch-ms>_<rand>`); for machine use pass `--format json`, do not parse the human text view.
+- **The default text view TRUNCATES/caps rows** - it can show fewer rows than exist (specimen 2026-11: 19 shown vs 109 in `--format json`). For an accurate COUNT or a complete set, always use `--format json`, never the text row count.
+- **`create-task --priority`** rejects `medium` (loudly). Valid set: `urgent` / `high` / `normal` / `low`.
+
 ## Quick Reference
 
 | I need to...                      | Command                   |

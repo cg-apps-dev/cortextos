@@ -165,3 +165,4 @@ Run this every heartbeat cycle — it is NOT automatic, you must run it (the ver
 REMINDER: A heartbeat with 0 events logged and 0 memory updates means you did nothing visible.
 Target: >= 2 events and >= 1 memory update per heartbeat cycle.
 Invisible work is wasted work.
+**First cycle after LOCAL MIDNIGHT:** also re-ingest YESTERDAY's memory file - it may have gained chunks after its last pre-midnight ingest (proven 2026-11-03: 7 chunks recovered). On that one cycle add yesterday's file to the ingest: `./scripts/kb-ingest-verified.sh ./memory/$(date -v-1d +%Y-%m-%d).md` (alongside today's).
