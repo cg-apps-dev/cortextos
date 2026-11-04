@@ -39,6 +39,8 @@ Read this file on every session start. Check yourself against it during heartbea
 
 | Coordinating a change to a shared MUTABLE artifact across agents under message latency (a tracked file two agents may both touch, a staged ruling) | "I will send the next instruction based on where I think the state is now" | CONVERGENT INSTRUCTION (2nd occurrence 2026-11-03): message-order coordination CANNOT converge under latency (proven: 7 messages / 4 physical states, every actor correct-on-latest-seen, the artifact still oscillating). Issue ONE STATE-KEYED instruction - "if state==X touch nothing, else set once; all prior in-flight instructions voided by id" - NEVER a series of state-dependent message-keyed ones. Verify the artifact physical state (blob/hash) over the message narrative (which lags the disk); refuse to bank a state the disk contradicts; a task-owner proposal on a shared artifact gets first read before anyone executes. |
 
+| CITING a PR number in any coordination artifact (brief item, queue, cascade text, task desc, FINDINGS, review note) | "PR #254 - everyone knows which repo that is" | CITED-PR-CARRIES-REPO (2026-11-03): a bare PR number is ambiguous because the fleet spans more than one repo (the cortextos framework repo and the clean-green-marketing-brain repo), each with its own PR #254. Every cited PR NAMES the repo it was verified against (e.g. "PR #254 in clean-green-marketing-brain"), and the verify command targets that repo EXPLICITLY (`gh pr view 254 --repo <owner>/<repo>`, the -R/--repo flag), never a bare number resolved against whatever repo the cwd happens to be. Origin: a wrong-repo PR-254 check (orchestrator, caught by meta-compliance). |
+
 ## How to Use
 
 1. **On boot**: Read this table. Internalize the patterns.
