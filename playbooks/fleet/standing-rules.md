@@ -20,6 +20,8 @@ Each rule is titled, dated, and states the rule + why it exists. New rules land 
 
 **Applies to.** Every agent, every workflow/cron/skill change. See the fleet playbook index at [../README.md](../README.md).
 
+**Corollary (parked-tree served-refresh, 2026-11-05 PT).** When the shared checkout is parked on another branch (not main), landing a TRACKED playbook change to main is not yet "done" on the SERVED side: main holds the new content, but the working-tree copy that playbook-reads actually open is still the parked branch's old version (SOURCE correct, SERVED stale). A tracked-playbook land is done only after the working-tree copy is refreshed from main - `git show main:<path> > <path>` (no staging; NOT bare `git checkout main -- <path>`, which silently stages into the shared index) - verified by `git diff main -- <path>` returning empty. Same SOURCE-vs-SERVED split as served-skill-copy propagation, applied to tracked playbooks. Origin: a tracked gated-restamp land (2026-11-04) left the working-tree copy stale under a tree parked on a feature branch; the orchestrator's playbooks_vs_main recorder caught it (0 -> 1 wrong).
+
 ## Standing rule: every caught error becomes a codified gate (error-class registry)
 
 Ratified 2026-07-08 PT (Adam accuracy directive, orchestrator-approved plan WS-A3).
