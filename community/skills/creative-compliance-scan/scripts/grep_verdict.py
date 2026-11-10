@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Creative verdict CLI/front-end backed by verdict_core."""
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -90,6 +91,61 @@ def apply_leaf_icon_floor(v, ev, rec):
     return v, ev
 
 
+_CARD_NAME_ROUTING = None
+
+
+def _card_name_routing():
+    """M-8b card-name routing patterns - brain-sourced (news-anchor-routing.json), NEVER hardcoded
+    (design item 6, locked 2026-10-11 mc msg 1791731592934). Path derives from the SAME brain root as
+    BANNED_TERMS_JSON (sibling file in the same data dir), so a fresh-clone pin of BANNED_TERMS_JSON
+    carries this file with it - deliberately NO 4th env var (the 2026-08-21 all-or-none partial-pinning
+    rule: every new independent env is a new way to split authority across two clones).
+    FAIL-CLOSED on absence/unparseable/empty (strain-lexicon 404 precedent): this loader only runs when
+    a record actually carries card_name (see apply_card_name_escalator), so post-brain-land a missing
+    file here means a stale/wrong clone - raising is the only non-silent option (a silent no-routing
+    fallback is the copy-gate silent-degrade false-pass class)."""
+    global _CARD_NAME_ROUTING
+    if _CARD_NAME_ROUTING is None:
+        banned = verdict_core._brain_data_path("BANNED_TERMS_JSON", "banned-terms.json")
+        path = os.path.join(os.path.dirname(banned), "news-anchor-routing.json")
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        pats = data.get("card_name_patterns")
+        if not isinstance(pats, list) or not pats:
+            raise ValueError(f"{path}: card_name_patterns missing/empty - refusing silent no-routing")
+        _CARD_NAME_ROUTING = [re.compile(p, re.IGNORECASE) for p in pats]
+    return _CARD_NAME_ROUTING
+
+
+def apply_card_name_escalator(v, ev, rec):
+    """M-8b scan-wiring (card-name escalator; design locked 2026-10-11, mc review msg 1791731592934,
+    rule half = rules.md 302-310). ROUTING-ONLY sibling of apply_leaf_icon_floor at the shared post-gate
+    routing seam (and of the G1 semantic-router when that lands - this deterministic check runs ahead of
+    any LLM router by position in the chain): a ClickUp card NAME matching a News-Anchor routing pattern
+    floors an otherwise-PASS to UNCLEAR so VISION adjudicates the broadcast-format call. Card NAME is not
+    card FORMAT - grep only routes, vision issues any FAIL, so UNCLEAR, never FAIL. Only PASS is floored
+    (worst-of: FAIL/UNCLEAR already >= UNCLEAR); runs AFTER meta_reconcile + leaf_icon floor so a
+    Meta-DISAPPROVED FAIL is never masked (PASS-only floors commute, order fixed for determinism).
+    RECALL BOUNDARY (mandatory at this signal site, design item 5): HIGH-PRECISION / LOW-RECALL -
+    catches cards the team LABELED News-Anchor; structurally misses broadcast-FORMAT cards named
+    something else and cards whose card_name fetch failed. ADDITIVE PRECISION, not M-8b coverage.
+    Full recall = a visual anchor/studio-plate detector in the vision layer (separate piece, out of
+    scope here).
+    ABSENCE SEMANTICS (design item 4): a record without card_name returns unchanged WITHOUT touching
+    the patterns file - old extraction JSONLs re-verify byte-identical to pre-M-8b behavior; the
+    routing layer can only ADD a route."""
+    name = (rec.get("card_name") or "").strip()
+    if not name or v != "PASS":
+        return v, ev
+    for rx in _card_name_routing():
+        if rx.search(name):
+            note = ("M-8b card-name routing hit (pattern " + repr(rx.pattern) + " on card_name) -> "
+                    "UNCLEAR (routing-only; vision-adjudicate broadcast format - card name is not card "
+                    "format). Additive precision, NOT M-8b coverage.")
+            return "UNCLEAR", (ev + " | " + note if ev else note)
+    return v, ev
+
+
 # Test compatibility for the modality unit. The implementation remains private in verdict_core.
 single_vision_only = verdict_core._single_vision_only
 
@@ -135,6 +191,8 @@ if __name__ == "__main__":
             v = v2
         # M-27 leaf_icon wire-up: AFTER meta_reconcile (worst-of - never masks a Meta-DISAPPROVED FAIL).
         v, ev = apply_leaf_icon_floor(v, ev, rec)
+        # M-8b card-name escalator: last in the PASS-only floor chain (same worst-of property).
+        v, ev = apply_card_name_escalator(v, ev, rec)
         cell = f"{v} (creative v2.1 {ts}) - {ev}"
         if rec.get("asset") == "9x16":
             cell += " (9x16)"
@@ -148,6 +206,7 @@ if __name__ == "__main__":
             "asset": rec.get("asset", ""),
             "bud_plant": (rec.get("bud_plant", "no") or "no").lower(),
             "leaf_icon": (rec.get("leaf_icon", "no") or "no").lower(),
+            "card_name": rec.get("card_name", ""),
             "text_verdict": v,
         })
     json.dump(out, open(sys.argv[1].replace(".jsonl", "_verdicts.json"), "w"), indent=0)

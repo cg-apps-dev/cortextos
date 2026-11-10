@@ -160,6 +160,7 @@ A single extractor's imagery flag OVER-CALLS: it flags the EXEMPT brand-logo lea
 
 ### B. EXTRACTOR / CENTRAL-GREP / WRITER split (kills the subagent row-index + range-generalize bugs)
 - EXTRACTOR subagents are PURE extractors: download (Composio Drive -> presigned url -> curl) -> ffmpeg tile -> native-vision transcribe + tesseract OCR + imagery yes/no/maybe -> emit jsonl with the REAL sheet row. No verdicts.
+- Thread the ClickUp card NAME into each extraction record as optional `card_name` (one GET per card at dispatch, cacheable; absent on fetch-failure = no new path, recall boundary applies - M-8b card-name escalator, 2026-11-10).
 - I (main loop) run the deterministic grep+verdict CENTRALLY on host (one script) so verdicts are consistent and no subagent can mis-number rows or copy a reason across a range.
 - WRITER subagents write col B from a `{row,verdict,cell}` json.
 - Batch ~35 rows/extractor, ~6-8 parallel background. **Use HOST batch files, NOT the Composio sandbox /mnt** - the /mnt FUSE mount DROPS and the sandbox ROTATES mid-run (killing /mnt-staged batch files); host files (`/tmp/.../batches/`) are robust. Pull fileids to host once (workbench kernel print -> Write), split with `split`.
