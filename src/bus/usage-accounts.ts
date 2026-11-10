@@ -91,6 +91,9 @@ export interface AccountUsage {
   status?: 'impossible-read' | 'suspect' | 'benched';
   suspect?: boolean;
   error?: string;              // status/short reason only - never a token
+  /** Network error code captured from a thrown fetch cause. This is written
+   *  to diagnostics only and stripped before snapshots or caller returns. */
+  error_cause?: string;
   /** Set ONLY on a thrown pre-response failure (see fetchAccountUsage catch),
    *  to distinguish a credential-resolution throw from a network throw.
    *  Absent for a success and for an HTTP-error response (that stays 'fetch-fail'). */
@@ -675,6 +678,7 @@ interface UsageDiagnosticEntry {
   failure: UsageDiagnosticFailure;
   status: AccountUsage['status'] | null;
   error: string | null;
+  error_cause?: string;
   which_check: string;
   response_shape: UsageResponseShape;
   prior: { five_hour_pct?: number; seven_day_pct?: number; fetched_at: string } | null;
@@ -778,6 +782,15 @@ function suggestedCause(row: AccountUsage, failure: UsageDiagnosticFailure): str
   if (failure === 'cred-resolution-fail') {
     return `Credential resolution threw BEFORE any network call (retried once, still failed): ${error}. Source ${source}. This is a credential problem, not the API/network - check the account's keychain (logged out?) or pkce/refresh credential; the usage API was never reached.`;
   }
+  if (failure === 'fetch-network-fail' && row.error_cause) {
+    const cause = {
+      ENOTFOUND: 'DNS resolution failed',
+      ECONNRESET: 'Connection reset',
+      ETIMEDOUT: 'Connection timed out',
+      ECONNREFUSED: 'Connection refused',
+    }[row.error_cause] ?? `Network failure ${row.error_cause}`;
+    return `${cause} while reaching the usage API (retried once, still failed): ${error}. The credential resolved fine (${source}); this is a network/transport issue, not an auth or credential problem. Usually transient; self-heals next cycle.`;
+  }
   if (failure === 'fetch-network-fail') {
     return `The usage API fetch threw at the network/transport layer (retried once, still failed): ${error}. The credential resolved fine (${source}) - this is a connectivity/DNS/TLS/timeout issue reaching the API, not an auth or credential problem. Usually transient; self-heals next cycle.`;
   }
@@ -812,6 +825,7 @@ function buildUsageDiagnostic(ctxRoot: string, row: AccountUsage, ts: string): U
     failure,
     status: row.status ?? null,
     error: row.error ?? null,
+    ...(row.error_cause !== undefined ? { error_cause: row.error_cause } : {}),
     which_check: whichCheck(row, failure),
     response_shape: usageResponseShape(ctxRoot, row),
     prior: diagnosticPrior(row),
@@ -926,6 +940,14 @@ export async function resolveUsageTokenWithAttribution(
  * account cannot blind the others - the same isolation lesson as
  * resolve_cards/reminders.
  */
+function networkErrorCauseCode(err: unknown): string | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const cause = (err as { cause?: unknown }).cause;
+  if (!cause || typeof cause !== 'object') return undefined;
+  const code = (cause as { code?: unknown }).code;
+  return typeof code === 'string' ? code.slice(0, 120) : undefined;
+}
+
 export async function fetchAccountUsage(
   ctxRoot: string,
   accountName: string,
@@ -999,10 +1021,14 @@ export async function fetchAccountUsage(
       }
       const msg = err instanceof Error ? err.message : String(err);
       const fetch_failure_kind = attribution === undefined ? 'cred-resolution' : 'fetch-network';
+      const error_cause = fetch_failure_kind === 'fetch-network'
+        ? networkErrorCauseCode(err)
+        : undefined;
       return {
         account: accountName,
         ok: false,
         error: msg.slice(0, 200),
+        ...(error_cause !== undefined ? { error_cause } : {}),
         fetch_failure_kind,
         fetched_at: now,
         ...(attribution ?? {}),
@@ -1635,6 +1661,11 @@ export async function checkAllUsage(
   try {
     appendUsageDiagnostics(ctxRoot, guardedUsages, now);
   } catch { /* diagnostics are best-effort; never break usage monitoring */ }
+  const sanitizedUsages = guardedUsages.map((row) => {
+    const { error_cause, ...sanitized } = row;
+    void error_cause;
+    return sanitized;
+  });
 
   // Edge-triggered alert dedup: load the per-account last-alerted state so a
   // persistent condition does not re-fire every (now 15-min) cycle.
@@ -1649,7 +1680,7 @@ export async function checkAllUsage(
     const email = store.accounts[name].email;
     if (email) display[name] = `${email} (${name})`;
   }
-  const { alerts, nextState } = evaluateAlerts(guardedUsages, prevState, now, display);
+  const { alerts, nextState } = evaluateAlerts(sanitizedUsages, prevState, now, display);
   ensureDir(join(ctxRoot, 'state', 'usage'));
   atomicWriteSync(statePath, JSON.stringify(nextState, null, 2));
 
@@ -1669,7 +1700,7 @@ export async function checkAllUsage(
   }
   atomicWriteSync(
     multiUsagePath,
-    JSON.stringify({ generated_at: now, accounts: guardedUsages }, null, 2),
+    JSON.stringify({ generated_at: now, accounts: sanitizedUsages }, null, 2),
   );
 
   // Fold the Codex (ChatGPT plan) usage into the same 15-min write so it rides
@@ -1686,5 +1717,5 @@ export async function checkAllUsage(
     }
   } catch { /* Codex usage is best-effort; never break the Claude write */ }
 
-  return { accounts: guardedUsages, alerts };
+  return { accounts: sanitizedUsages, alerts };
 }

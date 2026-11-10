@@ -1009,10 +1009,13 @@ describe('usage-accounts', () => {
       seedOne('keychain-capture', 'sk-ant-oat01-STALEwTOK');
       const fetchMock = vi.fn();
       vi.stubGlobal('fetch', fetchMock);
-      // blobReader null -> resolveUsageToken throws "keychain credential unavailable" BEFORE any fetch.
-      const usage = await fetchAccountUsage(ctxRoot, 'acct', () => null, 0);
+      const credentialError = Object.assign(new Error('keychain credential unavailable'), {
+        cause: { code: 'ENOTFOUND' },
+      });
+      const usage = await fetchAccountUsage(ctxRoot, 'acct', () => { throw credentialError; }, 0);
       expect(usage.ok).toBe(false);
       expect(usage.fetch_failure_kind).toBe('cred-resolution');
+      expect(usage.error_cause).toBeUndefined();
       expect(classifyFailure(usage)).toBe('cred-resolution-fail');
       expect(fetchMock).not.toHaveBeenCalled();
     });
@@ -1112,11 +1115,49 @@ describe('usage-accounts', () => {
       return join(ctxRoot, 'state', 'usage', 'multi-account-usage.json');
     }
 
+    function previousMultiAccountUsagePath(): string {
+      return join(ctxRoot, 'state', 'usage', 'multi-account-usage.previous.json');
+    }
+
+    function alertStatePath(): string {
+      return join(ctxRoot, 'state', 'usage', 'alert-state.json');
+    }
+
     function readDiagnostics(): Array<Record<string, unknown>> {
       return readFileSync(diagnosticsPath(), 'utf-8')
         .split(/\n/)
         .filter(Boolean)
         .map((line) => JSON.parse(line) as Record<string, unknown>);
+    }
+
+    function liveKeychainBlob() {
+      return {
+        accessToken: 'sk-ant-oat01-LIVESECRETwNEW',
+        refreshToken: 'rt-live',
+        expiresAt: Date.now() + 3600_000,
+        scopes: ['user:profile'],
+      };
+    }
+
+    function networkFetchError(cause?: unknown): Error {
+      const error = new Error('fetch failed');
+      if (cause !== undefined) Object.assign(error, { cause });
+      return error;
+    }
+
+    async function runPersistentNetworkFailure(error: Error) {
+      vi.useFakeTimers();
+      const fetchMock = vi.fn().mockRejectedValue(error);
+      vi.stubGlobal('fetch', fetchMock);
+      const resultPromise = checkAllUsage(ctxRoot, liveKeychainBlob);
+      await vi.runAllTimersAsync();
+      return { result: await resultPromise, fetchMock };
+    }
+
+    function expectCauseAbsent(value: unknown, code?: string): void {
+      const serialized = JSON.stringify(value);
+      expect(serialized).not.toContain('error_cause');
+      if (code) expect(serialized).not.toContain(code);
     }
 
     async function runSevenDayRiseGuardCase({
@@ -1944,6 +1985,108 @@ describe('usage-accounts', () => {
       expect(entry.suggested_cause).toContain('Auth rejected');
       expect(JSON.stringify(entry)).not.toContain('LIVESECRET');
       expect(JSON.stringify(entry)).not.toContain('sk-ant');
+    });
+
+    it.each([
+      ['ENOTFOUND', 'DNS resolution failed'],
+      ['ECONNRESET', 'Connection reset'],
+      ['ETIMEDOUT', 'Connection timed out'],
+      ['ECONNREFUSED', 'Connection refused'],
+    ])('captures %s in diagnostics and strips it from every downstream sink', async (code, suggestedCause) => {
+      seedAccounts({
+        'icloud-max-20x': { source: 'keychain-capture', token: 'sk-ant-oat01-STOREDSECRETwTOK' },
+      });
+      const priorSnapshot = JSON.stringify({
+        generated_at: '2026-06-11T02:45:00.000Z',
+        accounts: [{
+          account: 'icloud-max-20x',
+          ok: true,
+          five_hour_pct: 1,
+          seven_day_pct: 2,
+          fetched_at: '2026-06-11T02:45:00.000Z',
+        }],
+      }, null, 2);
+      atomicWriteSync(multiAccountUsagePath(), priorSnapshot);
+
+      const { result, fetchMock } = await runPersistentNetworkFailure(
+        networkFetchError({ code }),
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const [entry] = readDiagnostics();
+      expect(entry).toMatchObject({
+        account: 'icloud-max-20x',
+        failure: 'fetch-network-fail',
+        error: 'fetch failed',
+        error_cause: code,
+        credential_source: 'keychain-capture',
+      });
+      expect(entry.suggested_cause).toContain(suggestedCause);
+
+      expectCauseAbsent(result.accounts, code);
+      expectCauseAbsent(readJson(multiAccountUsagePath()), code);
+      expectCauseAbsent(readJson(alertStatePath()), code);
+      const previousSnapshot = readJson(previousMultiAccountUsagePath());
+      expect(previousSnapshot).toEqual(JSON.parse(priorSnapshot));
+      expectCauseAbsent(previousSnapshot, code);
+    });
+
+    it('keeps a healthy usage row free of error_cause and writes no diagnostic', async () => {
+      seedAccounts({
+        'icloud-max-20x': { source: 'pkce-authorize', token: 'sk-ant-oat01-PKCESECRETwTOK' },
+      });
+      stubUsageResponses([{
+        five_hour: { utilization: 1, resets_at: '2026-06-11T05:00:00Z' },
+        seven_day: { utilization: 2, resets_at: '2026-06-15T00:00:00Z' },
+      }]);
+
+      const result = await checkAllUsage(ctxRoot);
+
+      expectCauseAbsent(result.accounts);
+      expectCauseAbsent(readJson(multiAccountUsagePath()));
+      expectCauseAbsent(readJson(alertStatePath()));
+      expect(existsSync(diagnosticsPath())).toBe(false);
+    });
+
+    it.each([
+      ['an absent cause', networkFetchError()],
+      ['a non-string cause code', networkFetchError({ code: 123 })],
+    ])('omits error_cause and preserves the generic suggestion for %s', async (_label, error) => {
+      seedAccounts({
+        'icloud-max-20x': { source: 'keychain-capture', token: 'sk-ant-oat01-STOREDSECRETwTOK' },
+      });
+
+      const { result } = await runPersistentNetworkFailure(error);
+
+      const [entry] = readDiagnostics();
+      expect(entry).toMatchObject({
+        failure: 'fetch-network-fail',
+        error: 'fetch failed',
+      });
+      expect(entry.error_cause).toBeUndefined();
+      expect(entry.suggested_cause).toContain('connectivity/DNS/TLS/timeout issue');
+      expectCauseAbsent(result.accounts);
+      expectCauseAbsent(readJson(multiAccountUsagePath()));
+      expectCauseAbsent(readJson(alertStatePath()));
+    });
+
+    it('caps an error cause code at 120 characters before diagnostics persistence', async () => {
+      seedAccounts({
+        'icloud-max-20x': { source: 'keychain-capture', token: 'sk-ant-oat01-STOREDSECRETwTOK' },
+      });
+      const longCode = 'X'.repeat(140);
+
+      const { result } = await runPersistentNetworkFailure(
+        networkFetchError({ code: longCode }),
+      );
+
+      const [entry] = readDiagnostics();
+      expect(entry.error_cause).toBe('X'.repeat(120));
+      expect(String(entry.suggested_cause)).toContain(`Network failure ${'X'.repeat(120)}`);
+      expect(JSON.stringify(entry)).not.toContain(longCode);
+      expectCauseAbsent(result.accounts, longCode);
+      expectCauseAbsent(readJson(multiAccountUsagePath()), longCode);
+      expectCauseAbsent(readJson(alertStatePath()), longCode);
     });
 
     it('writes a no-credential diagnostic entry', async () => {
