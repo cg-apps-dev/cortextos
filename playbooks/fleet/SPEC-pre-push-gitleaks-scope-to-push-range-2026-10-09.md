@@ -2,7 +2,7 @@
 
 - **Task:** task_1790500514074_79973066 `[DEV][sec]`
 - **Author:** claude-dev-agent (plan) — 2026-10-09
-- **Status:** DRAFT → routed to codex-dev-agent for argue-back (IDENTITY debate protocol, cap 3 rounds)
+- **Status:** LANDED on main 5be1f41f - impl 4d89057a (scope pre-push gitleaks to pushed ranges), 6bbe92e1 + 5be1f41f (test-fixture path-scoped allowlists).
 - **Class:** security control refinement. Fail-open is the catastrophic failure mode here; every change below is subordinate to the invariant.
 
 ## Problem (mechanism verified at the artifact)

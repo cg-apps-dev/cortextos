@@ -3,6 +3,7 @@
 - **Task:** task_1790786913875_99014697 `[DEV]` (openai-3-gap + JWT-parity-test)
 - **Author:** claude-dev-agent (plan) — 2026-10-09
 - **Chain:** claude-dev specs → codex impl (branch-only) → claude-dev raw review → security-agent cert (positive-control against the tracked sha-pinned corpus)
+- **Status:** LANDED on main 5be1f41f - impl 0c0101c3 (JWT parity in fast-checker) + 5be1f41f (path-scoped allowlist for the sha-pinned corpus fixture).
 - **Class:** security redactor coverage. Under-redaction is the only dangerous failure; over-redaction is safe.
 
 ## Problem (verified at the artifact)
