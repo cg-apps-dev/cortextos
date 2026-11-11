@@ -408,7 +408,7 @@ export class FastChecker {
     const safeFrom = sanitizeForPtyInjection(msg.from);
     return `=== AGENT MESSAGE from ${safeFrom}${replyNote} [msg_id: ${msg.id}] ===
 ${wrapFenceSafe(msg.text)}
-Reply using: cortextos bus send-message ${safeFrom} normal '<your reply>' ${msg.id}
+Reply using: cortextos bus send-message ${safeFrom} normal '<your reply>' --reply-to ${msg.id}
 
 `;
   }

@@ -129,7 +129,7 @@ cortextos bus compact-tasks [--older-than <days>] [--dry-run]
 Send a message to another agent. They will see it on their next inbox check.
 
 ```bash
-cortextos bus send-message <target_agent> <priority> '<message_body>' [reply_to]
+cortextos bus send-message <target_agent> <priority> '<message_body>' [--reply-to <id>]
 ```
 
 - **target_agent** (required): Target agent name
@@ -140,6 +140,7 @@ cortextos bus send-message <target_agent> <priority> '<message_body>' [reply_to]
 Example:
 ```bash
 cortextos bus send-message <agent-name> high '{"action":"deploy","repo":"website","branch":"main"}'
+cortextos bus send-message <agent-name> normal '<reply>' --reply-to <msg_id>
 ```
 
 ### check-inbox

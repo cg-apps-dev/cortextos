@@ -100,6 +100,7 @@ export interface SendMessageReplyToValidation {
   ok: boolean;
   error?: string;
   warning?: string;
+  drop?: boolean;
   lookupStatus?: ReplyToLookupStatus;
 }
 
@@ -174,8 +175,13 @@ export function validateSendMessageReplyTo(
   const sender = senderMatch?.[1];
   if (sender && sender !== to) {
     return {
-      ok: false,
-      error: `Invalid reply_to '${replyTo}'. It is a message from '${sender}', but you are sending to '${to}' - a reply_to must be a msg_id the addressee sent you (relay-as-reply misuse). Omit reply_to for this send, or reply to '${sender}' directly; to ACK '${sender}'s message use ack-inbox.`,
+      ok: true,
+      drop: true,
+      warning:
+        `Warning: reply_to '${replyTo}' is a message from '${sender}', but you are sending to '${to}'. ` +
+        `A reply_to must be a msg_id the addressee sent you, so it was DROPPED and this message sent UNTHREADED. ` +
+        `If you meant to ACK '${sender}'s message, run: cortextos bus ack-inbox ${replyTo}  ` +
+        `(otherwise it will redeliver in ~5 min).`,
     };
   }
 
@@ -379,7 +385,7 @@ busCommand
   .option('--reply-to <id>', 'Reply to message ID')
   .action((to: string, priority: string, text: string, replyToArg: string | undefined, opts: { replyTo?: string }) => {
     // Accept reply-to as either positional arg or --reply-to flag (P2 fix #9)
-    const effectiveReplyTo = opts.replyTo ?? replyToArg;
+    let effectiveReplyTo = opts.replyTo ?? replyToArg;
     const validPriorities: Priority[] = ['urgent', 'high', 'normal', 'low'];
     if (!validPriorities.includes(priority as Priority)) {
       console.error(`Invalid priority '${priority}'. Must be one of: ${validPriorities.join(', ')}`);
@@ -414,6 +420,9 @@ busCommand
     }
     if (replyToValidation.warning) {
       console.error(replyToValidation.warning);
+    }
+    if (replyToValidation.drop) {
+      effectiveReplyTo = undefined;
     }
 
     // Hard-fail if target agent doesn't exist. This follows the same validation

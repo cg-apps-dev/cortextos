@@ -16,7 +16,7 @@ Reply using: cortextos bus send-telegram <chat_id> "<your reply>"
 
 === AGENT MESSAGE from <agent> [msg_id: <id>] ===
 <message text>
-Reply using: cortextos bus send-message <agent> normal '<your reply>' <msg_id>
+Reply using: cortextos bus send-message <agent> normal '<your reply>' --reply-to <msg_id>
 ```
 
 ## What To Do
