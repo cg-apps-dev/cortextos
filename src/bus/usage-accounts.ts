@@ -34,6 +34,7 @@ import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
 import { loadAccounts, saveAccounts, type AccountsStore, type OAuthAccount } from './oauth.js';
 import { readCodexUsage } from './codex-usage.js';
 import { resolveAgentAccount } from '../daemon/cron-capacity-gate.js';
+import { redactSecrets } from '../pty/redact.js';
 
 // --- Types ---
 
@@ -114,8 +115,21 @@ export interface AccountUsage {
   fetched_at: string;
 }
 
+declare const SanitizedUsageBrand: unique symbol;
+
+/**
+ * An account row constructed through the sole sanctioned constructor, with
+ * no raw credential per outcome: credential-bearing rows use hash8 plus error
+ * redaction; credential-less rows omit credentials and use only fixed or
+ * non-secret-derived errors. Compile-time regression tripwire only, not a
+ * runtime boundary: this brand is castable by determined code.
+ */
+export type SanitizedUsage = AccountUsage & {
+  readonly [SanitizedUsageBrand]: true;
+};
+
 export interface AllUsageResult {
-  accounts: AccountUsage[];
+  accounts: SanitizedUsage[];
   alerts: string[];
 }
 
@@ -948,17 +962,52 @@ function networkErrorCauseCode(err: unknown): string | undefined {
   return typeof code === 'string' ? code.slice(0, 120) : undefined;
 }
 
+interface FetchAccountUsageOptions {
+  benched?: boolean;
+  lastGood?: LastGoodUsage;
+}
+
+function brandSanitized(usage: AccountUsage): SanitizedUsage {
+  return usage as SanitizedUsage;
+}
+
 export async function fetchAccountUsage(
   ctxRoot: string,
   accountName: string,
   blobReader: () => KeychainBlob | null = readKeychainBlob,
   retryBackoffMs: number = USAGE_FETCH_RETRY_BACKOFF_MS,
-): Promise<AccountUsage> {
+  options: FetchAccountUsageOptions = {},
+): Promise<SanitizedUsage> {
   const now = new Date().toISOString();
   const store = requireStore(ctxRoot);
+  // SanitizedUsage records a per-outcome guarantee established before the pure
+  // brandSanitized cast: hash8 plus error redaction for credential-bearing
+  // rows; no credential field and only fixed/non-secret-derived errors for
+  // credential-less rows. If a credential-less path ever adds thrown or
+  // external text to error, it must pass that text through redactSecrets.
+  // This is an accidental-regression tripwire, not a runtime security boundary.
+  if (options.benched) {
+    const lastGood = options.lastGood;
+    return brandSanitized({
+      account: accountName,
+      ok: true,
+      benched: true,
+      status: 'benched',
+      fetched_at: now,
+      ...(lastGood?.five_hour_pct !== undefined ? { five_hour_pct: lastGood.five_hour_pct } : {}),
+      ...(lastGood?.seven_day_pct !== undefined ? { seven_day_pct: lastGood.seven_day_pct } : {}),
+      ...(lastGood?.scoped_limits ? { scoped_limits: lastGood.scoped_limits } : {}),
+      ...(lastGood ? { last_good: lastGood } : {}),
+    });
+  }
   const cred = store.accounts[accountName]?.usage_credential;
   if (!cred) {
-    return { account: accountName, ok: false, error: 'no usage_credential', fetched_at: now };
+    return brandSanitized({
+      account: accountName,
+      ok: false,
+      error: 'no usage_credential',
+      fetched_at: now,
+    });
   }
   const isKeychain = cred.source === 'keychain-capture';
   // ONE retry with a short backoff on a THROWN pre-response failure (credential
@@ -998,41 +1047,44 @@ export async function fetchAccountUsage(
       }
       if (!response.ok) {
         // An HTTP-error RESPONSE (not a throw) - stays 'fetch-fail', not retried here.
-        return {
+        return brandSanitized({
           account: accountName,
           ok: false,
           error: `HTTP ${response.status}`,
           fetched_at: now,
           ...(attribution ?? {}),
-        };
+        });
       }
       const raw = await response.json();
       recordRawUsageResponse(ctxRoot, accountName, raw, now, resolved);
-      return {
+      // This is the credential-bearing success choke point: only the hash8
+      // fingerprint from token resolution enters the row, never the token.
+      return brandSanitized({
         ...parseUsageResponse(accountName, raw, now),
         credential_source: resolved.credential_source,
         credential_fingerprint: resolved.credential_fingerprint,
-      };
+      });
     } catch (err) {
       if (attempt === 0) {
         // One short backoff, then retry the whole resolve+fetch once.
         if (retryBackoffMs > 0) await new Promise((resolve) => setTimeout(resolve, retryBackoffMs));
         continue;
       }
-      const msg = err instanceof Error ? err.message : String(err);
+      const rawMessage = err instanceof Error ? err.message : err;
+      const msg = typeof rawMessage === 'string' ? rawMessage : '';
       const fetch_failure_kind = attribution === undefined ? 'cred-resolution' : 'fetch-network';
       const error_cause = fetch_failure_kind === 'fetch-network'
         ? networkErrorCauseCode(err)
         : undefined;
-      return {
+      return brandSanitized({
         account: accountName,
         ok: false,
-        error: msg.slice(0, 200),
+        error: redactSecrets(msg).slice(0, 200),
         ...(error_cause !== undefined ? { error_cause } : {}),
         fetch_failure_kind,
         fetched_at: now,
         ...(attribution ?? {}),
-      };
+      });
     }
   }
 }
@@ -1178,7 +1230,11 @@ function hasAdvancedReset(priorReset: string | undefined, currentReset: string |
   return currentMs > priorMs;
 }
 
-function markSuspect(usage: AccountUsage, prior: AccountUsage | undefined, reason: string): AccountUsage {
+function markSuspect(
+  usage: SanitizedUsage,
+  prior: AccountUsage | undefined,
+  reason: string,
+): SanitizedUsage {
   const lastGood = lastGoodFrom(prior);
   return {
     ...usage,
@@ -1257,10 +1313,10 @@ export function readRecentAccountBurn(ctxRoot: string, accountName: string, wind
 
 function applyUsageGuards(
   ctxRoot: string,
-  usages: AccountUsage[],
+  usages: SanitizedUsage[],
   prior: Map<string, AccountUsage>,
   options: UsageGuardOptions = {},
-): AccountUsage[] {
+): SanitizedUsage[] {
   const burnWindowHours = options.recentBurnWindowHours ?? RECENT_BURN_WINDOW_HOURS;
   const burnSuspectUsd = options.recentBurnSuspectUsd ?? RECENT_BURN_SUSPECT_USD;
   return usages.map((usage) => {
@@ -1629,29 +1685,23 @@ export async function checkAllUsage(
   const now = new Date().toISOString();
   const names = Object.keys(store.accounts);
   const priorUsage = loadPriorUsage(ctxRoot);
-  const usages: AccountUsage[] = [];
+  const usages: SanitizedUsage[] = [];
   for (const name of names) {
     const account = store.accounts[name];
     const isBenched = account.benched === true;
     if (isBenched) {
       const lastGood = priorUsage.get(name)?.last_good;
-      usages.push({
-        account: name,
-        ok: true,
-        benched: true,
-        status: 'benched',
-        fetched_at: now,
-        ...(lastGood?.five_hour_pct !== undefined ? { five_hour_pct: lastGood.five_hour_pct } : {}),
-        ...(lastGood?.seven_day_pct !== undefined ? { seven_day_pct: lastGood.seven_day_pct } : {}),
-        ...(lastGood?.scoped_limits ? { scoped_limits: lastGood.scoped_limits } : {}),
-        ...(lastGood ? { last_good: lastGood } : {}),
-      });
+      usages.push(await fetchAccountUsage(
+        ctxRoot,
+        name,
+        blobReader,
+        USAGE_FETCH_RETRY_BACKOFF_MS,
+        { benched: true, lastGood },
+      ));
       continue;
     }
 
-    const usage = account.usage_credential
-      ? await fetchAccountUsage(ctxRoot, name, blobReader)
-      : { account: name, ok: false, error: 'no usage_credential', fetched_at: now };
+    const usage = await fetchAccountUsage(ctxRoot, name, blobReader);
     // Surface the account's benched flag onto the usage so the (pure) alert
     // evaluator can suppress threshold edges by DATA, not a code const.
     usage.benched = false;
@@ -1661,7 +1711,7 @@ export async function checkAllUsage(
   try {
     appendUsageDiagnostics(ctxRoot, guardedUsages, now);
   } catch { /* diagnostics are best-effort; never break usage monitoring */ }
-  const sanitizedUsages = guardedUsages.map((row) => {
+  const sanitizedUsages: SanitizedUsage[] = guardedUsages.map((row) => {
     const { error_cause, ...sanitized } = row;
     void error_cause;
     return sanitized;
@@ -1698,6 +1748,8 @@ export async function checkAllUsage(
       );
     } catch { /* previous snapshot is best-effort */ }
   }
+  // Snapshot sink accepts only SanitizedUsage rows, so a new raw row producer
+  // that bypasses the sole constructor fails to compile here.
   atomicWriteSync(
     multiUsagePath,
     JSON.stringify({ generated_at: now, accounts: sanitizedUsages }, null, 2),
@@ -1717,5 +1769,7 @@ export async function checkAllUsage(
     }
   } catch { /* Codex usage is best-effort; never break the Claude write */ }
 
+  // Return sink is likewise branded. This is a compile-time tripwire, not a
+  // runtime boundary, because TypeScript brands can be deliberately cast.
   return { accounts: sanitizedUsages, alerts };
 }

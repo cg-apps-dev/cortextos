@@ -1031,6 +1031,26 @@ describe('usage-accounts', () => {
       expect(usage.error).toContain('ECONNRESET');
     });
 
+    it.each([
+      ['sk-ant', `sk-ant-oat01-${'A'.repeat(40)}`, '[REDACTED_SK_ANT]'],
+      ['JWT', `eyJ${'B'.repeat(10)}.${'C'.repeat(10)}.${'D'.repeat(10)}`, '[REDACTED_JWT]'],
+      ['OpenAI', `sk-proj-${'E'.repeat(40)}`, '[REDACTED_OPENAI]'],
+    ])('redacts a planted %s token from a thrown error before returning the row', async (_shape, token, placeholder) => {
+      seedOne('keychain-capture', 'sk-ant-oat01-LIVEwTOK');
+      const fetchMock = vi.fn().mockRejectedValue(new Error(`transport echoed ${token}`));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const usage = await fetchAccountUsage(ctxRoot, 'acct', goodBlob, 0);
+
+      // The placeholder is the positive control proving shape redaction fired.
+      // Absence of this row's own token is necessary but not sufficient because
+      // an error may echo a different credential; shared shape redaction is the guard.
+      expect(usage.error).toContain(placeholder);
+      expect(JSON.stringify(usage)).not.toContain(token);
+      expect(usage.fetch_failure_kind).toBe('fetch-network');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
     it('a TRANSIENT single throw self-recovers via the one retry - no failure surfaced (D2)', async () => {
       seedOne('keychain-capture', 'sk-ant-oat01-LIVEwTOK');
       const okBody = {
@@ -1293,6 +1313,26 @@ describe('usage-accounts', () => {
       expect(result.accounts[0].error).toBeUndefined();
       expect(result.alerts).toEqual([]);
       expect(existsSync(diagnosticsPath())).toBe(false);
+    });
+
+    it('keeps every credential-less outcome error safe by construction shape', async () => {
+      seedAccounts({
+        'no-credential': {},
+        'http-error': { source: 'keychain-capture', token: 'sk-ant-oat01-STOREDSECRETwTOK' },
+        benched: { source: 'keychain-capture', token: 'sk-ant-oat01-BENCHEDSECRETwTOK', benched: true },
+      });
+      const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 503 });
+      vi.stubGlobal('fetch', fetchMock);
+      const blobReader = vi.fn(liveKeychainBlob);
+
+      const result = await checkAllUsage(ctxRoot, blobReader);
+      const rows = Object.fromEntries(result.accounts.map((row) => [row.account, row]));
+
+      expect(rows['no-credential'].error).toBe('no usage_credential');
+      expect(rows['http-error'].error).toMatch(/^HTTP \d+$/);
+      expect(rows.benched).not.toHaveProperty('error');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(blobReader).toHaveBeenCalledTimes(1);
     });
 
     it('does not emit USAGE-FETCH-FAIL for a benched no-credential account across confirmed-failure cycles', async () => {
