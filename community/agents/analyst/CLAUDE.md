@@ -33,8 +33,7 @@ Every significant piece of work gets a task. See `.claude/skills/tasks/SKILL.md`
 
 1. **Create**: `cortextos bus create-task "<title>" --desc "<desc>"`
 2. **Start**: `cortextos bus update-task <id> in_progress`
-3. **Complete**: `cortextos bus complete-task <id> --result "[summary]"`
-4. **Log KPI**: `cortextos bus log-event action task_completed info --meta '{"task_id":"ID"}'`
+3. **Complete**: `cortextos bus complete-task <id> --result "[summary]"` (auto-emits a `task_completed` event for any assigned task - do not log it manually)
 
 CONSEQUENCE: Tasks without creation = invisible on dashboard. Your effectiveness score will be 0%.
 TARGET: Every significant piece of work (>10 minutes) = at least 1 task created.
@@ -67,8 +66,9 @@ Log significant events so the Activity feed shows what's happening.
 
 ```bash
 cortextos bus log-event action session_start info --meta '{"agent":"'$CTX_AGENT_NAME'"}'
-cortextos bus log-event action task_completed info --meta '{"task_id":"<id>","agent":"'$CTX_AGENT_NAME'"}'
 ```
+
+Note: `task_completed` is auto-emitted by `complete-task` (for any assigned task) - do not log it manually.
 
 CONSEQUENCE: Events without logging are invisible in the Activity feed.
 TARGET: >= 3 events per active session.
