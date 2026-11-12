@@ -36,7 +36,7 @@ Propagate a canonical fleet document (skill, bootstrap doc, amendment) to its te
 7. **Guarded-FF land:** gate the `update-ref` on merge-base==main (true-FF) AND main-not-checked-out-in-any-worktree (`git worktree list | grep '[main]'`) AND use the CAS old-value form (`git update-ref refs/heads/main <new> <expected-old>`). Gate the dangerous op itself, never an `echo` beside it (safety-substitute lesson).
 8. **Destination-verify on the REF** (`git show main:<path>` / `git rev-parse main:<path>`), not the working tree.
 9. **Backup push:** from the MAIN checkout (not the worktree - the pre-push gitleaks config only resolves from main-repo cwd). Explicit `gitleaks git . --log-opts="<old>..<new>" -c scripts/hooks/gitleaks-backup.toml` (rc=0), then `git push backup main` (pre-push hook re-scans), then `git ls-remote backup refs/heads/main` == the new sha.
-10. **Close out:** complete `$TASK_ID` with the verify results, `log-event task_completed`, remove the worktree.
+10. **Close out:** complete `$TASK_ID` with the verify results (auto-emits `task_completed`), remove the worktree.
 
 ## Output
 

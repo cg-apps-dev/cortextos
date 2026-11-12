@@ -32,11 +32,7 @@ cortextos bus update-task <task_id> in_progress
 ```bash
 cortextos bus complete-task <task_id> --result "[output summary]"
 ```
-
-### 5. Log KPI (if measurable)
-```bash
-cortextos bus log-event task task_completed info --meta '{"task_id":"ID","kpi_key":"metric_name","value":1}'
-```
+`complete-task` auto-emits a `task_completed` event for any assigned task - do not log it manually. For a separate measurable KPI, use a `metric` event (not `task_completed`).
 
 ## The `needs_approval` Field
 

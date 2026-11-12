@@ -39,10 +39,7 @@ cortextos bus log-event action session_end info \
 ```
 
 ### Task completed
-```bash
-cortextos bus log-event task task_completed info \
-  --meta "{\"task_id\":\"$TASK_ID\",\"agent\":\"$CTX_AGENT_NAME\",\"summary\":\"<what was done>\"}"
-```
+Auto-emitted by `complete-task` (for any assigned task) - do not log it manually.
 
 ### Heartbeat
 ```bash
