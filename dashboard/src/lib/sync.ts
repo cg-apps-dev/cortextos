@@ -42,6 +42,34 @@ function markSynced(filePath: string): void {
 // Task sync
 // ---------------------------------------------------------------------------
 
+interface ArchivedTask {
+  id: string;
+  title: string;
+  org: string;
+  assigned_to?: string | null;
+  completed_at: string;
+  result?: string | null;
+}
+
+function mapArchivedTask(task: ArchivedTask, sourceFile: string) {
+  return {
+    id: task.id,
+    title: task.title,
+    description: null,
+    status: 'completed',
+    priority: 'normal',
+    assignee: task.assigned_to ?? null,
+    org: task.org,
+    project: null,
+    needs_approval: 0,
+    created_at: task.completed_at,
+    updated_at: null,
+    completed_at: task.completed_at,
+    notes: task.result ?? null,
+    source_file: sourceFile,
+  };
+}
+
 export function syncTasks(org: string): number {
   const taskDir = getTaskDir(org);
   console.log(`[sync] syncTasks org=${org} dir=${taskDir} exists=${fs.existsSync(taskDir)}`);
@@ -56,11 +84,14 @@ export function syncTasks(org: string): number {
       (@id, @title, @description, @status, @priority, @assignee, @org, @project, @needs_approval, @created_at, @updated_at, @completed_at, @notes, @source_file)
   `);
 
-  const files = fs.readdirSync(taskDir).filter((f) => f.endsWith('.json'));
+  const dirFiles = fs.readdirSync(taskDir);
+  const files = dirFiles.filter((f) => f.endsWith('.json'));
+  const archiveFiles = dirFiles.filter((f) => /^archive-.*\.jsonl$/.test(f));
   console.log(`[sync] Found ${files.length} task files in ${taskDir}`);
 
   const run = db.transaction(() => {
     const activePaths: string[] = [];
+    const archivePaths: string[] = [];
 
     for (const file of files) {
       const filePath = path.join(taskDir, file);
@@ -93,14 +124,38 @@ export function syncTasks(org: string): number {
       }
     }
 
+    for (const file of archiveFiles) {
+      const archivePath = path.join(taskDir, file);
+      archivePaths.push(archivePath);
+      if (!hasFileChanged(archivePath)) continue;
+
+      try {
+        const raw = fs.readFileSync(archivePath, 'utf-8');
+        const lines = raw.split('\n').filter((line) => line.trim());
+
+        for (const line of lines) {
+          const task = JSON.parse(line) as ArchivedTask;
+          upsert.run(mapArchivedTask(task, archivePath));
+          synced++;
+        }
+        markSynced(archivePath);
+      } catch (err) {
+        console.error(`[sync] Failed to sync task archive ${file}:`, err);
+      }
+    }
+
+    const keepPaths = [...activePaths, ...archivePaths];
+
     // Prune rows whose source files no longer exist on disk
-    if (activePaths.length > 0) {
-      const placeholders = activePaths.map(() => '?').join(',');
+    // Keep archive paths coupled to ingestion to prevent UPSERT-THEN-IMMEDIATE-DELETE:
+    // archive rows inserted above must survive this transaction's reconcile.
+    if (keepPaths.length > 0) {
+      const placeholders = keepPaths.map(() => '?').join(',');
       db.prepare(
         `DELETE FROM tasks WHERE org = ? AND source_file NOT IN (${placeholders})`,
-      ).run(org, ...activePaths);
+      ).run(org, ...keepPaths);
     } else {
-      // No files at all — delete all tasks for this org
+      // No active files or archives at all: delete all tasks for this org.
       db.prepare('DELETE FROM tasks WHERE org = ?').run(org);
     }
   });

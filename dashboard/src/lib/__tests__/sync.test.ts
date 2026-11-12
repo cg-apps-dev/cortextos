@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { execFileSync } from 'child_process';
+import { fileURLToPath } from 'url';
 
 // Create temp dir and set CTX_ROOT BEFORE modules load.
 // We rely on vitest running this file fresh (no prior config.ts cache).
@@ -19,6 +21,8 @@ let syncFile: typeof import('../sync')['syncFile'];
 let extractOrgFromPath: typeof import('../sync')['extractOrgFromPath'];
 let extractOrgAndAgentFromEventPath: typeof import('../sync')['extractOrgAndAgentFromEventPath'];
 let extractAgentFromStatePath: typeof import('../sync')['extractAgentFromStatePath'];
+let getTaskThroughput: typeof import('../data/analytics')['getTaskThroughput'];
+let getAgentEffectiveness: typeof import('../data/analytics')['getAgentEffectiveness'];
 let CTX_ROOT: string;
 
 beforeAll(async () => {
@@ -35,6 +39,10 @@ beforeAll(async () => {
   extractOrgFromPath = syncMod.extractOrgFromPath;
   extractOrgAndAgentFromEventPath = syncMod.extractOrgAndAgentFromEventPath;
   extractAgentFromStatePath = syncMod.extractAgentFromStatePath;
+
+  const analyticsMod = await import('../data/analytics');
+  getTaskThroughput = analyticsMod.getTaskThroughput;
+  getAgentEffectiveness = analyticsMod.getAgentEffectiveness;
 
   const configMod = await import('../config');
   CTX_ROOT = configMod.CTX_ROOT;
@@ -65,6 +73,50 @@ function clearSyncMeta(): void {
 
 function clearTable(table: string): void {
   db.prepare(`DELETE FROM ${table}`).run();
+}
+
+function busPathsForOrg(org: string) {
+  const orgRoot = path.join(tmpDir, 'orgs', org);
+  return {
+    ctxRoot: tmpDir,
+    inbox: path.join(tmpDir, 'inbox', 'dashboard-test'),
+    inflight: path.join(tmpDir, 'inflight', 'dashboard-test'),
+    processed: path.join(tmpDir, 'processed', 'dashboard-test'),
+    logDir: path.join(tmpDir, 'logs', 'dashboard-test'),
+    stateDir: path.join(tmpDir, 'state', 'dashboard-test'),
+    taskDir: path.join(orgRoot, 'tasks'),
+    approvalDir: path.join(orgRoot, 'approvals'),
+    analyticsDir: path.join(orgRoot, 'analytics'),
+    deliverablesDir: path.join(orgRoot, 'deliverables'),
+  };
+}
+
+function runRealCompactTasks(org: string, olderThanDays: number) {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const script = [
+    "import { compactTasks } from './src/bus/task.ts';",
+    'const paths = JSON.parse(process.env.DASH_TEST_COMPACT_PATHS);',
+    'const olderThanDays = Number(process.env.DASH_TEST_COMPACT_DAYS);',
+    'process.stdout.write(JSON.stringify(compactTasks(paths, { olderThanDays })));',
+  ].join('\n');
+  const output = execFileSync(
+    process.execPath,
+    [path.join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'), '--eval', script],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        DASH_TEST_COMPACT_PATHS: JSON.stringify(busPathsForOrg(org)),
+        DASH_TEST_COMPACT_DAYS: String(olderThanDays),
+      },
+      encoding: 'utf-8',
+    },
+  );
+  return JSON.parse(output) as {
+    archived: Array<{ id: string; archive_file: string }>;
+    skipped: Array<{ id: string; reason: string }>;
+    dry_run: boolean;
+  };
 }
 
 describe('syncTasks', () => {
@@ -141,6 +193,149 @@ describe('syncTasks', () => {
   it('handles missing task dir gracefully', () => {
     const count = syncTasks('nonexistent-org');
     expect(count).toBe(0);
+  });
+
+  it('keeps dashboard analytics identical across real task compaction', () => {
+    const org = 'compaction-analytics';
+    const oldCompletedAt = new Date(Date.now() - 10 * 86400_000).toISOString();
+    const recentCompletedAt = new Date(Date.now() - 2 * 86400_000).toISOString();
+
+    writeJSON(`orgs/${org}/tasks/task_analytics_old.json`, {
+      id: 'task_analytics_old',
+      title: 'Old completed task',
+      status: 'completed',
+      priority: 'high',
+      assigned_to: 'analytics-agent',
+      org,
+      created_at: oldCompletedAt,
+      updated_at: oldCompletedAt,
+      completed_at: oldCompletedAt,
+      result: 'old result',
+    });
+    writeJSON(`orgs/${org}/tasks/task_analytics_recent.json`, {
+      id: 'task_analytics_recent',
+      title: 'Recent completed task',
+      status: 'completed',
+      priority: 'normal',
+      assigned_to: 'analytics-agent',
+      org,
+      created_at: recentCompletedAt,
+      updated_at: recentCompletedAt,
+      completed_at: recentCompletedAt,
+      result: 'recent result',
+    });
+    writeJSON(`orgs/${org}/tasks/task_analytics_pending.json`, {
+      id: 'task_analytics_pending',
+      title: 'Pending task',
+      status: 'pending',
+      priority: 'normal',
+      assigned_to: 'analytics-agent',
+      org,
+      created_at: recentCompletedAt,
+    });
+
+    expect(syncTasks(org)).toBe(3);
+    const throughputBefore = getTaskThroughput(30, org);
+    const effectivenessBefore = getAgentEffectiveness(org);
+    expect(throughputBefore.reduce((total, day) => total + day.tasks, 0)).toBe(2);
+    expect(effectivenessBefore).toEqual([
+      expect.objectContaining({
+        name: 'analytics-agent',
+        tasksCompleted: 2,
+      }),
+    ]);
+
+    const report = runRealCompactTasks(org, 7);
+    expect(report.archived.map((entry) => entry.id)).toEqual(['task_analytics_old']);
+
+    syncTasks(org);
+
+    expect(getTaskThroughput(30, org)).toEqual(throughputBefore);
+    expect(getAgentEffectiveness(org)).toEqual(effectivenessBefore);
+  });
+
+  it('keeps archived rows after the same sync transaction reconciles sources', () => {
+    const org = 'archive-survival';
+    const completedAt = '2026-10-01T12:00:00Z';
+    const archivePath = writeText(
+      `orgs/${org}/tasks/archive-2026-10.jsonl`,
+      `${JSON.stringify({
+        id: 'task_archive_survives',
+        title: 'Archived task',
+        org,
+        assigned_to: 'archive-agent',
+        completed_at: completedAt,
+        archived_at: '2026-11-01T12:00:00Z',
+        result: 'shipped',
+      })}\n`,
+    );
+
+    expect(syncTasks(org)).toBe(1);
+
+    const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get('task_archive_survives') as Record<string, unknown>;
+    expect(row).toMatchObject({
+      title: 'Archived task',
+      status: 'completed',
+      priority: 'normal',
+      assignee: 'archive-agent',
+      org,
+      needs_approval: 0,
+      created_at: completedAt,
+      completed_at: completedAt,
+      notes: 'shipped',
+      source_file: archivePath,
+    });
+  });
+
+  it('still deletes a genuinely removed active task while preserving archived rows', () => {
+    const org = 'archive-reconcile';
+    const activePath = writeJSON(`orgs/${org}/tasks/task_removed.json`, {
+      id: 'task_removed',
+      title: 'Remove me',
+      status: 'pending',
+      priority: 'normal',
+      org,
+      created_at: '2026-10-01T12:00:00Z',
+    });
+    writeText(
+      `orgs/${org}/tasks/archive-2026-09.jsonl`,
+      `${JSON.stringify({
+        id: 'task_archive_kept',
+        title: 'Keep me',
+        org,
+        assigned_to: 'archive-agent',
+        completed_at: '2026-09-01T12:00:00Z',
+        archived_at: '2026-10-01T12:00:00Z',
+        result: 'done',
+      })}\n`,
+    );
+
+    expect(syncTasks(org)).toBe(2);
+    fs.unlinkSync(activePath);
+
+    expect(syncTasks(org)).toBe(0);
+    expect(db.prepare('SELECT id FROM tasks WHERE id = ?').get('task_removed')).toBeUndefined();
+    expect(db.prepare('SELECT id FROM tasks WHERE id = ?').get('task_archive_kept')).toBeTruthy();
+  });
+
+  it('mtime-skips an unchanged archive while retaining its rows in the keep-set', () => {
+    const org = 'archive-mtime';
+    writeText(
+      `orgs/${org}/tasks/archive-2026-08.jsonl`,
+      `${JSON.stringify({
+        id: 'task_archive_unchanged',
+        title: 'Unchanged archive task',
+        org,
+        assigned_to: 'archive-agent',
+        completed_at: '2026-08-01T12:00:00Z',
+        archived_at: '2026-09-01T12:00:00Z',
+        result: 'done',
+      })}\n`,
+    );
+
+    expect(syncTasks(org)).toBe(1);
+    expect(syncTasks(org)).toBe(0);
+    expect(db.prepare('SELECT id FROM tasks WHERE id = ?').get('task_archive_unchanged')).toBeTruthy();
   });
 });
 
