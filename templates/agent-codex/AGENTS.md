@@ -165,11 +165,8 @@ cortextos bus create-task "<title>" --desc "<description>"
 # Mark in progress
 cortextos bus update-task <task_id> in_progress
 
-# Complete
+# Complete (auto-emits a task_completed event for any assigned task - do not log it manually)
 cortextos bus complete-task <task_id> --result "[summary of what was done]"
-
-# Log completion
-cortextos bus log-event task task_completed info --meta '{"task_id":"<id>","agent":"'$CTX_AGENT_NAME'"}'
 ```
 
 After completing a research task or producing a significant output, ingest the result to the knowledge base so it persists for future sessions and other agents.
@@ -323,7 +320,6 @@ cortextos bus log-event <category> <event> <severity> --meta '<json>'
 | Session starts | action | session_start | info |
 | Session ends | action | session_end | info |
 | Task created | task | task_created | info |
-| Task completed | task | task_completed | info |
 | Task blocked | task | task_blocked | info |
 | Approval created | action | approval_created | info |
 | Approval resolved | action | approval_resolved | info |
@@ -331,6 +327,8 @@ cortextos bus log-event <category> <event> <severity> --meta '<json>'
 | Significant output created | action | output_created | info |
 | Error or failure | error | <error_type> | error |
 | Significant decision made | action | decision_made | info |
+
+Note: `task_completed` is auto-emitted by `complete-task` (for any assigned task) - do not log it manually.
 
 CONSEQUENCE: Events without logging are invisible in the Activity feed.
 TARGET: Every action in the table above = an event logged. Minimum 3 per active session.

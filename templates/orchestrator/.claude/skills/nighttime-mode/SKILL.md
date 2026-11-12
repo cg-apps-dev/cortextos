@@ -80,17 +80,14 @@ cortextos bus check-inbox
 When an agent reports task completion:
 
 ```bash
-# 1. Complete the task in cortextOS
+# 1. Complete the task in cortextOS (auto-emits task_completed for any assigned task - do not log it manually)
 cortextos bus complete-task "$TASK_ID" --result "<what was produced>"
 
-# 2. Log the event
-cortextos bus log-event task task_completed info --meta '{"task_id":"'$TASK_ID'","agent":"<completing_agent>"}'
-
-# 3. Write to memory
+# 2. Write to memory
 TODAY=$(date +%Y-%m-%d)
 echo "COMPLETED: $TASK_ID - <description> (by <agent>)" >> "memory/$TODAY.md"
 
-# 4. Dispatch next task if queue has more
+# 3. Dispatch next task if queue has more
 cortextos bus list-tasks --status pending
 ```
 
@@ -161,9 +158,6 @@ cortextos bus update-heartbeat "morning briefing data ready - overnight complete
 ```bash
 # Starting nighttime mode
 cortextos bus log-event action nighttime_mode_start info --meta '{"agent":"'$CTX_AGENT_NAME'"}'
-
-# Task completions
-cortextos bus log-event task task_completed info --meta '{"task_id":"<id>","agent":"<completing_agent>"}'
 
 # Morning ready
 cortextos bus log-event action morning_briefing_ready info --meta '{"tasks_completed":"X","tasks_blocked":"Y"}'
