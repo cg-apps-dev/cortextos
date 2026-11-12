@@ -37,8 +37,9 @@ Three occurrence categories across the footprint:
   valid event name, or a generic `log-event` syntax example. Harmless reference; leave (optionally
   swap a syntax example to a non-auto-emitted event, low priority).
 
-**Canonical wording (dev-approved, completed-half / sentence 1 only):**
-> `task_completed` is auto-emitted by `complete-task` (for any assigned task) - do not log it manually.
+**Canonical wording (dev-approved):**
+> Phase 1 (completed-half): `task_completed` is auto-emitted by `complete-task` (for any assigned task) - do not log it manually.
+> Phase 2 (combined, after the createTask-emit landed as f160da28): `task_completed` and `task_created` are auto-emitted by `complete-task` / `create-task` (for any assigned task) as of f160da28 - do not log them manually.
 
 ## task_created is the INVERTED case - held, not fixed here
 
@@ -47,6 +48,8 @@ task_1794442884613, one `logEvent` mirroring `completeTask:538`), unscheduled bu
 doc asserts `task_created` is auto-emitted until that code is merged+live** (documenting-before-code
 is the inverse bug). Sentence 2 ("`task_created` is auto-emitted by `create-task` as of <sha>") is
 added only on dev's SHA. task_created rows/steps are LEFT UNTOUCHED in this pass.
+
+**RESOLVED 2026-11-12:** dev's carve-out landed on main as `f160da28` (createTask emits `task_created` at `src/bus/task.ts:126`, best-effort, gated `if(assignee)`, assignee-defaulted, mirrors completeTask - ground-truthed). There were NO manual `log-event task_created` commands anywhere (the ~89% gap was under-following the event-table row, not a documented step), so Phase 2a gave the `| Task created |` table row the same remove + combined-auto-emit-note treatment as task_completed - leaving it would have started a symmetric task_created double-log now that createTask fires. Correctness constraint satisfied: the auto-emit clause entered the docs only after the code merged.
 
 ## Phasing (orch-ruled 2026-11-11)
 

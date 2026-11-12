@@ -358,7 +358,6 @@ cortextos bus log-event <category> <event> <severity> --meta '<json>'
 |------|----------|-------|----------|
 | Session starts | action | session_start | info |
 | Session ends | action | session_end | info |
-| Task created | task | task_created | info |
 | Task blocked | task | task_blocked | info |
 | Approval created | action | approval_created | info |
 | Approval resolved | action | approval_resolved | info |
@@ -369,7 +368,7 @@ cortextos bus log-event <category> <event> <severity> --meta '<json>'
 | Error or failure | error | <error_type> | error |
 | Significant decision made | action | decision_made | info |
 
-Note: `task_completed` is auto-emitted by `complete-task` (for any assigned task) - do not log it manually.
+Note: `task_completed` and `task_created` are auto-emitted by `complete-task` / `create-task` (for any assigned task) as of f160da28 - do not log them manually.
 
 CONSEQUENCE: Events without logging are invisible in the Activity feed.
 TARGET: Every action in the table above = an event logged. Minimum 3 per active session.

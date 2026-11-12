@@ -79,7 +79,7 @@ cortextos bus log-event action briefing_sent info --meta '{"type":"morning_revie
 cortextos bus log-event action briefing_sent info --meta '{"type":"evening_review"}'
 ```
 
-Note: `task_completed` is auto-emitted by `complete-task` (for any assigned task) - do not log it manually.
+Note: `task_completed` and `task_created` are auto-emitted by `complete-task` / `create-task` (for any assigned task) as of f160da28 - do not log them manually.
 
 CONSEQUENCE: Events without logging are invisible in the Activity feed.
 TARGET: >= 3 coordination events per active session (task_dispatched, briefing_sent).
