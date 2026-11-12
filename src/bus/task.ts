@@ -120,6 +120,17 @@ export function createTask(
     });
   }
 
+  // Activity-feed event. Best-effort because the task is already persisted.
+  if (assignee) {
+    try {
+      logEvent(paths, assignee, org, 'task', 'task_created', 'info', {
+        task_id: taskId,
+      });
+    } catch {
+      // Never let observability break task creation.
+    }
+  }
+
   return taskId;
 }
 

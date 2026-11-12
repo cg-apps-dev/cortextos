@@ -90,6 +90,61 @@ describe('Task Management', () => {
       expect(content.due_date).toBeNull();
       expect(content.archived).toBe(false);
     });
+
+    it('emits exactly one task/task_created activity event for the resolved assignee', () => {
+      const taskId = createTask(paths, 'paul', 'acme', 'Event task');
+
+      const today = new Date().toISOString().split('T')[0];
+      const eventFile = join(paths.analyticsDir, 'events', 'paul', `${today}.jsonl`);
+      const events = readFileSync(eventFile, 'utf-8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      const createdEvents = events.filter((event) => event.event === 'task_created');
+
+      expect(createdEvents).toHaveLength(1);
+      expect(createdEvents[0]).toMatchObject({
+        agent: 'paul',
+        org: 'acme',
+        category: 'task',
+        severity: 'info',
+        metadata: { task_id: taskId },
+      });
+    });
+
+    it('attributes task_created to an explicit assignee rather than the creator', () => {
+      const taskId = createTask(paths, 'paul', 'acme', 'Delegated event task', {
+        assignee: 'boris',
+      });
+
+      const today = new Date().toISOString().split('T')[0];
+      const assigneeEventFile = join(paths.analyticsDir, 'events', 'boris', `${today}.jsonl`);
+      const events = readFileSync(assigneeEventFile, 'utf-8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+
+      expect(events.filter((event) => event.event === 'task_created')).toEqual([
+        expect.objectContaining({
+          agent: 'boris',
+          metadata: { task_id: taskId },
+        }),
+      ]);
+      expect(existsSync(join(paths.analyticsDir, 'events', 'paul'))).toBe(false);
+    });
+
+    it('still creates the task when the task_created event write fails', () => {
+      writeFileSync(paths.analyticsDir, 'not a directory', 'utf-8');
+
+      const taskId = createTask(paths, 'paul', 'acme', 'Best-effort event task');
+
+      expect(JSON.parse(
+        readFileSync(join(paths.taskDir, `${taskId}.json`), 'utf-8'),
+      )).toMatchObject({
+        id: taskId,
+        assigned_to: 'paul',
+      });
+    });
   });
 
   describe('updateTask', () => {
