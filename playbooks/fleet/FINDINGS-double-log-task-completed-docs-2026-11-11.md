@@ -53,6 +53,28 @@ added only on dev's SHA. task_created rows/steps are LEFT UNTOUCHED in this pass
 
 **DEPLOYMENT GAP (named, transitional) - correction to the above:** "merged" is NOT "deployed." The auto-emit clause entered the docs when the code MERGED (`f160da28`), but the live bus CLI runs from a compiled `dist/` that is ~6 weeks stale (Sept-29), so `createTask` does NOT yet emit `task_created` at runtime. MEASURED, not inferred: 0 `task_created` events fired fleet-wide tonight despite multiple task creations (independently flagged by atwood-orchestrator from the atwood event log, and reproduced in clean-green analytics). So the docs LEAD the live CLI from **2026-11-12 ~03:45Z until the dist rebuild + fleet re-seed lands** (`task_1794455096738_22857522`, dev, daylight window; its verify includes an OBSERVED `task_created` emit that closes the window). the-orchestrator accepted this as a named transitional gap - NO re-edit of the ~80 docs; the note is source-accurate ("as of f160da28") and the gap self-closes on the rebuild. **LESSON (banked):** for any doc asserting RUNTIME behavior, ground-truth the DEPLOYED artifact (the running `dist/`, or an OBSERVED event), not just the source - `src` having the emit is not the running CLI emitting it (the build-is-a-deployment / behavioral-beats-config family). Source-level ground-truth is necessary but not sufficient for a runtime claim.
 
+## CLOSE-OUT (2026-11-15) - TASK COMPLETE (task_1794448912179)
+
+The deploy gap CLOSED on 2026-11-14: the dist rebuild + host reboot (16:22:37Z, daemon on
+fresh dist) landed and the `task_created` auto-emit is now live at RUNTIME - OBSERVED: probe
+task_1794673809205 emitted both `task_created` @16:30:09Z and `task_completed` @16:30:50Z
+(id-matched), and the running `dist/cli.js` carries both emits (createTask L4726,
+completeTask L4967). The transitional docs-lead-runtime window named above is resolved.
+
+FINAL TALLY:
+- Tracked source: Phase 1 (35 files) + Phase 2a (16 files) merged to main (`7ca922c1`).
+- Phase 2b live docs: CGM 62 files + adam-personal 4 files applied, verified, runtime-correct
+  (manual `task_completed` step removed, `| Task created |` table row dropped, combined note added).
+- atwood (16 files): DROPPED by Adam 2026-11-15. He scoped the fleet V2 migration to atwood +
+  adam-personal, and the patch only fixes V1 instruction files, so 0 of 16 applied; the separate
+  atwood-analyst `--result` fix was dropped too. CGM stays on V1 indefinitely as of this date.
+
+NET: the ~1.9x double-log is eliminated across every live CGM + adam-personal boot doc; atwood
+intentionally excluded by owner decision. The atwood transformer + dry-run + REPORT are archived
+at `the-sop-keeper/workspace/double-log-atwood/` if V1 docs ever matter again.
+
+The Phasing and Fan-out sections below are the HISTORICAL plan, preserved as-authored.
+
 ## Phasing (orch-ruled 2026-11-11)
 
 - **Phase 1 (now):** templates + event-logging SKILL, completed-half only (remove A, revise B, leave
