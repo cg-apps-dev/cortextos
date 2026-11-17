@@ -35,9 +35,17 @@ When the owner approves V1 shutoff for the moved agents, the V1 orchestrator sto
 V1 agents** - NEVER the clean-green-marketing org, the V1 daemon, or V1 infrastructure, which keep
 running. Shutoff timing is owner-gated (2026-11-15: V1 stayed live until Monday launch day was over).
 
-A bare process `stop` of a moved agent is only **half a shutoff** - the V1 daemon re-discovers and
-re-starts the dir on its next cycle. A durable de-enroll needs the persisted enabled flag. See the
-de-enroll rule below.
+A bare process `stop` is only **half a shutoff**: `cortextos stop` writes a `.user-stop` marker and
+sends a stop IPC (`src/cli/stop.ts`) - it sets NEITHER enabled flag, so the V1 daemon re-discovers
+and re-starts the dir on its next cycle UNLESS a roster/config enabled flag is already false. A
+durable de-enroll needs that persisted flag (see the de-enroll rule below).
+
+**In the 2026-11-15 exercise this re-start risk did NOT materialize**, and the runbook sentence above
+is the general rule, not what happened that day: the moved agents' instance-roster half was ALREADY
+`enabled=false` after the 18:31Z scoped action (dev-measured ~20:05Z, 11-15), so no auto-restart was
+possible even before any further de-enroll - the scoped shutoff stopped agents that were already
+roster-disabled (disabled as part of the move), not bare-running ones. The half-a-shutoff rule
+applies to a `stop` of a STILL-ENABLED agent; the move avoided it by having the roster flag false.
 
 ## 3. Durable de-enroll = both halves
 
