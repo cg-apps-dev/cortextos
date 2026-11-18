@@ -28,7 +28,7 @@ import { existsSync, readFileSync, statSync } from 'fs';
 import { createHash } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
-import { parseDurationMs, readCronState } from '../bus/cron-state.js';
+import { parseDurationMs, cronExpressionMinIntervalMs, readCronState } from '../bus/cron-state.js';
 import { readCronsWithStatus, updateCron } from '../bus/crons.js';
 import type { CronDefinition } from '../types/index.js';
 import { GATE_RECHECK_MS } from './cron-capacity-gate.js';
@@ -874,8 +874,10 @@ export class CronScheduler {
   }
 
   private heartbeatStaleThresholdMs(cron: CronDefinition): number {
-    const intervalMs = parseDurationMs(cron.schedule);
-    if (Number.isNaN(intervalMs)) return CronScheduler.HEARTBEAT_MIN_STALE_MS;
+    let intervalMs = parseDurationMs(cron.schedule);
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+      intervalMs = cronExpressionMinIntervalMs(cron.schedule);
+    }
     return Math.max(
       CronScheduler.HEARTBEAT_MIN_STALE_MS,
       intervalMs * CronScheduler.HEARTBEAT_STALE_MULTIPLIER,

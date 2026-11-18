@@ -1457,6 +1457,71 @@ describe('CronScheduler', () => {
       '  ⎿  Messagesent',
     ].join('\n');
 
+    it('derives heartbeat staleness from cron-expression cadence while preserving the floor', () => {
+      const thresholdMs = (cron: CronDefinition): number => (
+        scheduler as unknown as {
+          ['heartbeatStaleThresholdMs']: (definition: CronDefinition) => number;
+        }
+      )['heartbeatStaleThresholdMs'](cron);
+
+      const durationForm = heartbeatCron();
+      durationForm.schedule = '4h';
+      const expressionForm = heartbeatCron();
+      expressionForm.schedule = '04 */4 * * *';
+      const floorControl = heartbeatCron();
+      floorControl.schedule = '*/30 * * * *';
+
+      expect(thresholdMs(expressionForm)).toBe(360 * 60_000);
+      expect(thresholdMs(durationForm)).toBe(thresholdMs(expressionForm));
+      expect(thresholdMs(floorControl)).toBe(90 * 60_000);
+    });
+
+    it('re-injects an expression-form heartbeat that is stale beyond its cadence threshold', async () => {
+      const writes: string[] = [];
+      vi.setSystemTime(new Date('2026-11-18T12:00:00Z'));
+      writeHeartbeat('test-agent', Date.now() - 400 * 60_000);
+      mockReadCrons.mockReturnValue([
+        makeCron({
+          name: 'heartbeat',
+          schedule: '04 */4 * * *',
+          prompt: 'Read HEARTBEAT.md and follow its instructions.',
+          last_fired_at: new Date(Date.now()).toISOString(),
+        }),
+      ]);
+      const s = watchdogScheduler({ writes, recentStdout: () => throttleAbortTerminal });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+      expect(writes).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes.join('')).toContain('[WATCHDOG REINJECT');
+      s.stop();
+    });
+
+    it('does not re-inject a 200-minute-old expression-form heartbeat below its cadence threshold', async () => {
+      const writes: string[] = [];
+      vi.setSystemTime(new Date('2026-11-18T12:00:00Z'));
+      writeHeartbeat('test-agent', Date.now() - 200 * 60_000);
+      mockReadCrons.mockReturnValue([
+        makeCron({
+          name: 'heartbeat',
+          schedule: '04 */4 * * *',
+          prompt: 'Read HEARTBEAT.md and follow its instructions.',
+          last_fired_at: new Date(Date.now()).toISOString(),
+        }),
+      ]);
+      const s = watchdogScheduler({ writes, recentStdout: () => throttleAbortTerminal });
+
+      s.start();
+      await vi.advanceTimersByTimeAsync(TICK);
+      await vi.advanceTimersByTimeAsync(TICK);
+
+      expect(writes).toEqual([]);
+      s.stop();
+    });
+
     it('A1 positive: real throttle abort after latest turn marker re-injects once', async () => {
       const writes: string[] = [];
       writeHeartbeat('test-agent', Date.now() - 2 * 60 * 60_000);
